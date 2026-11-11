@@ -1,0 +1,80 @@
+# vordr-agent: local policy. Linux: /etc/vordr/agent.yaml, Windows: %ProgramData%\vordr\agent.yaml.
+# Whatever is left out falls back to the stricter value: no install, no reboot, no self-update, only "check".
+# Check the file with: vordr-agent check-config --config <path>
+
+node: example-host                  # default: hostname (lowercase)
+
+# The hub section is needed for "vordr-agent run". Without public_key every job is rejected.
+# hub:
+#   url: wss://vordr-hub.example:8443/v1/tunnel
+#   public_key: "<base64 Ed25519 public key of the hub, from: vordr-hub key>"
+#   ca_file: /etc/vordr/hub-ca.pem    # optional: trust only these CAs instead of the system roots
+
+install:
+  allowed_scopes: [security, all, "app:gitlab"]
+  # Compose services whose image Home Assistant may move to the rebuild of its tag (ADR-0119): "image:<project>/<service>",
+  # "*" for any part, e.g. "image:stack/*". Needs packages.containers; none by default. A newer tag or a pinned
+  # digest stays manual.
+  # allowed_scopes: [security, all, "image:stack/*"]
+  default_scope: security           # install button of the entity "System packages"
+  auto: off                         # off | hub ("local" is refused until it is built)
+  window: {days: [mon, tue, wed, thu, fri, sat, sun], start: "02:00", end: "05:00"}
+  # mode: upgrade                   # scope all: default full-upgrade; upgrade leaves packages with new dependencies
+  min_interval_h: 6
+  timeout_min: 60
+
+reboot:
+  allowed: false
+  window: {days: [sun], start: "03:00", end: "04:00"}
+
+# agent_update:
+#   enabled: true
+#   public_key: "<base64 Ed25519 public key of the operator>"
+#   backup_public_key: "<base64>"   # optional: a second operator key, kept in an external password manager;
+#                                   # releases signed with it install too
+# The agent takes only releases (X.Y.Z) newer than its own; going back to old code means publishing it anew.
+
+# Only on the Proxmox VE host: the hub may ask for a backup of one of its guests right before that guest installs
+# (ADR-0096). Guests of this host only, to this storage only, at most one per guest in 10 min; nothing is pruned.
+# guest_backup:
+#   storage: pbs                      # a "pbs:" storage in /etc/pve/storage.cfg
+#   timeout_min: 60                   # one backup, 5 to 240
+
+apps:
+  - id: gitlab
+    name: GitLab
+    source: apt-package
+    package: gitlab-ce
+
+# What must still work after an install run that changed packages; checked for up to 3 minutes, otherwise the run ends
+# failed_health (and Home Assistant says which check failed). Exactly one of systemd, docker, http per entry.
+health:
+  - systemd: gitlab-runsvdir.service    # the unit must be active
+  - http: https://127.0.0.1/-/readiness # 2xx or 3xx within 10 s (certificate not checked)
+# - docker: web                         # the container must run, and be healthy if it has a health check
+
+# Packages of pip, pipx and npm, reported to the hub, which matches them against OSV (malware and advisories). Read
+# from what the package managers installed (metadata files), nothing is run and nobody outside is asked. On unless
+# switched off.
+packages:
+  inventory: true                       # false: report none
+  detect: true                          # global npm, pip outside the distribution, pip --user, pipx, Node-RED folders
+  locations:                            # further places: a virtual environment, an npm folder, site-packages, or a
+    - id: services                      # folder holding one of them (.venv, venv); "*" makes one location per match,
+      path: /opt/*/venv                 # with the id "<id>-<what * matched>", e.g. services-web-app
+  outdated: true                        # ask the registries for newer releases (only names and versions go out)
+  outdated_hours: 24                    # at most this often
+  min_age_days: 7                       # a release must be public this long to be a candidate (the only kind an
+                                        # update installs); 1..90, cannot be switched off
+  min_age_days_security: 2              # shorter, only for a release that fixes an OSV advisory of the installed
+                                        # version and that the hub names in the job; the rest of the plan keeps
+                                        # min_age_days (ADR-0111); 1..min_age_days
+# registries: {pypi: https://pypi.org, npm: https://registry.npmjs.org}   # or a mirror
+  update: []                            # locations Home Assistant may update (ids, "*" allowed, e.g. [node-red,
+                                        # services-*]); only virtual environments and npm; none by default
+  allow_scripts: []                     # npm locations whose install scripts may run during an update
+  allow_sdist: []                       # Python locations that may build from source distributions
+  containers: false                     # also report the images of running containers (Docker Engine socket) and,
+                                        # with outdated, ask their registries anonymously for rebuilds and newer tags
+                                        # of the same form; Linux only (ADR-0113). Only reported, unless
+                                        # install.allowed_scopes names Compose services (ADR-0119)

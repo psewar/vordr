@@ -1,0 +1,5 @@
+# Vördr, forced command vordr-gna: devices the proxy agent may open towards their vendor for an update (ADR-0091, ADR-0093).
+# Installed as /usr/local/etc/vordr-gna-allow (root:wheel 0644). One IPv4 address per line, a comment after it.
+# Only devices that can update themselves alone belong here; everything else gets its firmware through the proxy.
+# The list belongs to the site; the repository ships it without entries. Example:
+# 192.0.2.40  # media device: network update from the vendor only

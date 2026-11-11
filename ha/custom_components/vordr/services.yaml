@@ -1,0 +1,69 @@
+update_package:
+  target:
+    entity:
+      integration: vordr
+      domain: update
+  fields:
+    package:
+      required: true
+      example: "@example/nodes"
+      selector:
+        text:
+    reason:
+      required: false
+      example: "Tomorrow I am away"
+      selector:
+        text:
+
+update_image:
+  target:
+    entity:
+      integration: vordr
+      domain: update
+  fields:
+    service:
+      required: true
+      example: "stack/web"
+      selector:
+        text:
+    reason:
+      required: false
+      example: "Tomorrow I am away"
+      selector:
+        text:
+
+refresh_dependencies:
+  target:
+    entity:
+      integration: vordr
+      domain: update
+  fields:
+    reason:
+      required: false
+      example: "Tomorrow I am away"
+      selector:
+        text:
+
+install_outside_window:
+  target:
+    entity:
+      integration: vordr
+      domain: update
+  fields:
+    reason:
+      required: true
+      example: "Tomorrow I am away"
+      selector:
+        text:
+
+press_outside_window:
+  target:
+    entity:
+      integration: vordr
+      domain: button
+  fields:
+    reason:
+      required: true
+      example: "Kernel update, nobody is in the office tonight"
+      selector:
+        text:

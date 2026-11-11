@@ -1,0 +1,122 @@
+#!/bin/sh
+# Vördr: the forced command of the proxy agent's SSH key on the pfSense firewall (ADR-0091, ADR-0093).
+# Installed as /usr/local/sbin/vordr-gna (root:wheel 0755); runs as the unprivileged user vordr-gna, whatever the
+# caller asked for, because the key line says command="/usr/local/sbin/vordr-gna".
+#
+#   version                       firmware and update facts (key=value lines)
+#   backup                        config.xml on stdout
+#   window status                 the update window: open entries and when the root job last looked
+#   window open <address> <min>   ask the root job to let a listed device reach its vendor for 1..30 minutes
+#   window close <address>        ask the root job to close it again
+#
+# Answers are key=value lines. A refusal says state=refused and reason=<code>; the exit code tells the kind:
+# 0 done, 2 not a known call, 3 not allowed, 4 not ready (the root job has not set up the queue).
+# This script never changes pf itself: /dev/pf needs root. It only drops a request into the queue, which the root job
+# vordr-gna-root checks again against the same list (ADR-0093).
+set -u
+PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin
+export PATH
+ALLOW=/usr/local/etc/vordr-gna-allow
+STATE=/var/db/vordr-gna
+QUEUE=/var/db/vordr-gna-queue
+CONFIG=/cf/conf/config.xml
+VERSION_FILE=/etc/version
+MAX_MINUTES=30
+
+refuse() {
+	echo "state=refused"
+	echo "reason=$1"
+	exit "$2"
+}
+
+valid_address() {
+	case "$1" in
+	'' | *[!0-9.]* | .* | *. | *..*) return 1 ;;
+	esac
+	old_ifs=$IFS
+	IFS=.
+	# shellcheck disable=SC2086
+	set -- $1
+	IFS=$old_ifs
+	[ $# -eq 4 ] || return 1
+	for octet in "$@"; do
+		[ ${#octet} -le 3 ] || return 1
+		[ "$octet" -le 255 ] || return 1
+	done
+	return 0
+}
+
+listed() {
+	[ -f "$ALLOW" ] || return 1
+	awk '!/^[[:space:]]*(#|$)/ { print $1 }' "$ALLOW" | grep -qxF "$1"
+}
+
+valid_minutes() {
+	# No leading zero: shell arithmetic would read 08 as a broken octal number.
+	case "$1" in
+	'' | *[!0-9]* | 0*) return 1 ;;
+	esac
+	[ ${#1} -le 2 ] && [ "$1" -ge 1 ] && [ "$1" -le "$MAX_MINUTES" ]
+}
+
+request() {
+	[ -d "$QUEUE" ] && [ -w "$QUEUE" ] && [ ! -L "$QUEUE" ] || refuse not_ready 4
+	tmp=$(mktemp "$QUEUE/.new.XXXXXX") || refuse not_ready 4
+	printf '%s\n' "$1" >"$tmp"
+	name="req.$(date +%s).$$"
+	mv "$tmp" "$QUEUE/$name"
+	echo "state=requested"
+	echo "request=$name"
+	echo "applies_within_s=60"
+}
+
+# The caller's words, split on blanks only; nothing is ever evaluated.
+set -f
+# shellcheck disable=SC2086
+set -- ${SSH_ORIGINAL_COMMAND:-}
+case "${1:-}" in
+version)
+	[ $# -eq 1 ] || refuse bad_arguments 2
+	echo "product=pfSense"
+	echo "version=$(head -n 1 "$VERSION_FILE")"
+	if [ -f "$STATE/updates" ]; then
+		cat "$STATE/updates"
+	else
+		echo "updates_checked_at=never"
+	fi
+	;;
+backup)
+	[ $# -eq 1 ] || refuse bad_arguments 2
+	exec cat "$CONFIG"
+	;;
+window)
+	case "${2:-}" in
+	status)
+		[ $# -eq 2 ] || refuse bad_arguments 2
+		if [ -f "$STATE/window" ]; then
+			cat "$STATE/window"
+		else
+			echo "window_checked_at=never"
+		fi
+		pending=0
+		[ -d "$QUEUE" ] && pending=$(find "$QUEUE" -maxdepth 1 -name 'req.*' | wc -l | tr -d ' ')
+		echo "requests_pending=$pending"
+		;;
+	open)
+		[ $# -eq 4 ] || refuse bad_arguments 2
+		valid_address "$3" || refuse bad_address 2
+		listed "$3" || refuse not_listed 3
+		valid_minutes "$4" || refuse bad_minutes 2
+		request "open $3 $4"
+		;;
+	close)
+		[ $# -eq 3 ] || refuse bad_arguments 2
+		valid_address "$3" || refuse bad_address 2
+		listed "$3" || refuse not_listed 3
+		request "close $3"
+		;;
+	*) refuse unknown_call 2 ;;
+	esac
+	;;
+*) refuse unknown_call 2 ;;
+esac

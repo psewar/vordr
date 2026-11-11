@@ -1,0 +1,165 @@
+#!/bin/sh
+# Vördr: the root half of the proxy agent's access to the pfSense firewall (ADR-0093).
+# Installed as /usr/local/sbin/vordr-gna-root (root:wheel 0700) and run by cron every minute as root, under lockf:
+#   * * * * * root /usr/bin/lockf -s -t 0 /var/run/vordr-gna-root.lock /usr/local/sbin/vordr-gna-root
+#
+# It works the queue that the forced command vordr-gna fills, and checks every request again: a listed address,
+# 1..30 minutes. Whatever is in the queue counts as untrusted input, because the unprivileged user writes it.
+# Then it closes what has expired, drops table entries it does not know, and refreshes the update facts once an hour
+# from the local package catalog (no network; the catalog is refreshed by pfSense's own nightly job).
+# State, readable by the forced command:
+#   /var/db/vordr-gna/window    window_checked_at=<epoch> and one "entry=<address> <closes_at_epoch>" per open entry
+#   /var/db/vordr-gna/updates   updates_checked_at, base_installed, base_offered, packages_outdated(_count)
+set -u
+PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin
+export PATH
+ALLOW=/usr/local/etc/vordr-gna-allow
+STATE=/var/db/vordr-gna
+QUEUE=/var/db/vordr-gna-queue
+OWNER=vordr-gna
+TABLE=vordr_update_window
+MAX_MINUTES=30
+BASE_PACKAGE=pfSense-base
+now=$(date +%s)
+
+log() {
+	logger -t vordr-gna "$*"
+}
+
+valid_address() {
+	case "$1" in
+	'' | *[!0-9.]* | .* | *. | *..*) return 1 ;;
+	esac
+	old_ifs=$IFS
+	IFS=.
+	# shellcheck disable=SC2086
+	set -- $1
+	IFS=$old_ifs
+	[ $# -eq 4 ] || return 1
+	for octet in "$@"; do
+		[ ${#octet} -le 3 ] || return 1
+		[ "$octet" -le 255 ] || return 1
+	done
+	return 0
+}
+
+listed() {
+	[ -f "$ALLOW" ] || return 1
+	awk '!/^[[:space:]]*(#|$)/ { print $1 }' "$ALLOW" | grep -qxF "$1"
+}
+
+valid_minutes() {
+	# No leading zero: shell arithmetic would read 08 as a broken octal number.
+	case "$1" in
+	'' | *[!0-9]* | 0*) return 1 ;;
+	esac
+	[ ${#1} -le 2 ] && [ "$1" -ge 1 ] && [ "$1" -le "$MAX_MINUTES" ]
+}
+
+# Directories: the state belongs to root, the queue to the forced command's user. Both are set up again on every run,
+# so a lost /var/db (RAM disk after a reboot) heals itself; a queue that is not a plain directory is replaced.
+mkdir -p "$STATE"
+chown root:wheel "$STATE"
+chmod 0755 "$STATE"
+if [ -L "$QUEUE" ] || { [ -e "$QUEUE" ] && [ ! -d "$QUEUE" ]; }; then
+	rm -f "$QUEUE"
+	log "queue was not a directory, replaced"
+fi
+mkdir -p "$QUEUE"
+chown "$OWNER":wheel "$QUEUE"
+chmod 0700 "$QUEUE"
+
+# Open entries: "<address> <closes_at>" per line, rebuilt below.
+entries=$(sed -n 's/^entry=//p' "$STATE/window" 2>/dev/null)
+
+set_entry() { # address closes_at; closes_at empty removes the entry
+	entries=$(printf '%s\n' "$entries" | awk -v a="$1" 'NF == 2 && $1 != a')
+	if [ -n "$2" ]; then
+		entries=$(printf '%s\n%s %s\n' "$entries" "$1" "$2" | awk 'NF == 2')
+	fi
+}
+
+for f in "$QUEUE"/req.*; do
+	[ -e "$f" ] || [ -L "$f" ] || continue
+	if [ -L "$f" ] || [ ! -f "$f" ]; then
+		rm -f "$f"
+		log "request ignored: not a plain file"
+		continue
+	fi
+	line=$(head -c 100 "$f" | head -n 1)
+	rm -f "$f"
+	# The request's words, never globbed or evaluated; its content is not logged either.
+	set -f
+	# shellcheck disable=SC2086
+	set -- $line
+	set +f
+	case "${1:-}" in
+	open)
+		if [ $# -eq 3 ] && valid_address "$2" && listed "$2" && valid_minutes "$3"; then
+			closes=$((now + $3 * 60))
+			# Only what pf took counts as open.
+			if pfctl -q -t "$TABLE" -T add "$2" 2>/dev/null; then
+				set_entry "$2" "$closes"
+				log "window open: $2 until $closes"
+			else
+				log "window open failed: pfctl did not add $2"
+			fi
+		else
+			log "request refused: open with unlisted address or bad minutes"
+		fi
+		;;
+	close)
+		if [ $# -eq 2 ] && valid_address "$2" && listed "$2"; then
+			set_entry "$2" ""
+			log "close requested: $2"
+		else
+			log "request refused: close with unlisted address"
+		fi
+		;;
+	*) log "request refused: unknown" ;;
+	esac
+done
+set +f
+
+# Expired entries leave the state, and so does anything no longer listed.
+for e in $(printf '%s\n' "$entries" | awk 'NF == 2 { print $1 "=" $2 }'); do
+	address=${e%%=*}
+	closes=${e#*=}
+	if [ "$closes" -le "$now" ] || ! listed "$address"; then
+		set_entry "$address" ""
+		log "expired or no longer listed: $address"
+	fi
+done
+
+# One place closes in pf: the table holds only what the state knows, whether closed on request, expired, or the state
+# was lost. Then a hard limit on top.
+for address in $(pfctl -q -t "$TABLE" -T show 2>/dev/null); do
+	if ! printf '%s\n' "$entries" | awk -v a="$address" '$1 == a { found = 1 } END { exit !found }'; then
+		pfctl -q -t "$TABLE" -T delete "$address" 2>/dev/null
+		log "window closed: $address"
+	fi
+done
+pfctl -q -t "$TABLE" -T expire $((MAX_MINUTES * 60)) 2>/dev/null
+
+tmp=$(mktemp "$STATE/.window.XXXXXX")
+{
+	echo "window_checked_at=$now"
+	printf '%s\n' "$entries" | awk 'NF == 2 { print "entry=" $1 " " $2 }'
+} >"$tmp"
+chmod 0644 "$tmp"
+mv "$tmp" "$STATE/window"
+
+# Update facts, at most once an hour, from the local catalog only (-U: no repository update).
+if [ -z "$(find "$STATE/updates" -mmin -60 2>/dev/null)" ]; then
+	tmp=$(mktemp "$STATE/.updates.XXXXXX")
+	outdated=$(pkg version -U -qRL= 2>/dev/null | awk '{ print $1 }')
+	{
+		echo "updates_checked_at=$now"
+		echo "base_installed=$(pkg query %v "$BASE_PACKAGE" 2>/dev/null | head -n 1)"
+		echo "base_offered=$(pkg rquery -U %v "$BASE_PACKAGE" 2>/dev/null | head -n 1)"
+		echo "packages_outdated_count=$(printf '%s\n' "$outdated" | awk 'NF' | wc -l | tr -d ' ')"
+		echo "packages_outdated=$(printf '%s\n' "$outdated" | awk 'NF' | paste -s -d , -)"
+	} >"$tmp"
+	chmod 0644 "$tmp"
+	mv "$tmp" "$STATE/updates"
+fi

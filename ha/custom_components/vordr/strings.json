@@ -1,0 +1,585 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to the Vördr hub",
+        "description": "Home Assistant becomes a client of the hub. It creates its own key; the hub's operator admits it.",
+        "data": {
+          "url": "Hub address",
+          "name": "Client name",
+          "ca_pem": "CA certificate (PEM, optional)"
+        },
+        "data_description": {
+          "url": "WebSocket address of the hub, e.g. wss://hub.example:8443/v1/ha",
+          "name": "How this Home Assistant appears at the hub: lower case letters, digits, dot and hyphen",
+          "ca_pem": "Only if the hub's certificate comes from an own CA; then only this CA is trusted"
+        }
+      }
+    },
+    "progress": {
+      "approval": "Waiting for the hub's operator. Compare the fingerprint and admit this client on the hub:\n\n`{command}`\n\nFingerprint: `{fingerprint}`"
+    },
+    "error": {
+      "invalid_url": "The address must be wss://<host>[:port]/v1/ha.",
+      "invalid_name": "Use lower case letters, digits, dot and hyphen (at most 63 characters).",
+      "invalid_ca": "This is no PEM certificate.",
+      "probe_dns": "The hub's name does not resolve.",
+      "probe_connect": "No connection to the hub (address, port, firewall, hub not running).",
+      "probe_tls": "The hub's certificate is not trusted (chain, name or CA certificate).",
+      "probe_websocket": "TLS works, but there is no Vördr endpoint at this path.",
+      "probe_challenge": "The other side answers, but it is no Vördr hub speaking this protocol."
+    },
+    "abort": {
+      "already_configured": "This hub is already set up.",
+      "unreachable": "The hub could not be reached while waiting for approval.",
+      "approval_timeout": "No decision within an hour. Start again; the hub keeps the request.",
+      "rejected": "The hub refused this client.",
+      "rejected_key_mismatch": "The hub knows this client name with another key. Choose another name or forget the client on the hub (vordr-hub forget-client).",
+      "rejected_too_many_pending": "Too many clients are waiting for approval at the hub.",
+      "rejected_rejected": "The operator rejected this client at the hub.",
+      "rejected_protocol_mismatch": "The hub speaks another protocol version than this integration; update one of them.",
+      "rejected_bad_hello": "The hub did not accept the login (invalid name or signature)."
+    }
+  },
+  "device": {
+    "hub": { "name": "Vördr hub" }
+  },
+  "entity": {
+    "binary_sensor": {
+      "online": {
+        "name": "Connected",
+        "state_attributes": {
+          "power": { "name": "Away", "state": { "sleeping": "Sleeping", "shutdown": "Shut down" } }
+        }
+      },
+      "problem": {
+        "name": "Update problem",
+        "state_attributes": {
+          "reason": {
+            "name": "Reason",
+            "state": {
+              "offline": "Not connected to the hub",
+              "stale": "Updates pending for too long",
+              "check_failed": "Check failed",
+              "reboot_pending": "Reboot pending for too long",
+              "no_report": "No longer reports checks",
+              "malicious_package": "Malicious package installed",
+              "vulnerable_package": "Vulnerable package installed",
+              "ok_reboot_required": "OK, reboot required",
+              "rejected_invalid_job": "Rejected: invalid job",
+              "rejected_scope_not_allowed": "Rejected: scope not allowed",
+              "rejected_outside_window": "Rejected: outside the window",
+              "rejected_rate_limited": "Rejected: too frequent",
+              "rejected_busy": "Rejected: busy",
+              "rejected_not_allowed": "Rejected: not allowed by the host",
+              "rejected_unsupported": "Rejected: not supported",
+              "precheck_disk_space": "Not enough disk space",
+              "precheck_package_db_broken": "Package database broken",
+              "precheck_repo_unreachable": "Package source unreachable",
+              "precheck_would_remove_packages": "Would remove packages",
+              "precheck_version_flagged": "Version flagged by OSV",
+              "precheck_version_too_new": "Version too new",
+              "precheck_vetting_unavailable": "Hub could not check the plan",
+              "precheck_not_from_registry": "Package not from the registry",
+              "failed_package_manager": "Package manager failed",
+              "failed_verification": "Verification failed",
+              "failed_health": "Check after the update failed",
+              "failed_windows_update": "Windows Update failed",
+              "failed_target_auth": "Device login refused",
+              "failed_target_tls": "Device certificate does not match",
+              "failed_target_hostkey": "Device SSH host key does not match",
+              "failed_config_backup": "Configuration backup failed",
+              "failed_backup": "Backup before the install failed",
+              "timeout": "Timed out",
+              "aborted": "Aborted",
+              "interrupted": "Interrupted"
+            }
+          },
+          "reasons": { "name": "All reasons" },
+          "next_step": {
+            "name": "Next step",
+            "state": {
+              "offline": "Check the host and its agent",
+              "stale": "Install the updates, by hand or with the button",
+              "reboot_pending": "Reboot within the maintenance window",
+              "no_report": "Read the agent log",
+              "malicious_package": "Remove the package and treat the host as compromised",
+              "vulnerable_package": "Update the package to a fixed version",
+              "ok_reboot_required": "Reboot within the window or with the button",
+              "rejected_invalid_job": "Check the hub and the clock – this may point to an attack",
+              "rejected_scope_not_allowed": "Check the host policy",
+              "rejected_outside_window": "Wait for the maintenance window, or start it outside the window with a reason (action “Install outside the window” or “Run outside the window”)",
+              "rejected_rate_limited": "Wait a few minutes",
+              "rejected_busy": "Try again later; stop other updaters running at the same time (e.g. unattended-upgrades)",
+              "rejected_not_allowed": "Check the host policy",
+              "rejected_unsupported": "Update the agent",
+              "precheck_disk_space": "Free up space (package cache, /boot)",
+              "precheck_package_db_broken": "Run dpkg --configure -a on the host",
+              "precheck_repo_unreachable": "Check the package source and the network",
+              "precheck_would_remove_packages": "Decide by hand: the update would remove packages",
+              "precheck_version_flagged": "Look at the OSV entry and wait for a fixed version",
+              "precheck_version_too_new": "Wait until the release is old enough",
+              "precheck_vetting_unavailable": "Check the hub's vulnerability data",
+              "precheck_not_from_registry": "Look at where the dependency points; update such a location by hand",
+              "failed_package_manager": "Read the excerpt of the last run",
+              "failed_verification": "Read the excerpt of the last run",
+              "failed_health": "Look at the service named in the run",
+              "failed_windows_update": "Look up the HRESULT",
+              "failed_target_auth": "Check the device's service account and its password in the secret store",
+              "failed_target_tls": "Check the device's certificate; if it changed on purpose, update the pinned fingerprint - otherwise someone may be in between",
+              "failed_target_hostkey": "Check the device's SSH host key (ssh-keyscan); if it changed on purpose, update target.host_key - otherwise someone may be in between",
+              "failed_config_backup": "Look at the proxy instance's log; without a fresh backup no firmware update starts",
+              "failed_backup": "Read the run's detail and the hypervisor's backup log; nothing was installed",
+              "timeout": "Check the host",
+              "aborted": "Start the run again if needed",
+              "interrupted": "Check the package database",
+              "unknown": "Bring agent and hub to the same version",
+              "reboot_pending_manual": "Reboot by hand - this host does not allow reboots through Vördr",
+              "ok_reboot_required_manual": "Reboot by hand - this host does not allow reboots through Vördr"
+            }
+          },
+          "check_failed_code": {
+            "name": "Check code",
+            "state": {
+              "ok_reboot_required": "OK, reboot required",
+              "rejected_invalid_job": "Rejected: invalid job",
+              "rejected_scope_not_allowed": "Rejected: scope not allowed",
+              "rejected_outside_window": "Rejected: outside the window",
+              "rejected_rate_limited": "Rejected: too frequent",
+              "rejected_busy": "Rejected: busy",
+              "rejected_not_allowed": "Rejected: not allowed by the host",
+              "rejected_unsupported": "Rejected: not supported",
+              "precheck_disk_space": "Not enough disk space",
+              "precheck_package_db_broken": "Package database broken",
+              "precheck_repo_unreachable": "Package source unreachable",
+              "precheck_would_remove_packages": "Would remove packages",
+              "precheck_version_flagged": "Version flagged by OSV",
+              "precheck_version_too_new": "Version too new",
+              "precheck_vetting_unavailable": "Hub could not check the plan",
+              "precheck_not_from_registry": "Package not from the registry",
+              "failed_package_manager": "Package manager failed",
+              "failed_verification": "Verification failed",
+              "failed_health": "Check after the update failed",
+              "failed_windows_update": "Windows Update failed",
+              "failed_target_auth": "Device login refused",
+              "failed_target_tls": "Device certificate does not match",
+              "failed_target_hostkey": "Device SSH host key does not match",
+              "failed_config_backup": "Configuration backup failed",
+              "failed_backup": "Backup before the install failed",
+              "timeout": "Timed out",
+              "aborted": "Aborted",
+              "interrupted": "Interrupted"
+            }
+          }
+        }
+      },
+      "reboot_required": {
+        "name": "Reboot required",
+        "state_attributes": {
+          "kernel_running": { "name": "Running kernel" },
+          "kernel_newest": { "name": "Newest kernel" }
+        }
+      },
+      "hub_online": { "name": "Hub" }
+    },
+    "sensor": {
+      "last_report": { "name": "Last report" },
+      "last_backup": {
+        "name": "Last backup",
+        "state_attributes": {
+          "state": {
+            "name": "State",
+            "state": {
+              "ok": "Fresh",
+              "stale": "Too old",
+              "missing": "No backup in PBS",
+              "unreachable": "PBS not reachable",
+              "unmapped": "No PBS group assigned"
+            }
+          },
+          "group": { "name": "PBS group" },
+          "max_age_hours": { "name": "Maximum age (h)" },
+          "before_install": { "name": "Backed up before installs by" }
+        }
+      },
+      "last_run": {
+        "name": "Last run",
+        "state": {
+          "queued": "Queued",
+          "prechecking": "Prechecking",
+          "downloading": "Downloading",
+          "installing": "Installing",
+          "verifying": "Verifying",
+          "rebooting": "Rebooting",
+          "backing_up": "Backing up",
+          "ok": "OK",
+          "ok_reboot_required": "OK, reboot required",
+          "rejected_invalid_job": "Rejected: invalid job",
+          "rejected_scope_not_allowed": "Rejected: scope not allowed",
+          "rejected_outside_window": "Rejected: outside the window",
+          "rejected_rate_limited": "Rejected: too frequent",
+          "rejected_busy": "Rejected: busy",
+          "rejected_not_allowed": "Rejected: not allowed by the host",
+          "rejected_unsupported": "Rejected: not supported",
+          "precheck_disk_space": "Not enough disk space",
+          "precheck_package_db_broken": "Package database broken",
+          "precheck_repo_unreachable": "Package source unreachable",
+          "precheck_would_remove_packages": "Would remove packages",
+          "precheck_version_flagged": "Version flagged by OSV",
+          "precheck_version_too_new": "Version too new",
+          "precheck_vetting_unavailable": "Hub could not check the plan",
+          "precheck_not_from_registry": "Package not from the registry",
+          "failed_package_manager": "Package manager failed",
+          "failed_verification": "Verification failed",
+          "failed_health": "Check after the update failed",
+          "failed_windows_update": "Windows Update failed",
+          "failed_target_auth": "Device login refused",
+          "failed_target_tls": "Device certificate does not match",
+          "failed_target_hostkey": "Device SSH host key does not match",
+          "failed_config_backup": "Configuration backup failed",
+          "failed_backup": "Backup before the install failed",
+          "timeout": "Timed out",
+          "aborted": "Aborted",
+          "interrupted": "Interrupted"
+        },
+        "state_attributes": {
+          "package_count": { "name": "Packages" },
+          "packages": { "name": "Package list" },
+          "seconds": { "name": "Duration (s)" },
+          "log_file": { "name": "Log on the host" },
+          "outdated_services": { "name": "Services on old libraries" }
+        }
+      },
+      "pending_updates": { "name": "Pending updates" },
+      "security_updates": { "name": "Security updates" },
+      "vulnerable_packages": { "name": "Vulnerable packages" },
+      "malicious_packages": { "name": "Malicious packages" },
+      "outdated_packages": { "name": "Outdated packages" },
+      "hub_hosts_online": { "name": "Hosts connected" },
+      "hub_hosts_with_problem": { "name": "Hosts with problem" },
+      "hub_pending_approvals": { "name": "Pending approvals" },
+      "hub_vulnerability_data": { "name": "Vulnerability data" },
+      "hub_connection": {
+        "name": "Connection",
+        "state": {
+          "connecting": "Connecting",
+          "unreachable": "Unreachable",
+          "pending_approval": "Waiting for approval",
+          "approved": "Connected",
+          "rejected": "Rejected"
+        }
+      }
+    },
+    "update": {
+      "system": { "name": "System packages" },
+      "agent": { "name": "Agent" },
+      "packages": { "name": "Packages {location}" },
+      "containers": { "name": "Container images" }
+    },
+    "button": {
+      "check": { "name": "Check now" },
+      "install_security": { "name": "Install security updates" },
+      "reboot": { "name": "Reboot" },
+      "install_app": { "name": "Install {app}" }
+    }
+  },
+  "exceptions": {
+    "command_refused": { "message": "{node}: the hub did not run the command ({code})." },
+    "refresh_dependencies_unsupported": {
+      "message": "{node}: the dependencies of {location} cannot be refreshed (so far only npm folders with a lock file, and an agent from 0.12.0 on)."
+    },
+    "update_image_not_allowed": {
+      "message": "{node}: {service} cannot be updated by button. The host's agent.yaml must allow it (image:{service} in install.allowed_scopes), and its image must carry a tag without a pinned digest and come from a registry."
+    },
+    "command_refused_role_forbids": {
+      "message": "{node}: this Home Assistant may not start that - its role at the hub does not allow it (vordr-hub client-role)."
+    },
+    "command_refused_backup_stale": {
+      "message": "{node}: not installed - the last backup ({group}) is {age} h old, at most {max} h are allowed. Back up first, then install."
+    },
+    "command_refused_backup_missing": { "message": "{node}: not installed - PBS has no backup in {group}." },
+    "command_refused_backup_unreachable": {
+      "message": "{node}: not installed - Proxmox Backup Server does not answer, so the backup cannot be checked."
+    },
+    "command_refused_backup_unmapped": {
+      "message": "{node}: not installed - hub.yaml names no PBS group for this host (backup.guests)."
+    },
+    "command_refused_backup_host_unavailable": {
+      "message": "{node}: not installed - the backup before the install is made by {hypervisor}, and its agent is not there (offline, not approved, or without guest_backup)."
+    },
+    "outside_window_unsupported": {
+      "message": "{node}: runs outside the window need a newer hub and agent. Update them first; until then the window holds."
+    },
+    "outside_window_no_window": {
+      "message": "{node}: this has no window - use the normal button, it works at any time."
+    },
+    "command_refused_outside_window": {
+      "message": "{node}: not installed - the host's window is closed, and its agent is too old to install outside it. Update the agent, or wait for the window."
+    },
+    "command_refused_rate_limited": {
+      "message": "{node}: not installed - its last run was less than its minimum interval (install.min_interval_h) ago. Possible again from {next}."
+    }
+  },
+  "issues": {
+    "reboot_required": {
+      "title": "Vördr: {node} needs a reboot",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Reboot {node} now?",
+            "description": "Updates on {node} take full effect only after a reboot. Vördr asks the hub for the same reboot as the host's reboot button: the agent reboots only if it is still needed, and the host reports back once it is up again."
+          }
+        },
+        "abort": {
+          "hub_not_connected": "Home Assistant is not connected to the Vördr hub right now. Try again once it is.",
+          "host_gone": "The hub no longer knows {node}.",
+          "no_longer_needed": "{node} no longer needs a reboot.",
+          "reboot_not_offered": "{node} no longer allows reboots through Vördr. Reboot it by hand.",
+          "command_refused": "The hub refused the reboot of {node} (code {code})."
+        }
+      }
+    },
+    "reboot_required_manual": {
+      "title": "Vördr: {node} needs a reboot",
+      "description": "{node} has needed a reboot since {since}. This host does not allow reboots through Vördr: reboot it by hand. This notice goes away by itself once the host no longer needs a reboot."
+    },
+    "problem_offline": {
+      "title": "Vördr: update problem on {node}",
+      "description": "Not connected to the hub for more than {offline_minutes} minutes.\n\nNext step: Check the host and its agent."
+    },
+    "problem_stale": {
+      "title": "Vördr: update problem on {node}",
+      "description": "Updates have been pending for more than {stale_days} days.\n\nNext step: Install the updates, by hand or with the button."
+    },
+    "problem_reboot_pending": {
+      "title": "Vördr: update problem on {node}",
+      "description": "A reboot has been needed for more than {reboot_days} days.\n\nNext step: Reboot within the maintenance window."
+    },
+    "problem_no_report": {
+      "title": "Vördr: update problem on {node}",
+      "description": "Connected, but no check reported for more than {no_report_hours} hours.\n\nNext step: Read the agent log."
+    },
+    "problem_malicious_package": {
+      "title": "Vördr: malicious package on {node}",
+      "description": "An installed package is known malware according to OSV: {packages}.\n\nNext step: Remove the package and treat the host as compromised: renew the secrets it could reach, from another computer."
+    },
+    "problem_vulnerable_package": {
+      "title": "Vördr: vulnerable package on {node}",
+      "description": "Installed packages have known vulnerabilities according to OSV: {packages}.\n\nNext step: Update the package to a fixed version."
+    },
+    "problem_ok_reboot_required": {
+      "title": "Vördr: update problem on {node}",
+      "description": "OK, reboot required.\n\nNext step: Reboot within the window or with the button."
+    },
+    "problem_rejected_invalid_job": {
+      "title": "Vördr: update problem on {node}",
+      "description": "Rejected: invalid job.\n\nNext step: Check the hub and the clock – this may point to an attack."
+    },
+    "problem_rejected_scope_not_allowed": {
+      "title": "Vördr: update problem on {node}",
+      "description": "Rejected: scope not allowed.\n\nNext step: Check the host policy."
+    },
+    "problem_rejected_outside_window": {
+      "title": "Vördr: update problem on {node}",
+      "description": "Rejected: outside the window.\n\nNext step: Wait for the maintenance window, or start it outside the window with a reason (action “Install outside the window” or “Run outside the window”)."
+    },
+    "problem_rejected_rate_limited": {
+      "title": "Vördr: update problem on {node}",
+      "description": "Rejected: too frequent.\n\nNext step: Wait a few minutes."
+    },
+    "problem_rejected_busy": {
+      "title": "Vördr: update problem on {node}",
+      "description": "Rejected: busy.\n\nNext step: Try again later; stop other updaters running at the same time (e.g. unattended-upgrades)."
+    },
+    "problem_rejected_not_allowed": {
+      "title": "Vördr: update problem on {node}",
+      "description": "Rejected: not allowed by the host.\n\nNext step: Check the host policy."
+    },
+    "problem_rejected_unsupported": {
+      "title": "Vördr: update problem on {node}",
+      "description": "Rejected: not supported.\n\nNext step: Update the agent."
+    },
+    "problem_precheck_disk_space": {
+      "title": "Vördr: update problem on {node}",
+      "description": "Not enough disk space.\n\nNext step: Free up space (package cache, /boot)."
+    },
+    "problem_precheck_package_db_broken": {
+      "title": "Vördr: update problem on {node}",
+      "description": "Package database broken.\n\nNext step: Run dpkg --configure -a on the host."
+    },
+    "problem_precheck_repo_unreachable": {
+      "title": "Vördr: update problem on {node}",
+      "description": "Package source unreachable.\n\nNext step: Check the package source and the network."
+    },
+    "problem_precheck_would_remove_packages": {
+      "title": "Vördr: update problem on {node}",
+      "description": "Would remove packages.\n\nNext step: Decide by hand: the update would remove packages."
+    },
+    "problem_precheck_version_flagged": {
+      "title": "Vördr: update problem on {node}",
+      "description": "Version flagged by OSV.\n\nNext step: Look at the OSV entry and wait for a fixed version."
+    },
+    "problem_precheck_version_too_new": {
+      "title": "Vördr: update problem on {node}",
+      "description": "Version too new.\n\nNext step: Wait until the release is old enough."
+    },
+    "problem_precheck_vetting_unavailable": {
+      "title": "Vördr: update problem on {node}",
+      "description": "Hub could not check the plan.\n\nNext step: Check the hub's vulnerability data."
+    },
+    "problem_precheck_not_from_registry": {
+      "title": "Vördr: update problem on {node}",
+      "description": "Package not from the registry.\n\nNext step: Look at where the dependency points; update such a location by hand."
+    },
+    "problem_failed_package_manager": {
+      "title": "Vördr: update problem on {node}",
+      "description": "Package manager failed.\n\nNext step: Read the excerpt of the last run."
+    },
+    "problem_failed_verification": {
+      "title": "Vördr: update problem on {node}",
+      "description": "Verification failed.\n\nNext step: Read the excerpt of the last run."
+    },
+    "problem_failed_health": {
+      "title": "Vördr: update problem on {node}",
+      "description": "Check after the update failed.\n\nNext step: Look at the service named in the run."
+    },
+    "problem_failed_windows_update": {
+      "title": "Vördr: update problem on {node}",
+      "description": "Windows Update failed.\n\nNext step: Look up the HRESULT."
+    },
+    "problem_failed_target_auth": {
+      "title": "Vördr: update problem on {node}",
+      "description": "Device login refused.\n\nNext step: Check the device's service account and its password in the secret store."
+    },
+    "problem_failed_target_tls": {
+      "title": "Vördr: update problem on {node}",
+      "description": "Device certificate does not match.\n\nNext step: Check the device's certificate; if it changed on purpose, update the pinned fingerprint - otherwise someone may be in between."
+    },
+    "problem_failed_target_hostkey": {
+      "title": "Vördr: update problem on {node}",
+      "description": "Device SSH host key does not match.\n\nNext step: Check the device's SSH host key (ssh-keyscan); if it changed on purpose, update target.host_key - otherwise someone may be in between."
+    },
+    "problem_failed_config_backup": {
+      "title": "Vördr: update problem on {node}",
+      "description": "Configuration backup failed.\n\nNext step: Look at the proxy instance's log; without a fresh backup no firmware update starts."
+    },
+    "problem_failed_backup": {
+      "title": "Vördr: update problem on {node}",
+      "description": "Backup before the install failed.\n\nNext step: Read the run's detail and the hypervisor's backup log; nothing was installed."
+    },
+    "problem_timeout": {
+      "title": "Vördr: update problem on {node}",
+      "description": "Timed out.\n\nNext step: Check the host."
+    },
+    "problem_aborted": {
+      "title": "Vördr: update problem on {node}",
+      "description": "Aborted.\n\nNext step: Start the run again if needed."
+    },
+    "problem_interrupted": {
+      "title": "Vördr: update problem on {node}",
+      "description": "Interrupted.\n\nNext step: Check the package database."
+    },
+    "problem_unknown": {
+      "title": "Vördr: update problem on {node}",
+      "description": "Unknown result code {code}.\n\nNext step: Bring agent and hub to the same version."
+    },
+    "problem_reboot_pending_manual": {
+      "title": "Vördr: update problem on {node}",
+      "description": "A reboot has been needed for more than {reboot_days} days.\n\nNext step: Reboot by hand - this host does not allow reboots through Vördr."
+    },
+    "problem_ok_reboot_required_manual": {
+      "title": "Vördr: update problem on {node}",
+      "description": "OK, reboot required.\n\nNext step: Reboot by hand - this host does not allow reboots through Vördr."
+    },
+    "protocol_mismatch": {
+      "title": "Vördr: hub too old or too new",
+      "description": "The hub refuses this integration's protocol version {protocol}. Update the hub or the integration so that they match."
+    },
+    "client_rejected": {
+      "title": "Vördr: the hub refuses this Home Assistant",
+      "description": "The hub refuses the client {name} ({reason}). Check on the hub with `vordr-hub clients`; fingerprint of this client: `{fingerprint}`."
+    }
+  },
+  "texts": {
+    "latest_version": "{pending} pending ({security} security)",
+    "major": "new major version",
+    "same_major": "or {tag} in the same major version",
+    "security": "security",
+    "packages_installed": "{count} packages",
+    "packages_latest": "{outdated} outdated, {ready} ready",
+    "waiting": "too new",
+    "flagged": "flagged by OSV",
+    "fix": "security fix, shorter minimum age",
+    "images_installed": "{count} images",
+    "images_latest": "{outdated} outdated, {ready} old enough",
+    "rebuilt": "rebuilt",
+    "images_report_only": "Only reported, Vördr does not update images:",
+    "images_by_button": "The install button takes rebuilds of the allowed services; newer tags stay manual:",
+    "images_fixable": "{fixable} fixable by a newer image",
+    "images_vulnerable": "Known vulnerabilities:",
+    "vuln_fixable": "{n} fixable",
+    "vuln_unfixed": "{n} without fix",
+    "vuln_fixable_newer": "{n} fixable, newer image ready",
+    "vuln_fixable_waiting": "{n} fixed in the distribution, no newer image yet"
+  },
+  "services": {
+    "update_package": {
+      "name": "Update a package",
+      "description": "Updates one pip or npm package of a location to its candidate (public for at least the host's minimum age, checked against OSV by the hub).",
+      "fields": {
+        "package": {
+          "name": "Package",
+          "description": "Name of the package, as the location lists it."
+        },
+        "reason": {
+          "name": "Reason (outside the window)",
+          "description": "Optional: why now, outside the host's maintenance window. Without one, the hub notes that it was started in Home Assistant. Stays with the run, in the agent log and in the hub's event log."
+        }
+      }
+    },
+    "refresh_dependencies": {
+      "name": "Refresh dependencies",
+      "description": "Moves the dependencies of a location that have findings to the newest release their dependents allow (public for at least the host's minimum age, checked against OSV by the hub). A dependency that no allowed release fixes stays as it is; the run says why.",
+      "fields": {
+        "reason": {
+          "name": "Reason (outside the window)",
+          "description": "Optional: why now, outside the host's maintenance window. Without one, the hub notes that it was started in Home Assistant. Stays with the run, in the agent log and in the hub's event log."
+        }
+      }
+    },
+    "install_outside_window": {
+      "name": "Install outside the window",
+      "description": "Installs like the install button of a Vördr update entity (system packages, a pip/npm location or container images), with a reason of your own. The install button itself also runs outside the host's maintenance window; this action says why. Automatic runs keep to the window.",
+      "fields": {
+        "reason": {
+          "name": "Reason",
+          "description": "Why now, at most 200 bytes. Stays with the run, in the agent log and in the hub's event log."
+        }
+      }
+    },
+    "press_outside_window": {
+      "name": "Run outside the window",
+      "description": "Presses a Vördr button (install security updates, install an app, reboot) with a reason of your own. A reboot outside the host's window needs it; the install buttons run outside the window anyway. Rebooting still needs the admin role at the hub.",
+      "fields": {
+        "reason": {
+          "name": "Reason",
+          "description": "Why now, at most 200 bytes. Stays with the run, in the agent log and in the hub's event log."
+        }
+      }
+    },
+    "update_image": {
+      "name": "Update a container image",
+      "description": "Moves one Compose service to the rebuild of its tag, once that build is at least the host's minimum age old. The running image stays on the host as the way back: if the service does not come back healthy, the agent returns to it. A newer tag needs the Compose file changed and stays manual.",
+      "fields": {
+        "service": {
+          "name": "Service",
+          "description": "The Compose service as <project>/<service>, as the entity's attribute updates lists it under services."
+        },
+        "reason": {
+          "name": "Reason (outside the window)",
+          "description": "Optional: why now, outside the host's maintenance window. Without one, the hub notes that it was started in Home Assistant. Stays with the run, in the agent log and in the hub's event log."
+        }
+      }
+    }
+  }
+}

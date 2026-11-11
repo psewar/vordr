@@ -1,0 +1,12 @@
+{
+  "domain": "vordr",
+  "name": "Vördr",
+  "codeowners": ["@psewar"],
+  "config_flow": true,
+  "documentation": "https://github.com/psewar/vordr",
+  "integration_type": "hub",
+  "iot_class": "local_push",
+  "issue_tracker": "https://github.com/psewar/vordr/issues",
+  "requirements": [],
+  "version": "0.33.1"
+}

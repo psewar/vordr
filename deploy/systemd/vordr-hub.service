@@ -1,0 +1,53 @@
+[Unit]
+Description=Vördr hub (Leitstelle): agent tunnel, signed jobs, Home Assistant endpoint
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=vordr-hub
+Group=vordr-hub
+# A broken hub.yaml stops the start with every issue in the journal, instead of a half-working hub.
+ExecStartPre=/usr/local/bin/vordr-hub check-config --config /etc/vordr-hub/hub.yaml
+ExecStart=/usr/local/bin/vordr-hub run --config /etc/vordr-hub/hub.yaml
+Restart=always
+RestartSec=10
+# Soft memory limit for Go's garbage collector (ADR-0073): building the npm OSV index can take most of the memory of a
+# small container; with 200 MiB the collector runs earlier and the peak stays near the limit, at the same speed.
+# Not a hard cap - the hub is never killed for it; MemoryMax is deliberately not set.
+Environment=GOMEMLIMIT=200MiB
+# hub.key, registry.json, events.jsonl. The key is created here on first start, owned by vordr-hub.
+StateDirectory=vordr-hub
+StateDirectoryMode=0700
+# admin.sock (0600) lives here; root on this host can use it (vordr-hub list | approve | ...).
+RuntimeDirectory=vordr-hub
+RuntimeDirectoryMode=0700
+UMask=0077
+
+# The hub only needs its state, its sockets and the network.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+
+[Install]
+WantedBy=multi-user.target

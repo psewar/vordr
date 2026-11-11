@@ -1,0 +1,6 @@
+[Unit]
+Description=Vördr agent: put the previous binary back after a self-update that does not start
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/vordr/rollback.sh

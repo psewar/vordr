@@ -1,0 +1,67 @@
+# vordr-hub: /etc/vordr-hub/hub.yaml. Check with: vordr-hub check-config --config <path>
+listen: ":8443"
+tls_cert: /etc/vordr-hub/tls.crt        # PEM; a renewed certificate is picked up without a restart
+tls_key: /etc/vordr-hub/tls.key
+state_dir: /var/lib/vordr-hub           # hub.key (signs every job), registry.json, clients.json, events.jsonl
+admin_socket: /run/vordr-hub/admin.sock # local administration only (hosts and Home Assistant clients)
+max_pending: 20                         # hosts waiting for approval at most
+stale_after_days: 7                     # pending this long without an install run: problem "stale"
+offline_after_min: 10                   # disconnected this long: problem "offline" (a reboot is not one)
+reboot_pending_after_days: 7            # a reboot needed this long: problem "reboot_pending"
+no_report_after_hours: 26               # connected, but no check reported this long: problem "no_report"
+
+# Home Assistant connects itself (integration custom_components/vordr, endpoint /v1/ha on the same port); admit it
+# with `vordr-hub approve-client`. There is no MQTT any more (since 0.6).
+
+# Optional backup check: an install only starts when the host's last backup on Proxmox Backup Server is younger than
+# max_age_hours. Without this section installs do not wait for a backup.
+backup:
+  pbs_url: https://pbs.example:8007
+  datastore: store1
+  fingerprint: "AA:BB:...:FF"           # proxmox-backup-manager cert info (SHA-256, 32 bytes)
+  token_file: /etc/vordr-hub/pbs-token  # "<user>@<realm>!<name>:<secret>", 0640 root:vordr-hub;
+                                        # the token needs DatastoreAudit on /datastore/<datastore>, nothing else
+  max_age_hours: 26                     # a daily backup plus slack
+  guests:                               # every host that may install: its PBS group, config_backup, or why it has none
+    - node: example-vm
+      group: vm/301
+    - node: example-ct
+      group: ct/302
+    - node: example-nas                 # an appliance behind a proxy agent (ADR-0090): the age comes from the
+      config_backup: true               # config_backup_at its agent reports, PBS is not asked
+    - node: example-device
+      without: "physical host, no guest backup"  # shown in Home Assistant; installs need no backup there
+  before_install:                       # optional (ADR-0096): every vm/ and ct/ guest gets a fresh backup right
+    hypervisor: example-hypervisor      # before it installs, made by this node's agent (guest_backup in its
+                                        # agent.yaml); host/ groups keep the age check
+
+# Optional agent self-update: the operator signs a release away from the hub and puts manifest.json, manifest.sig and
+# the binaries into <state_dir>/agent. Agents install only what the operator key in their own agent.yaml signed.
+agent_update:
+  public_key: "<base64>"                # the operator key (same as agent_update.public_key in agent.yaml)
+  backup_public_key: "<base64>"         # optional: its backup, kept apart (same as in agent.yaml)
+  canary: [example-vm]                  # gets a release first
+  canary_clean_hours: 24                # the others follow once every canary ran it this long without a problem
+  retry_after_hours: 6                  # a host whose update failed is asked again after this
+
+# Optional automatic installs for hosts whose agent.yaml says install.auto: hub (with install.window and default_scope).
+# The hub starts a run inside each host's window (in the host's time zone), after the backup check, at most once per
+# 20 h. Without this section the hub starts no installs by itself, whatever the agents say.
+auto_install:
+  canary: [example-vm]                  # installs as soon as its window opens and something is pending
+  delay_hours: 24                       # the others: only while every canary is clean, and only updates pending this long
+                                        # or seen before a canary's last clean install started (ADR-0107)
+
+# Optional advisories for pip/pipx/npm packages the agents report (design 11.2): the hub downloads each ecosystem's
+# OSV dump (all.zip, PyPI 38 MB and npm 220 MB in October 2026), keeps a small index in <state_dir>/osv (1 and 5 MB)
+# and matches every inventory itself - no package list leaves the network. Malware entries (MAL-) and advisories set
+# the host's problem sensor. Without this section inventories are kept, but nothing is matched (counts unknown).
+osv:
+  url: https://osv-vulnerabilities.storage.googleapis.com   # default; <url>/<ecosystem>/all.zip
+  ecosystems: [PyPI, npm]               # default both
+  # Add Debian and/or Alpine to match the packages inside container images (ADR-0120): the hub then asks agents for
+  # them, and downloads a distribution's dump only while some image runs one of its releases (Debian about 80 MB,
+  # Alpine about 10 MB; it checks the disk first). Its indexes stay on disk and are matched one at a time.
+  # ecosystems: [PyPI, npm, Debian, Alpine]
+  refresh_hours: 24                     # an unchanged dump costs one request (ETag)
+  stale_hours: 72                       # older data shows as stale in Home Assistant

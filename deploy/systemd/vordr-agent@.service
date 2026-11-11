@@ -1,0 +1,42 @@
+[Unit]
+Description=Vördr proxy agent for %i: reports the appliance's firmware and keeps its configuration backup (ADR-0089)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=15min
+StartLimitBurst=4
+
+[Service]
+Type=simple
+# One instance per appliance: its own policy, credentials file and state (identity, journal, configuration backups).
+ExecStartPre=/usr/local/bin/vordr-agent check-config --config /etc/vordr/targets/%i.yaml
+ExecStart=/usr/local/bin/vordr-agent run --config /etc/vordr/targets/%i.yaml
+Restart=always
+RestartSec=30
+StateDirectory=vordr/%i
+StateDirectoryMode=0700
+UMask=0077
+Nice=10
+IOSchedulingClass=idle
+
+# A proxy instance never installs on the container: it only talks HTTPS/SSH to its appliance and to the hub, and
+# writes its own state. So, unlike the host agent, it can be fenced in tightly.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/vordr/%i
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

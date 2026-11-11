@@ -1,0 +1,585 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Mit der Vördr-Leitstelle verbinden",
+        "description": "Home Assistant wird Client der Leitstelle. Es erzeugt einen eigenen Schlüssel; freigegeben wird an der Leitstelle.",
+        "data": {
+          "url": "Adresse der Leitstelle",
+          "name": "Name des Clients",
+          "ca_pem": "CA-Zertifikat (PEM, optional)"
+        },
+        "data_description": {
+          "url": "WebSocket-Adresse der Leitstelle, z. B. wss://leitstelle.example:8443/v1/ha",
+          "name": "So erscheint dieses Home Assistant an der Leitstelle: Kleinbuchstaben, Ziffern, Punkt und Bindestrich",
+          "ca_pem": "Nur wenn das Zertifikat der Leitstelle von einer eigenen CA stammt; dann gilt nur diese CA"
+        }
+      }
+    },
+    "progress": {
+      "approval": "Warte auf die Freigabe an der Leitstelle. Fingerprint vergleichen und dort freigeben:\n\n`{command}`\n\nFingerprint: `{fingerprint}`"
+    },
+    "error": {
+      "invalid_url": "Die Adresse muss wss://<host>[:port]/v1/ha lauten.",
+      "invalid_name": "Nur Kleinbuchstaben, Ziffern, Punkt und Bindestrich (höchstens 63 Zeichen).",
+      "invalid_ca": "Das ist kein PEM-Zertifikat.",
+      "probe_dns": "Der Name der Leitstelle lässt sich nicht auflösen.",
+      "probe_connect": "Keine Verbindung zur Leitstelle (Adresse, Port, Firewall, Leitstelle läuft nicht).",
+      "probe_tls": "Dem Zertifikat der Leitstelle wird nicht vertraut (Kette, Name oder CA-Zertifikat).",
+      "probe_websocket": "TLS klappt, aber unter diesem Pfad gibt es keinen Vördr-Endpunkt.",
+      "probe_challenge": "Die Gegenseite antwortet, ist aber keine Vördr-Leitstelle mit diesem Protokoll."
+    },
+    "abort": {
+      "already_configured": "Diese Leitstelle ist schon eingerichtet.",
+      "unreachable": "Die Leitstelle war während des Wartens auf die Freigabe nicht erreichbar.",
+      "approval_timeout": "Innerhalb einer Stunde keine Entscheidung. Neu starten; die Leitstelle behält die Anfrage.",
+      "rejected": "Die Leitstelle lehnt diesen Client ab.",
+      "rejected_key_mismatch": "Die Leitstelle kennt diesen Namen mit einem anderen Schlüssel. Anderen Namen wählen oder den Client an der Leitstelle vergessen (vordr-hub forget-client).",
+      "rejected_too_many_pending": "An der Leitstelle warten zu viele Clients auf Freigabe.",
+      "rejected_rejected": "Der Betreiber hat diesen Client an der Leitstelle abgelehnt.",
+      "rejected_protocol_mismatch": "Die Leitstelle spricht eine andere Protokollversion als diese Integration; eine von beiden aktualisieren.",
+      "rejected_bad_hello": "Die Leitstelle hat die Anmeldung nicht angenommen (Name oder Signatur ungültig)."
+    }
+  },
+  "device": {
+    "hub": { "name": "Vördr-Leitstelle" }
+  },
+  "entity": {
+    "binary_sensor": {
+      "online": {
+        "name": "Verbunden",
+        "state_attributes": {
+          "power": { "name": "Abwesend", "state": { "sleeping": "Schläft", "shutdown": "Heruntergefahren" } }
+        }
+      },
+      "problem": {
+        "name": "Update-Problem",
+        "state_attributes": {
+          "reason": {
+            "name": "Grund",
+            "state": {
+              "offline": "Nicht mit der Leitstelle verbunden",
+              "stale": "Updates liegen zu lange",
+              "check_failed": "Prüfung gescheitert",
+              "reboot_pending": "Neustart steht zu lange aus",
+              "no_report": "Meldet keine Prüfungen mehr",
+              "malicious_package": "Schädliches Paket installiert",
+              "vulnerable_package": "Verwundbares Paket installiert",
+              "ok_reboot_required": "OK, Neustart nötig",
+              "rejected_invalid_job": "Abgelehnt: ungültiger Auftrag",
+              "rejected_scope_not_allowed": "Abgelehnt: Umfang nicht erlaubt",
+              "rejected_outside_window": "Abgelehnt: ausserhalb des Fensters",
+              "rejected_rate_limited": "Abgelehnt: zu häufig",
+              "rejected_busy": "Abgelehnt: beschäftigt",
+              "rejected_not_allowed": "Abgelehnt: vom Host nicht erlaubt",
+              "rejected_unsupported": "Abgelehnt: nicht unterstützt",
+              "precheck_disk_space": "Zu wenig Speicherplatz",
+              "precheck_package_db_broken": "Paketdatenbank defekt",
+              "precheck_repo_unreachable": "Paketquelle nicht erreichbar",
+              "precheck_would_remove_packages": "Würde Pakete entfernen",
+              "precheck_version_flagged": "Version von OSV markiert",
+              "precheck_version_too_new": "Version zu neu",
+              "precheck_vetting_unavailable": "Leitstelle konnte den Plan nicht prüfen",
+              "precheck_not_from_registry": "Paket nicht aus der Registry",
+              "failed_package_manager": "Paketverwaltung gescheitert",
+              "failed_verification": "Nachprüfung gescheitert",
+              "failed_health": "Prüfung nach dem Update gescheitert",
+              "failed_windows_update": "Windows Update gescheitert",
+              "failed_target_auth": "Anmeldung am Gerät abgelehnt",
+              "failed_target_tls": "Zertifikat des Geräts passt nicht",
+              "failed_target_hostkey": "SSH-Schlüssel des Geräts passt nicht",
+              "failed_config_backup": "Konfigurationssicherung gescheitert",
+              "failed_backup": "Backup vor der Installation gescheitert",
+              "timeout": "Zeitüberschreitung",
+              "aborted": "Abgebrochen",
+              "interrupted": "Unterbrochen"
+            }
+          },
+          "reasons": { "name": "Alle Gründe" },
+          "next_step": {
+            "name": "Nächster Schritt",
+            "state": {
+              "offline": "Host und Agent prüfen",
+              "stale": "Updates installieren, von Hand oder per Knopf",
+              "reboot_pending": "Im Wartungsfenster neu starten",
+              "no_report": "Agent-Log ansehen",
+              "malicious_package": "Paket entfernen und den Rechner als kompromittiert behandeln",
+              "vulnerable_package": "Paket auf eine behobene Version aktualisieren",
+              "ok_reboot_required": "Neustart im Fenster oder per Knopf",
+              "rejected_invalid_job": "Leitstelle und Uhrzeit prüfen – das kann auf einen Angriff hinweisen",
+              "rejected_scope_not_allowed": "Richtlinie des Hosts prüfen",
+              "rejected_outside_window": "Wartungsfenster abwarten oder ausserhalb des Fensters mit Grund auslösen (Aktion „Ausserhalb des Fensters installieren“ oder „Ausserhalb des Fensters ausführen“)",
+              "rejected_rate_limited": "Einige Minuten warten",
+              "rejected_busy": "Später erneut versuchen; gleichzeitig laufende Updater beenden (z. B. unattended-upgrades)",
+              "rejected_not_allowed": "Richtlinie des Hosts prüfen",
+              "rejected_unsupported": "Agent aktualisieren",
+              "precheck_disk_space": "Platz schaffen (Paket-Cache, /boot)",
+              "precheck_package_db_broken": "Am Host dpkg --configure -a ausführen",
+              "precheck_repo_unreachable": "Paketquelle und Netz prüfen",
+              "precheck_would_remove_packages": "Von Hand entscheiden: das Update würde Pakete entfernen",
+              "precheck_version_flagged": "OSV-Eintrag ansehen und auf eine behobene Version warten",
+              "precheck_version_too_new": "Warten, bis das Release alt genug ist",
+              "precheck_vetting_unavailable": "Schwachstellendaten der Leitstelle prüfen",
+              "precheck_not_from_registry": "Ansehen, wohin die Abhängigkeit zeigt; einen solchen Ort von Hand aktualisieren",
+              "failed_package_manager": "Auszug im letzten Lauf lesen",
+              "failed_verification": "Auszug im letzten Lauf lesen",
+              "failed_health": "Den im Lauf genannten Dienst ansehen",
+              "failed_windows_update": "HRESULT nachschlagen",
+              "failed_target_auth": "Dienstkonto des Geräts und sein Passwort im Secret-Store prüfen",
+              "failed_target_tls": "Zertifikat des Geräts prüfen; ist es gewollt neu, den festgenagelten Fingerabdruck anpassen – sonst könnte jemand dazwischen sitzen",
+              "failed_target_hostkey": "SSH-Host-Schlüssel des Geräts prüfen (ssh-keyscan); ist er gewollt neu, target.host_key anpassen – sonst könnte jemand dazwischen sitzen",
+              "failed_config_backup": "Log der Stellvertreter-Instanz ansehen; ohne frische Sicherung beginnt kein Firmware-Update",
+              "failed_backup": "Detail des Laufs und Backup-Log des Hypervisors ansehen; installiert wurde nichts",
+              "timeout": "Host prüfen",
+              "aborted": "Den Lauf bei Bedarf neu starten",
+              "interrupted": "Paketdatenbank prüfen",
+              "unknown": "Agent und Leitstelle auf denselben Stand bringen",
+              "reboot_pending_manual": "Von Hand neu starten – dieser Host erlaubt keinen Neustart über Vördr",
+              "ok_reboot_required_manual": "Von Hand neu starten – dieser Host erlaubt keinen Neustart über Vördr"
+            }
+          },
+          "check_failed_code": {
+            "name": "Code der Prüfung",
+            "state": {
+              "ok_reboot_required": "OK, Neustart nötig",
+              "rejected_invalid_job": "Abgelehnt: ungültiger Auftrag",
+              "rejected_scope_not_allowed": "Abgelehnt: Umfang nicht erlaubt",
+              "rejected_outside_window": "Abgelehnt: ausserhalb des Fensters",
+              "rejected_rate_limited": "Abgelehnt: zu häufig",
+              "rejected_busy": "Abgelehnt: beschäftigt",
+              "rejected_not_allowed": "Abgelehnt: vom Host nicht erlaubt",
+              "rejected_unsupported": "Abgelehnt: nicht unterstützt",
+              "precheck_disk_space": "Zu wenig Speicherplatz",
+              "precheck_package_db_broken": "Paketdatenbank defekt",
+              "precheck_repo_unreachable": "Paketquelle nicht erreichbar",
+              "precheck_would_remove_packages": "Würde Pakete entfernen",
+              "precheck_version_flagged": "Version von OSV markiert",
+              "precheck_version_too_new": "Version zu neu",
+              "precheck_vetting_unavailable": "Leitstelle konnte den Plan nicht prüfen",
+              "precheck_not_from_registry": "Paket nicht aus der Registry",
+              "failed_package_manager": "Paketverwaltung gescheitert",
+              "failed_verification": "Nachprüfung gescheitert",
+              "failed_health": "Prüfung nach dem Update gescheitert",
+              "failed_windows_update": "Windows Update gescheitert",
+              "failed_target_auth": "Anmeldung am Gerät abgelehnt",
+              "failed_target_tls": "Zertifikat des Geräts passt nicht",
+              "failed_target_hostkey": "SSH-Schlüssel des Geräts passt nicht",
+              "failed_config_backup": "Konfigurationssicherung gescheitert",
+              "failed_backup": "Backup vor der Installation gescheitert",
+              "timeout": "Zeitüberschreitung",
+              "aborted": "Abgebrochen",
+              "interrupted": "Unterbrochen"
+            }
+          }
+        }
+      },
+      "reboot_required": {
+        "name": "Neustart nötig",
+        "state_attributes": {
+          "kernel_running": { "name": "Laufender Kernel" },
+          "kernel_newest": { "name": "Neuester Kernel" }
+        }
+      },
+      "hub_online": { "name": "Leitstelle" }
+    },
+    "sensor": {
+      "last_report": { "name": "Letzte Meldung" },
+      "last_backup": {
+        "name": "Letztes Backup",
+        "state_attributes": {
+          "state": {
+            "name": "Zustand",
+            "state": {
+              "ok": "Frisch",
+              "stale": "Zu alt",
+              "missing": "Kein Backup in PBS",
+              "unreachable": "PBS nicht erreichbar",
+              "unmapped": "Keine PBS-Gruppe zugeordnet"
+            }
+          },
+          "group": { "name": "PBS-Gruppe" },
+          "max_age_hours": { "name": "Höchstalter (h)" },
+          "before_install": { "name": "Backup vor Installationen durch" }
+        }
+      },
+      "last_run": {
+        "name": "Letzter Lauf",
+        "state": {
+          "queued": "Eingereiht",
+          "prechecking": "Vorprüfung",
+          "downloading": "Lädt herunter",
+          "installing": "Installiert",
+          "verifying": "Prüft",
+          "rebooting": "Startet neu",
+          "backing_up": "Sichert",
+          "ok": "OK",
+          "ok_reboot_required": "OK, Neustart nötig",
+          "rejected_invalid_job": "Abgelehnt: ungültiger Auftrag",
+          "rejected_scope_not_allowed": "Abgelehnt: Umfang nicht erlaubt",
+          "rejected_outside_window": "Abgelehnt: ausserhalb des Fensters",
+          "rejected_rate_limited": "Abgelehnt: zu häufig",
+          "rejected_busy": "Abgelehnt: beschäftigt",
+          "rejected_not_allowed": "Abgelehnt: vom Host nicht erlaubt",
+          "rejected_unsupported": "Abgelehnt: nicht unterstützt",
+          "precheck_disk_space": "Zu wenig Speicherplatz",
+          "precheck_package_db_broken": "Paketdatenbank defekt",
+          "precheck_repo_unreachable": "Paketquelle nicht erreichbar",
+          "precheck_would_remove_packages": "Würde Pakete entfernen",
+          "precheck_version_flagged": "Version von OSV markiert",
+          "precheck_version_too_new": "Version zu neu",
+          "precheck_vetting_unavailable": "Leitstelle konnte den Plan nicht prüfen",
+          "precheck_not_from_registry": "Paket nicht aus der Registry",
+          "failed_package_manager": "Paketverwaltung gescheitert",
+          "failed_verification": "Nachprüfung gescheitert",
+          "failed_health": "Prüfung nach dem Update gescheitert",
+          "failed_windows_update": "Windows Update gescheitert",
+          "failed_target_auth": "Anmeldung am Gerät abgelehnt",
+          "failed_target_tls": "Zertifikat des Geräts passt nicht",
+          "failed_target_hostkey": "SSH-Schlüssel des Geräts passt nicht",
+          "failed_config_backup": "Konfigurationssicherung gescheitert",
+          "failed_backup": "Backup vor der Installation gescheitert",
+          "timeout": "Zeitüberschreitung",
+          "aborted": "Abgebrochen",
+          "interrupted": "Unterbrochen"
+        },
+        "state_attributes": {
+          "package_count": { "name": "Pakete" },
+          "packages": { "name": "Paketliste" },
+          "seconds": { "name": "Dauer (s)" },
+          "log_file": { "name": "Protokoll am Host" },
+          "outdated_services": { "name": "Dienste mit alten Bibliotheken" }
+        }
+      },
+      "pending_updates": { "name": "Ausstehende Updates" },
+      "security_updates": { "name": "Sicherheitsupdates" },
+      "vulnerable_packages": { "name": "Verwundbare Pakete" },
+      "malicious_packages": { "name": "Schädliche Pakete" },
+      "outdated_packages": { "name": "Veraltete Pakete" },
+      "hub_hosts_online": { "name": "Hosts verbunden" },
+      "hub_hosts_with_problem": { "name": "Hosts mit Problem" },
+      "hub_pending_approvals": { "name": "Wartende Freigaben" },
+      "hub_vulnerability_data": { "name": "Schwachstellendaten" },
+      "hub_connection": {
+        "name": "Verbindung",
+        "state": {
+          "connecting": "Verbindet",
+          "unreachable": "Nicht erreichbar",
+          "pending_approval": "Wartet auf Freigabe",
+          "approved": "Verbunden",
+          "rejected": "Abgelehnt"
+        }
+      }
+    },
+    "update": {
+      "system": { "name": "Systempakete" },
+      "agent": { "name": "Agent" },
+      "packages": { "name": "Pakete {location}" },
+      "containers": { "name": "Container-Images" }
+    },
+    "button": {
+      "check": { "name": "Jetzt prüfen" },
+      "install_security": { "name": "Sicherheitsupdates installieren" },
+      "reboot": { "name": "Neu starten" },
+      "install_app": { "name": "{app} installieren" }
+    }
+  },
+  "exceptions": {
+    "command_refused": { "message": "{node}: Die Leitstelle hat den Befehl nicht ausgeführt ({code})." },
+    "refresh_dependencies_unsupported": {
+      "message": "{node}: Die Abhängigkeiten von {location} lassen sich nicht auffrischen (bisher nur npm-Ordner mit Lock-Datei, und ein Agent ab 0.12.0)."
+    },
+    "update_image_not_allowed": {
+      "message": "{node}: {service} lässt sich nicht per Knopf aktualisieren. agent.yaml des Hosts muss es erlauben (image:{service} in install.allowed_scopes), und sein Image muss einen Tag ohne gepinnten Digest tragen und aus einer Registry stammen."
+    },
+    "command_refused_role_forbids": {
+      "message": "{node}: Dieses Home Assistant darf das nicht auslösen - seine Rolle an der Leitstelle erlaubt es nicht (vordr-hub client-role)."
+    },
+    "command_refused_backup_stale": {
+      "message": "{node}: Nicht installiert – das letzte Backup ({group}) ist {age} h alt, erlaubt sind {max} h. Erst sichern, dann installieren."
+    },
+    "command_refused_backup_missing": { "message": "{node}: Nicht installiert – PBS hat kein Backup in {group}." },
+    "command_refused_backup_unreachable": {
+      "message": "{node}: Nicht installiert – Proxmox Backup Server antwortet nicht, das Backup ist nicht prüfbar."
+    },
+    "command_refused_backup_unmapped": {
+      "message": "{node}: Nicht installiert – in hub.yaml ist für diesen Host keine PBS-Gruppe eingetragen (backup.guests)."
+    },
+    "command_refused_backup_host_unavailable": {
+      "message": "{node}: Nicht installiert – das Backup vor der Installation macht {hypervisor}, und dessen Agent ist nicht da (offline, nicht freigegeben oder ohne guest_backup)."
+    },
+    "outside_window_unsupported": {
+      "message": "{node}: Läufe ausserhalb des Fensters brauchen eine neuere Leitstelle und einen neueren Agenten. Erst aktualisieren; bis dahin gilt das Fenster."
+    },
+    "outside_window_no_window": {
+      "message": "{node}: Dafür gibt es kein Fenster – der normale Knopf geht jederzeit."
+    },
+    "command_refused_outside_window": {
+      "message": "{node}: nicht installiert – das Fenster des Hosts ist zu, und sein Agent ist zu alt, um ausserhalb davon zu installieren. Agent aktualisieren oder das Fenster abwarten."
+    },
+    "command_refused_rate_limited": {
+      "message": "{node}: nicht installiert – sein letzter Lauf ist weniger lang her als sein Mindestabstand (install.min_interval_h). Wieder möglich ab {next}."
+    }
+  },
+  "issues": {
+    "reboot_required": {
+      "title": "Vördr: {node} braucht einen Neustart",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "{node} jetzt neu starten?",
+            "description": "Updates auf {node} wirken erst nach einem Neustart vollständig. Vördr bittet die Leitstelle um denselben Neustart wie der Neustart-Knopf des Hosts: Der Agent startet nur neu, wenn es dann noch nötig ist, und der Host meldet sich zurück, sobald er wieder läuft."
+          }
+        },
+        "abort": {
+          "hub_not_connected": "Home Assistant ist gerade nicht mit der Vördr-Leitstelle verbunden. Bitte später noch einmal versuchen.",
+          "host_gone": "Die Leitstelle kennt {node} nicht mehr.",
+          "no_longer_needed": "{node} braucht keinen Neustart mehr.",
+          "reboot_not_offered": "{node} erlaubt keinen Neustart über Vördr mehr. Bitte von Hand neu starten.",
+          "command_refused": "Die Leitstelle hat den Neustart von {node} abgelehnt (Code {code})."
+        }
+      }
+    },
+    "reboot_required_manual": {
+      "title": "Vördr: {node} braucht einen Neustart",
+      "description": "{node} braucht seit {since} einen Neustart. Dieser Host erlaubt keinen Neustart über Vördr: bitte von Hand neu starten. Der Hinweis verschwindet von selbst, sobald der Host keinen Neustart mehr braucht."
+    },
+    "problem_offline": {
+      "title": "Vördr: Update-Problem auf {node}",
+      "description": "Seit über {offline_minutes} Minuten nicht mit der Leitstelle verbunden.\n\nNächster Schritt: Host und Agent prüfen."
+    },
+    "problem_stale": {
+      "title": "Vördr: Update-Problem auf {node}",
+      "description": "Updates liegen seit über {stale_days} Tagen.\n\nNächster Schritt: Updates installieren, von Hand oder per Knopf."
+    },
+    "problem_reboot_pending": {
+      "title": "Vördr: Update-Problem auf {node}",
+      "description": "Neustart seit über {reboot_days} Tagen nötig.\n\nNächster Schritt: Im Wartungsfenster neu starten."
+    },
+    "problem_no_report": {
+      "title": "Vördr: Update-Problem auf {node}",
+      "description": "Verbunden, aber seit über {no_report_hours} Stunden keine Prüfung gemeldet.\n\nNächster Schritt: Agent-Log ansehen."
+    },
+    "problem_malicious_package": {
+      "title": "Vördr: Schädliches Paket auf {node}",
+      "description": "Ein installiertes Paket ist laut OSV Schadsoftware: {packages}.\n\nNächster Schritt: Paket entfernen und den Rechner als kompromittiert behandeln: die Geheimnisse, die es erreichen konnte, von einem anderen Rechner aus erneuern."
+    },
+    "problem_vulnerable_package": {
+      "title": "Vördr: Verwundbares Paket auf {node}",
+      "description": "Installierte Pakete haben laut OSV bekannte Schwachstellen: {packages}.\n\nNächster Schritt: Paket auf eine behobene Version aktualisieren."
+    },
+    "problem_ok_reboot_required": {
+      "title": "Vördr: Update-Problem auf {node}",
+      "description": "OK, Neustart nötig.\n\nNächster Schritt: Neustart im Fenster oder per Knopf."
+    },
+    "problem_rejected_invalid_job": {
+      "title": "Vördr: Update-Problem auf {node}",
+      "description": "Abgelehnt: ungültiger Auftrag.\n\nNächster Schritt: Leitstelle und Uhrzeit prüfen – das kann auf einen Angriff hinweisen."
+    },
+    "problem_rejected_scope_not_allowed": {
+      "title": "Vördr: Update-Problem auf {node}",
+      "description": "Abgelehnt: Umfang nicht erlaubt.\n\nNächster Schritt: Richtlinie des Hosts prüfen."
+    },
+    "problem_rejected_outside_window": {
+      "title": "Vördr: Update-Problem auf {node}",
+      "description": "Abgelehnt: ausserhalb des Fensters.\n\nNächster Schritt: Wartungsfenster abwarten oder ausserhalb des Fensters mit Grund auslösen (Aktion „Ausserhalb des Fensters installieren“ oder „Ausserhalb des Fensters ausführen“)."
+    },
+    "problem_rejected_rate_limited": {
+      "title": "Vördr: Update-Problem auf {node}",
+      "description": "Abgelehnt: zu häufig.\n\nNächster Schritt: Einige Minuten warten."
+    },
+    "problem_rejected_busy": {
+      "title": "Vördr: Update-Problem auf {node}",
+      "description": "Abgelehnt: beschäftigt.\n\nNächster Schritt: Später erneut versuchen; gleichzeitig laufende Updater beenden (z. B. unattended-upgrades)."
+    },
+    "problem_rejected_not_allowed": {
+      "title": "Vördr: Update-Problem auf {node}",
+      "description": "Abgelehnt: vom Host nicht erlaubt.\n\nNächster Schritt: Richtlinie des Hosts prüfen."
+    },
+    "problem_rejected_unsupported": {
+      "title": "Vördr: Update-Problem auf {node}",
+      "description": "Abgelehnt: nicht unterstützt.\n\nNächster Schritt: Agent aktualisieren."
+    },
+    "problem_precheck_disk_space": {
+      "title": "Vördr: Update-Problem auf {node}",
+      "description": "Zu wenig Speicherplatz.\n\nNächster Schritt: Platz schaffen (Paket-Cache, /boot)."
+    },
+    "problem_precheck_package_db_broken": {
+      "title": "Vördr: Update-Problem auf {node}",
+      "description": "Paketdatenbank defekt.\n\nNächster Schritt: Am Host dpkg --configure -a ausführen."
+    },
+    "problem_precheck_repo_unreachable": {
+      "title": "Vördr: Update-Problem auf {node}",
+      "description": "Paketquelle nicht erreichbar.\n\nNächster Schritt: Paketquelle und Netz prüfen."
+    },
+    "problem_precheck_would_remove_packages": {
+      "title": "Vördr: Update-Problem auf {node}",
+      "description": "Würde Pakete entfernen.\n\nNächster Schritt: Von Hand entscheiden: das Update würde Pakete entfernen."
+    },
+    "problem_precheck_version_flagged": {
+      "title": "Vördr: Update-Problem auf {node}",
+      "description": "Version von OSV markiert.\n\nNächster Schritt: OSV-Eintrag ansehen und auf eine behobene Version warten."
+    },
+    "problem_precheck_version_too_new": {
+      "title": "Vördr: Update-Problem auf {node}",
+      "description": "Version zu neu.\n\nNächster Schritt: Warten, bis das Release alt genug ist."
+    },
+    "problem_precheck_vetting_unavailable": {
+      "title": "Vördr: Update-Problem auf {node}",
+      "description": "Leitstelle konnte den Plan nicht prüfen.\n\nNächster Schritt: Schwachstellendaten der Leitstelle prüfen."
+    },
+    "problem_precheck_not_from_registry": {
+      "title": "Vördr: Update-Problem auf {node}",
+      "description": "Paket nicht aus der Registry.\n\nNächster Schritt: Ansehen, wohin die Abhängigkeit zeigt; einen solchen Ort von Hand aktualisieren."
+    },
+    "problem_failed_package_manager": {
+      "title": "Vördr: Update-Problem auf {node}",
+      "description": "Paketverwaltung gescheitert.\n\nNächster Schritt: Auszug im letzten Lauf lesen."
+    },
+    "problem_failed_verification": {
+      "title": "Vördr: Update-Problem auf {node}",
+      "description": "Nachprüfung gescheitert.\n\nNächster Schritt: Auszug im letzten Lauf lesen."
+    },
+    "problem_failed_health": {
+      "title": "Vördr: Update-Problem auf {node}",
+      "description": "Prüfung nach dem Update gescheitert.\n\nNächster Schritt: Den im Lauf genannten Dienst ansehen."
+    },
+    "problem_failed_windows_update": {
+      "title": "Vördr: Update-Problem auf {node}",
+      "description": "Windows Update gescheitert.\n\nNächster Schritt: HRESULT nachschlagen."
+    },
+    "problem_failed_target_auth": {
+      "title": "Vördr: Update-Problem auf {node}",
+      "description": "Anmeldung am Gerät abgelehnt.\n\nNächster Schritt: Dienstkonto des Geräts und sein Passwort im Secret-Store prüfen."
+    },
+    "problem_failed_target_tls": {
+      "title": "Vördr: Update-Problem auf {node}",
+      "description": "Zertifikat des Geräts passt nicht.\n\nNächster Schritt: Zertifikat des Geräts prüfen; ist es gewollt neu, den festgenagelten Fingerabdruck anpassen – sonst könnte jemand dazwischen sitzen."
+    },
+    "problem_failed_target_hostkey": {
+      "title": "Vördr: Update-Problem auf {node}",
+      "description": "SSH-Schlüssel des Geräts passt nicht.\n\nNächster Schritt: SSH-Host-Schlüssel des Geräts prüfen (ssh-keyscan); ist er gewollt neu, target.host_key anpassen – sonst könnte jemand dazwischen sitzen."
+    },
+    "problem_failed_config_backup": {
+      "title": "Vördr: Update-Problem auf {node}",
+      "description": "Konfigurationssicherung gescheitert.\n\nNächster Schritt: Log der Stellvertreter-Instanz ansehen; ohne frische Sicherung beginnt kein Firmware-Update."
+    },
+    "problem_failed_backup": {
+      "title": "Vördr: Update-Problem auf {node}",
+      "description": "Backup vor der Installation gescheitert.\n\nNächster Schritt: Detail des Laufs und Backup-Log des Hypervisors ansehen; installiert wurde nichts."
+    },
+    "problem_timeout": {
+      "title": "Vördr: Update-Problem auf {node}",
+      "description": "Zeitüberschreitung.\n\nNächster Schritt: Host prüfen."
+    },
+    "problem_aborted": {
+      "title": "Vördr: Update-Problem auf {node}",
+      "description": "Abgebrochen.\n\nNächster Schritt: Den Lauf bei Bedarf neu starten."
+    },
+    "problem_interrupted": {
+      "title": "Vördr: Update-Problem auf {node}",
+      "description": "Unterbrochen.\n\nNächster Schritt: Paketdatenbank prüfen."
+    },
+    "problem_unknown": {
+      "title": "Vördr: Update-Problem auf {node}",
+      "description": "Unbekannter Ergebniscode {code}.\n\nNächster Schritt: Agent und Leitstelle auf denselben Stand bringen."
+    },
+    "problem_reboot_pending_manual": {
+      "title": "Vördr: Update-Problem auf {node}",
+      "description": "Neustart seit über {reboot_days} Tagen nötig.\n\nNächster Schritt: Von Hand neu starten – dieser Host erlaubt keinen Neustart über Vördr."
+    },
+    "problem_ok_reboot_required_manual": {
+      "title": "Vördr: Update-Problem auf {node}",
+      "description": "OK, Neustart nötig.\n\nNächster Schritt: Von Hand neu starten – dieser Host erlaubt keinen Neustart über Vördr."
+    },
+    "protocol_mismatch": {
+      "title": "Vördr: Leitstelle zu alt oder zu neu",
+      "description": "Die Leitstelle lehnt die Protokollversion {protocol} dieser Integration ab. Leitstelle oder Integration aktualisieren, bis sie zusammenpassen."
+    },
+    "client_rejected": {
+      "title": "Vördr: Die Leitstelle lehnt dieses Home Assistant ab",
+      "description": "Die Leitstelle lehnt den Client {name} ab ({reason}). An der Leitstelle mit `vordr-hub clients` prüfen; Fingerprint dieses Clients: `{fingerprint}`."
+    }
+  },
+  "texts": {
+    "latest_version": "{pending} ausstehend ({security} Sicherheit)",
+    "major": "neue Hauptversion",
+    "same_major": "oder {tag} in derselben Hauptversion",
+    "security": "Sicherheit",
+    "packages_installed": "{count} Pakete",
+    "packages_latest": "{outdated} veraltet, {ready} bereit",
+    "waiting": "zu neu",
+    "flagged": "von OSV markiert",
+    "fix": "Sicherheitskorrektur, kürzere Frist",
+    "images_installed": "{count} Images",
+    "images_latest": "{outdated} veraltet, {ready} alt genug",
+    "rebuilt": "neu gebaut",
+    "images_report_only": "Nur gemeldet, Vördr aktualisiert keine Images:",
+    "images_by_button": "Neu gebaute Images der freigegebenen Dienste nimmt der Installieren-Knopf, neuere Tags bleiben Handarbeit:",
+    "images_fixable": "{fixable} durch neueres Image behebbar",
+    "images_vulnerable": "Bekannte Schwachstellen:",
+    "vuln_fixable": "{n} behebbar",
+    "vuln_unfixed": "{n} ohne Fix",
+    "vuln_fixable_newer": "{n} behebbar, neueres Image bereit",
+    "vuln_fixable_waiting": "{n} in der Distribution behoben, noch kein neueres Image"
+  },
+  "services": {
+    "update_package": {
+      "name": "Paket aktualisieren",
+      "description": "Aktualisiert ein pip- oder npm-Paket eines Orts auf seinen Kandidaten (mindestens so alt wie das Mindestalter des Hosts, von der Leitstelle gegen OSV geprüft).",
+      "fields": {
+        "package": {
+          "name": "Paket",
+          "description": "Name des Pakets, wie der Ort es führt."
+        },
+        "reason": {
+          "name": "Grund (ausserhalb des Fensters)",
+          "description": "Freiwillig: warum jetzt, ausserhalb des Wartungsfensters des Hosts. Ohne Grund vermerkt die Leitstelle, dass es in Home Assistant gestartet wurde. Steht beim Lauf, im Agent-Log und im Ereignisprotokoll der Leitstelle."
+        }
+      }
+    },
+    "refresh_dependencies": {
+      "name": "Abhängigkeiten auffrischen",
+      "description": "Hebt die Abhängigkeiten eines Orts, die einen Fund haben, auf die neueste Version, die ihre Abnehmer erlauben (mindestens so alt wie das Mindestalter des Hosts, von der Leitstelle gegen OSV geprüft). Eine Abhängigkeit, die keine erlaubte Version behebt, bleibt, wie sie ist; der Lauf sagt, warum.",
+      "fields": {
+        "reason": {
+          "name": "Grund (ausserhalb des Fensters)",
+          "description": "Freiwillig: warum jetzt, ausserhalb des Wartungsfensters des Hosts. Ohne Grund vermerkt die Leitstelle, dass es in Home Assistant gestartet wurde. Steht beim Lauf, im Agent-Log und im Ereignisprotokoll der Leitstelle."
+        }
+      }
+    },
+    "install_outside_window": {
+      "name": "Ausserhalb des Fensters installieren",
+      "description": "Installiert wie der Installieren-Knopf einer Vördr-Update-Entität (Systempakete, ein pip/npm-Ort oder Container-Images), mit eigenem Grund. Der Installieren-Knopf selbst läuft auch ausserhalb des Wartungsfensters des Hosts; diese Aktion sagt, warum. Automatische Läufe bleiben im Fenster.",
+      "fields": {
+        "reason": {
+          "name": "Grund",
+          "description": "Warum jetzt, höchstens 200 Byte. Steht beim Lauf, im Agent-Log und im Ereignisprotokoll der Leitstelle."
+        }
+      }
+    },
+    "press_outside_window": {
+      "name": "Ausserhalb des Fensters ausführen",
+      "description": "Drückt einen Vördr-Knopf (Sicherheitsupdates installieren, App installieren, Neu starten) mit eigenem Grund. Ein Neustart ausserhalb des Fensters des Hosts braucht ihn; die Installieren-Knöpfe laufen ohnehin auch ausserhalb. Neu starten braucht weiterhin die Rolle admin an der Leitstelle.",
+      "fields": {
+        "reason": {
+          "name": "Grund",
+          "description": "Warum jetzt, höchstens 200 Byte. Steht beim Lauf, im Agent-Log und im Ereignisprotokoll der Leitstelle."
+        }
+      }
+    },
+    "update_image": {
+      "name": "Container-Image aktualisieren",
+      "description": "Bringt einen Compose-Dienst auf den Neubau seines Tags, sobald dieser mindestens so alt ist wie das Mindestalter des Hosts. Das laufende Image bleibt als Rückweg auf dem Host: Kommt der Dienst nicht gesund zurück, kehrt der Agent zu ihm zurück. Ein neuerer Tag braucht eine geänderte Compose-Datei und bleibt Handarbeit.",
+      "fields": {
+        "service": {
+          "name": "Dienst",
+          "description": "Der Compose-Dienst als <project>/<service>, wie ihn das Attribut updates der Entität unter services nennt."
+        },
+        "reason": {
+          "name": "Grund (ausserhalb des Fensters)",
+          "description": "Freiwillig: warum jetzt, ausserhalb des Wartungsfensters des Hosts. Ohne Grund vermerkt die Leitstelle, dass es in Home Assistant gestartet wurde. Steht beim Lauf, im Agent-Log und im Ereignisprotokoll der Leitstelle."
+        }
+      }
+    }
+  }
+}

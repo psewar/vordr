@@ -1,0 +1,41 @@
+[Unit]
+Description=Vördr agent: checks updates, reports to the hub, carries out signed jobs within the local policy
+After=network-online.target
+Wants=network-online.target
+# A self-update whose new binary does not even start: after a few failed starts the unit fails, and the rollback
+# unit puts the previous binary back (only while a self-update is pending; otherwise it does nothing).
+StartLimitIntervalSec=15min
+StartLimitBurst=4
+OnFailure=vordr-agent-rollback.service
+
+[Service]
+Type=simple
+# A broken agent.yaml stops the start with every issue in the journal.
+ExecStartPre=/usr/local/bin/vordr-agent check-config --config /etc/vordr/agent.yaml
+ExecStart=/usr/local/bin/vordr-agent run --config /etc/vordr/agent.yaml
+Restart=always
+RestartSec=30
+# A stop must not kill dpkg half way through an install run: only the agent gets SIGTERM, and it waits for the run
+# before it exits. The rest of the unit is killed only after TimeoutStopSec.
+KillMode=mixed
+TimeoutStopSec=30min
+# agent-identity.key (0600); created here on first start.
+StateDirectory=vordr
+StateDirectoryMode=0700
+UMask=0077
+# Checks run at low priority; a package list refresh must not disturb what the host is for.
+Nice=10
+IOSchedulingClass=idle
+
+# Runs as root: apt needs it, phase 2 installs packages and phase 3 replaces this binary. The limits are the local
+# policy and the closed verb set, not the sandbox. Only what can never get in the way of a package run is
+# restricted here; ProtectSystem, ProtectHome or ProtectKernelModules would break package installs (maintainer
+# scripts write /usr, /etc, /home and /usr/lib/modules).
+PrivateTmp=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

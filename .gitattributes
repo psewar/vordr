@@ -1,0 +1,2 @@
+# Built and tested in WSL/Linux: keep LF in every working copy, also with core.autocrlf=true on Windows.
+* text=auto eol=lf

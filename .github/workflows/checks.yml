@@ -1,0 +1,32 @@
+# The same gate as locally (ADR-0137): build.sh with the generic neutral rules, then the integration's checks.
+name: checks
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: build.sh (ADR index, neutral check, gofmt, vet, tests, binaries)
+        env:
+          VORDR_SITE_TERMS: "none: public CI; the site term list stays with the operator (ADR-0137)"
+        run: ./build.sh 0.0.0-ci
+      - name: Home Assistant integration (ruff, pytest)
+        working-directory: ha
+        run: |
+          python -m pip install --quiet -r requirements_test.txt
+          ruff check .
+          ruff format --check .
+          python -m pytest -q
