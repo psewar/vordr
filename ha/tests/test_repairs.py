@@ -213,7 +213,14 @@ async def test_fix_installs_again_and_goes_with_the_failure(
 ) -> None:
     fake_hub.hosts["h"] = host_view("h", capabilities=INSTALLS, problem=KEPT, failed_install=FAILED)
     await setup(hass, entry)
-    result = await confirm(hass, await start_fix(hass, "install_again_h"))
+    flow = await start_fix(hass, "install_again_h")
+    # The fix dialog carries the repair's text (hassfest allows a description or a fix flow): it names the failure.
+    assert flow["description_placeholders"] == {
+        "node": "h",
+        "code": "precheck_would_remove_packages",
+        "detail": "the upgrade would remove: libexample1",
+    }
+    result = await confirm(hass, flow)
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert fake_hub.commands[-1]["command"] == "install" and fake_hub.commands[-1]["node"] == "h"
     # The run went through: the hub no longer keeps the failure, and no repair is left for it.

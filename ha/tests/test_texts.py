@@ -62,6 +62,11 @@ def test_texts_pass_home_assistants_checks(lang: str) -> None:
     assert set(data) <= HA_SECTIONS, sorted(set(data) - HA_SECTIONS)
     assert [path for path, text in texts(data) if HTML_LIKE.search(text)] == []
     assert all(re.fullmatch(r"[a-z0-9_]+", key) for key in data["common"]), sorted(data["common"])
+    # A repair has a title and exactly one of description and fix_flow (gen_issues_schema): a fixable repair shows
+    # its text in the fix dialog, not as a description.
+    for key, issue in data["issues"].items():
+        assert "title" in issue and set(issue) <= {"title", "short_title", "description", "fix_flow"}, (key, issue)
+        assert ("description" in issue) != ("fix_flow" in issue), key
 
 
 @pytest.mark.parametrize("lang", sorted(LANGS))

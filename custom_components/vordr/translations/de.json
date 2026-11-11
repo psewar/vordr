@@ -345,12 +345,11 @@
     },
     "install_again": {
       "title": "Vördr: erneut installieren auf {node}",
-      "description": "Der letzte Install auf {node} ist gescheitert: {code} ({detail}). Vördr hält den Fehlschlag als Problem fest, bis ein Install durchläuft. Ist die Ursache behoben, etwa von Hand, installiere erneut: Ein Lauf, der durchläuft, löscht ihn, auch wenn nichts mehr zu installieren ist.",
       "fix_flow": {
         "step": {
           "confirm": {
             "title": "Auf {node} erneut installieren?",
-            "description": "Vördr bittet die Leitstelle um denselben Install wie der Installieren-Knopf des Hosts, auch ausserhalb seines Fensters. Läuft er durch, verschwinden das Problem und diese Reparatur; besteht die Ursache noch, scheitert er wieder und beides bleibt."
+            "description": "Der letzte Install auf {node} ist gescheitert: {code} ({detail}). Vördr hält den Fehlschlag als Problem fest, bis ein Install durchläuft. Ist die Ursache behoben, etwa von Hand, installiere erneut: Vördr bittet die Leitstelle um denselben Install wie der Installieren-Knopf des Hosts, auch ausserhalb seines Fensters. Läuft er durch, verschwinden das Problem und diese Reparatur, auch wenn nichts mehr zu installieren ist; besteht die Ursache noch, scheitert er wieder und beides bleibt."
           }
         },
         "abort": {

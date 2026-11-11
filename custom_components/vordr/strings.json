@@ -345,12 +345,11 @@
     },
     "install_again": {
       "title": "Vördr: install again on {node}",
-      "description": "The last install on {node} failed: {code} ({detail}). Vördr keeps the failure as a problem until an install goes through. Once the cause is fixed, for example by hand, install again: a run that goes through clears it, even when nothing is left to install.",
       "fix_flow": {
         "step": {
           "confirm": {
             "title": "Install again on {node}?",
-            "description": "Vördr asks the hub for the same install as the host's install button, also outside its window. If it goes through, the problem and this repair are gone; if the cause is still there, it fails again and both stay."
+            "description": "The last install on {node} failed: {code} ({detail}). Vördr keeps the failure as a problem until an install goes through. Once the cause is fixed, for example by hand, install again: Vördr asks the hub for the same install as the host's install button, also outside its window. If it goes through, the problem and this repair are gone, even when nothing is left to install; if the cause is still there, it fails again and both stay."
           }
         },
         "abort": {

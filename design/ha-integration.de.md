@@ -181,8 +181,10 @@ Reparaturhinweis („Leitstelle zu alt/zu neu“) statt halb zu funktionieren.
 - **Erneut installieren als Reparaturhinweis** `install_again_<node>`, solange die Leitstelle einen gescheiterten Install
   des Hosts festhält (`failed_install`, ADR-0124) und den Install anbietet (Fähigkeit `install`)
   ([ADR-0148](../docs/adr/0148-a-kept-failed-install-is-a-repair-that-installs-again.md)):
-  - er nennt Code und Detail des Laufs; „Beheben“ bestätigt und schickt dann denselben Befehl wie der Installieren-Knopf;
-    beim Bestätigen erneut geprüft (Verbindung, Host, festgehaltener Fehlschlag, Fähigkeit), jede Absage mit eigenem Grund;
+  - sein Dialog zum Beheben nennt Code und Detail des Laufs, aus dem Stand des Hosts beim Öffnen (ein behebbarer Hinweis
+    trägt seinen Text im Dialog, nicht als eigene Beschreibung: hassfest erlaubt eines von beiden); „Beheben“ bestätigt
+    und schickt dann denselben Befehl wie der Installieren-Knopf; beim Bestätigen erneut geprüft (Verbindung, Host,
+    festgehaltener Fehlschlag, Fähigkeit), jede Absage mit eigenem Grund;
   - ein Lauf, der durchläuft, löscht den Fehlschlag in der Leitstelle, und der Hinweis verschwindet mit ihm; scheitert er
     wieder, bleibt beides;
   - besteht das Problem nur aus dem festgehaltenen Install, entfällt dafür `problem_<node>` (Problem-Sensor und

@@ -9,7 +9,13 @@ from homeassistant.components.repairs import RepairsFlow
 from homeassistant.config_entries import ConfigEntryState
 import voluptuous as vol
 
-from .coordinator import VordrCoordinator, failed_install, install_again_offered, reboot_required
+from .coordinator import (
+    VordrCoordinator,
+    failed_install,
+    failed_install_names,
+    install_again_offered,
+    reboot_required,
+)
 from .texts import can_reboot
 
 if TYPE_CHECKING:
@@ -34,13 +40,26 @@ class _HostFlow(RepairsFlow):
     def _asked(self, coordinator: VordrCoordinator) -> None:
         """The hub took the command."""
 
+    def _shown(self, host: dict[str, Any] | None) -> dict[str, str]:
+        """What the confirm step names besides the host, from the host's state as the hub last sent it (None: not
+        known right now)."""
+        return {}
+
+    def _host(self) -> dict[str, Any] | None:
+        entry = self.hass.config_entries.async_get_entry(self._entry_id)
+        if entry is None or entry.state is not ConfigEntryState.LOADED:
+            return None
+        coordinator: VordrCoordinator = entry.runtime_data
+        return coordinator.data.hosts.get(self._node)
+
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         return await self.async_step_confirm()
 
     async def async_step_confirm(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         names = {"node": self._node}
         if user_input is None:
-            return self.async_show_form(step_id="confirm", data_schema=vol.Schema({}), description_placeholders=names)
+            shown = {**names, **self._shown(self._host())}
+            return self.async_show_form(step_id="confirm", data_schema=vol.Schema({}), description_placeholders=shown)
         entry = self.hass.config_entries.async_get_entry(self._entry_id)
         if entry is None or entry.state is not ConfigEntryState.LOADED:
             return self.async_abort(reason="hub_not_connected", description_placeholders=names)
@@ -80,6 +99,9 @@ class InstallAgainFlow(_HostFlow):
     the repair; a run that fails again keeps it."""
 
     command = "install"
+
+    def _shown(self, host: dict[str, Any] | None) -> dict[str, str]:
+        return failed_install_names(host)
 
     def _still(self, host: dict[str, Any]) -> str:
         if failed_install(host) is None:

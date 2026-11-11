@@ -107,6 +107,14 @@ def only_failed_install(problem: dict[str, Any] | None, host: dict[str, Any] | N
     return bool(problem) and failed is not None and problem_reasons(problem) == {str(failed.get("state", ""))}
 
 
+def failed_install_names(host: dict[str, Any] | None) -> dict[str, str]:
+    """How the install-again repair names the failed install: its code and the run's log excerpt on one line, at most
+    DETAIL_MAX characters; "-" for what is missing."""
+    failed = failed_install(host) or {}
+    detail = " ".join(str(failed.get("log_excerpt") or "").split())
+    return {"code": str(failed.get("state") or "-"), "detail": detail[:DETAIL_MAX] or "-"}
+
+
 def host_device(node: str) -> tuple[str, str]:
     """Device identifier of a host."""
     return (DOMAIN, f"host:{node}")
@@ -427,7 +435,6 @@ class VordrCoordinator(DataUpdateCoordinator[VordrData]):
         if failed is None or not install_again_offered(host):
             ir.async_delete_issue(self.hass, DOMAIN, issue_id)
             return
-        detail = " ".join(str(failed.get("log_excerpt") or "").split())
         ir.async_create_issue(
             self.hass,
             DOMAIN,
@@ -435,11 +442,9 @@ class VordrCoordinator(DataUpdateCoordinator[VordrData]):
             is_fixable=True,
             severity=ir.IssueSeverity.WARNING,
             translation_key="install_again",
-            translation_placeholders={
-                "node": node,
-                "code": str(failed.get("state", "")),
-                "detail": detail[:DETAIL_MAX] or "-",
-            },
+            # A fixable repair shows its text in the fix dialog (hassfest allows a description or a fix flow, not both):
+            # the flow names code and detail from the host's state when it opens; here they only travel along.
+            translation_placeholders={"node": node, **failed_install_names(host)},
             data={"entry_id": self.config_entry.entry_id, "node": node, "kind": "install_again"},
         )
 
