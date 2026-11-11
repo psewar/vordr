@@ -175,4 +175,5 @@ Generated from the files by `python3 docs/adr/check_index.py --write`. `build.sh
 | [0139](0139-the-release-signer-is-part-of-the-repository.md) | The release signer is part of the repository | accepted | 2026-11-11 |
 | [0140](0140-work-stays-private-the-public-repository-gets-snapshots.md) | Work stays in the private repository; the public one gets checked snapshots | accepted | 2026-11-11 |
 | [0141](0141-readme-in-english-with-a-german-version.md) | The README is English, with a German version beside it | accepted | 2026-11-11 |
+| [0142](0142-the-hub-waits-for-its-sessions-work-when-it-stops.md) | The hub waits for its sessions' work when it stops | accepted | 2026-11-11 |
 <!-- adr-index:end -->

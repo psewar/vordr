@@ -26,6 +26,9 @@ import (
 
 var version = "dev"
 
+// stopTimeout: how long a stopping hub waits for the work its sessions started (ADR-0142).
+const stopTimeout = 10 * time.Second
+
 func usage() {
 	fmt.Fprintf(os.Stderr, `vordr-hub %s
 
@@ -301,6 +304,14 @@ func run(cfg hub.Config) int {
 	case sig := <-stop:
 		events.Log("", "hub_stopping", map[string]any{"signal": sig.String()})
 		_ = httpSrv.Close()
+		_ = adminLn.Close()
+		// The sessions end; what they started (a report being stored, a job's result) finishes before the hub exits
+		// (ADR-0142).
+		ctx, cancel := context.WithTimeout(context.Background(), stopTimeout)
+		defer cancel()
+		if !srv.Close(ctx) {
+			logger.Printf("stopping: the sessions' work did not end within %s", stopTimeout)
+		}
 		return 0
 	case err := <-served:
 		if errors.Is(err, http.ErrServerClosed) {

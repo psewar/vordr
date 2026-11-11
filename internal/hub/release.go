@@ -290,11 +290,12 @@ func (s *Server) rolloutOnce(ctx context.Context) {
 		s.Releases.mu.Lock()
 		s.Releases.attempts[e.Node] = attempt{version: rel.Manifest.Version, at: now}
 		s.Releases.mu.Unlock()
-		go func() {
+		// Once the hub is stopping nobody waits here: the agent's next hello settles the run (ADR-0114, ADR-0142).
+		s.spawn(func() {
 			wctx, cancel := context.WithTimeout(ctx, agentUpdateTimeout)
 			defer cancel()
 			s.WaitJob(wctx, job)
-		}()
+		})
 	}
 }
 

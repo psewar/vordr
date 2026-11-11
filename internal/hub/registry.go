@@ -109,6 +109,8 @@ const (
 	AdminBackupMissing     AdminCode = "backup_missing"
 	AdminBackupUnreachable AdminCode = "backup_unreachable"
 	AdminBackupUnmapped    AdminCode = "backup_unmapped"
+	// AdminHubStopping: the hub stopped while it waited for the job's result; the run stays open (ADR-0142).
+	AdminHubStopping AdminCode = "hub_stopping"
 )
 
 // Registry is the register of hosts, kept in one JSON file that is replaced atomically on every change.

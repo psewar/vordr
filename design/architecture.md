@@ -1633,6 +1633,11 @@ Aktualisieren von Compose-Diensten auf den Neubau ihres Tags per Knopf
   reject-client <name> | forget-client <name> | client-role <name> --role <rolle>`. Ohne Socket: `key`, `check-config`,
   `version`. Noch nicht gebaut: ein Befehl für die Ringe (`rings`)
   ([ADR-0010](../docs/adr/0010-administration-only-local.md)).
+- **Beenden** (SIGTERM): Die Leitstelle nimmt nichts Neues mehr an, schliesst die Verbindungen der Agents und
+  Home-Assistant-Clients und wartet bis zu 10 s, bis fertig ist, was sie angestossen haben (eine Meldung, die gerade
+  gespeichert wird, das Ergebnis eines Jobs). Das Warten auf Job-Ergebnisse endet dabei mit `hub_stopping`, ohne
+  etwas einzutragen: der Lauf bleibt offen, der nächste Hello des Agents klärt ihn
+  ([ADR-0142](../docs/adr/0142-the-hub-waits-for-its-sessions-work-when-it-stops.md)).
 - **Backup-Prüfung ansehen** (`vordr-hub backup <node>`): was die Prüfung vor einem Install jetzt entschiede (10.2);
   fragt den Backup-Server, schickt nichts.
 - **Ereignisprotokoll lesen** (`vordr-hub events [<node>] [--event <name>] [--since <wann>] [--limit <n>]`):

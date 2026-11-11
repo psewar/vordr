@@ -120,25 +120,30 @@ func ListenAdmin(path string) (net.Listener, error) {
 	return ln, nil
 }
 
-// ServeAdmin answers one request per connection until ln is closed.
+// ServeAdmin answers one request per connection until ln is closed. A request that comes while the hub is stopping is
+// not read; the connection just closes.
 func (s *Server) ServeAdmin(ln net.Listener) {
 	for {
 		c, err := ln.Accept()
 		if err != nil {
 			return
 		}
-		go func() {
-			defer c.Close()
-			var req AdminRequest
-			_ = c.SetReadDeadline(time.Now().Add(10 * time.Second))
-			if json.NewDecoder(c).Decode(&req) != nil {
-				_ = json.NewEncoder(c).Encode(AdminResponse{Code: AdminBadRequest})
-				return
-			}
-			_ = c.SetReadDeadline(time.Time{})
-			_ = json.NewEncoder(c).Encode(s.Admin(req))
-		}()
+		if !s.spawn(func() { s.serveAdminConn(c) }) {
+			_ = c.Close()
+		}
 	}
+}
+
+func (s *Server) serveAdminConn(c net.Conn) {
+	defer c.Close()
+	var req AdminRequest
+	_ = c.SetReadDeadline(time.Now().Add(10 * time.Second))
+	if json.NewDecoder(c).Decode(&req) != nil {
+		_ = json.NewEncoder(c).Encode(AdminResponse{Code: AdminBadRequest})
+		return
+	}
+	_ = c.SetReadDeadline(time.Time{})
+	_ = json.NewEncoder(c).Encode(s.Admin(req))
 }
 
 // Admin carries out one request.

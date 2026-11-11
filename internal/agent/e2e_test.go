@@ -90,6 +90,16 @@ func startHubWith(t *testing.T, maxPending int, wrap func(net.Listener) net.List
 		t.Fatal(err)
 	}
 	srv := hub.NewServer(reg, clients, events, key, maxPending, quiet)
+	// Cleanups run in reverse: after the test's agents and clients, before the event log closes and the directory
+	// goes. The hub ends its sessions and waits for what they started; otherwise a late save races the removal, and a
+	// save syncs to disk, which takes milliseconds on a slow disk (ADR-0142).
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if !srv.Close(ctx) {
+			t.Error("the hub's work did not end within 10 s")
+		}
+	})
 	ts := httptest.NewUnstartedServer(srv.Handler())
 	if wrap != nil {
 		ts.Listener = wrap(ts.Listener)

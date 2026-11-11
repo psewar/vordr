@@ -24,6 +24,9 @@ func loadList[T any](path string) ([]T, error) {
 	return list, nil
 }
 
+// syncFile puts a written file on disk; a variable so that a test can make a save take as long as on a slow disk.
+var syncFile = (*os.File).Sync
+
 // saveList replaces path atomically with list as JSON (0600 in a 0700 directory), and durably: the new file is on
 // disk before it takes the old one's name, and the rename is on disk before saveList returns. Without the syncs a
 // power loss right after a save could leave registry.json empty, and the hub would not start.
@@ -42,7 +45,7 @@ func saveList(path string, list any) error {
 		return err
 	}
 	_, werr := f.Write(raw)
-	serr := f.Sync()
+	serr := syncFile(f)
 	cerr := f.Close()
 	if err := errors.Join(werr, serr, cerr); err != nil {
 		return err

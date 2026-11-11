@@ -269,10 +269,11 @@ func (s *Server) autoOnce(ctx context.Context) {
 		if code != AdminOK {
 			continue
 		}
-		go func() {
+		// Once the hub is stopping nobody waits here: the agent's next hello settles the run (ADR-0114, ADR-0142).
+		s.spawn(func() {
 			wctx, cancel := context.WithTimeout(ctx, installTimeout)
 			defer cancel()
 			s.WaitJob(wctx, job)
-		}()
+		})
 	}
 }

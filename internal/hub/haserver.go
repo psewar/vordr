@@ -66,13 +66,19 @@ func (s *Server) serveHA(w http.ResponseWriter, r *http.Request) {
 	}
 	conn := wire.NewConn(ws)
 	defer conn.Close()
+	if !s.open(conn) {
+		return // the hub is stopping; the client connects again later
+	}
+	defer s.release(conn)
 
 	sess, ok := s.loginHA(conn, r.RemoteAddr)
 	if !ok {
 		return
 	}
 	defer s.dropHA(sess)
-	go s.pushHA(sess)
+	if !s.spawn(func() { s.pushHA(sess) }) {
+		return
+	}
 	s.loopHA(sess)
 }
 
@@ -265,11 +271,13 @@ func (s *Server) haCommand(sess *haSession, c wire.Command) wire.CommandResult {
 	}
 	fields["job_id"] = job.ID
 	s.Events.Log(c.Node, "command", fields)
-	go func() {
+	// Once the hub is stopping nobody waits here: the run stays open and the agent's next hello settles it (ADR-0114,
+	// ADR-0142).
+	s.spawn(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), waitTimeout(verb))
 		defer cancel()
 		s.WaitJob(ctx, job)
-	}()
+	})
 	res.Code, res.JobID = string(AdminOK), job.ID
 	return res
 }

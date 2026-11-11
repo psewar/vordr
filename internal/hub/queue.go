@@ -83,17 +83,27 @@ func (s *Server) Queued(node string) []string {
 }
 
 // dispatchNext starts the host's next waiting job once its run has ended; WaitJob calls it when it returns. One
-// dispatch per host at a time, so two ends cannot start two jobs.
+// dispatch per host at a time, so two ends cannot start two jobs. Once the hub is stopping nothing more starts (the
+// queue lives in memory and ends with the hub); otherwise Close waits for the dispatch (ADR-0142).
 func (s *Server) dispatchNext(node string) {
 	s.mu.Lock()
-	if len(s.queues[node]) == 0 || s.dispatching[node] {
+	if len(s.queues[node]) == 0 || s.dispatching[node] || s.closing {
 		s.mu.Unlock()
 		return
 	}
 	s.dispatching[node] = true
+	s.work.Add(1) // as spawn does, under the same lock as the check
 	s.mu.Unlock()
 	go func() {
-		time.Sleep(queueSettle)
+		defer s.work.Done()
+		select {
+		case <-time.After(queueSettle):
+		case <-s.closed.Done():
+			s.mu.Lock()
+			delete(s.dispatching, node)
+			s.mu.Unlock()
+			return // the hub is stopping; the queue ends with it
+		}
 		s.mu.Lock()
 		q := s.queues[node]
 		if len(q) == 0 {

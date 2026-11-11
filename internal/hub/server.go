@@ -65,6 +65,14 @@ type Server struct {
 	claims   map[string]*session
 	started  time.Time
 	upgrader websocket.Upgrader
+	// conns: the tunnel and Home Assistant connections being served; work counts them and the goroutines the server
+	// started (spawn), and Close waits for it; closing: Close has begun, nothing new starts (close.go, ADR-0142).
+	// conns and closing under mu. closed ends when Close begins (endClosed); the waits for jobs listen to it.
+	conns     map[*wire.Conn]struct{}
+	work      sync.WaitGroup
+	closing   bool
+	closed    context.Context
+	endClosed context.CancelFunc
 }
 
 type session struct {
@@ -93,6 +101,7 @@ func NewServer(reg *Registry, clients *ClientRegistry, events *Events, key *iden
 		lastSeen: map[string]time.Time{}, successors: map[string]chan wire.JobStatus{},
 		queues: map[string][]queuedJob{}, dispatching: map[string]bool{}, started: time.Now(),
 		backupSem: make(chan struct{}, 1), backingUp: map[string]bool{}, claims: map[string]*session{},
+		conns: map[*wire.Conn]struct{}{},
 		upgrader: websocket.Upgrader{
 			HandshakeTimeout: 10 * time.Second,
 			// Agents and Home Assistant send no Origin header. Browsers always do: refusing them stops cross-site
@@ -100,6 +109,7 @@ func NewServer(reg *Registry, clients *ClientRegistry, events *Events, key *iden
 			CheckOrigin: func(r *http.Request) bool { return r.Header.Get("Origin") == "" },
 		},
 	}
+	s.closed, s.endClosed = context.WithCancel(context.Background())
 	s.endOrphanedBackups()
 	return s
 }
@@ -122,6 +132,10 @@ func (s *Server) serveTunnel(w http.ResponseWriter, r *http.Request) {
 	}
 	conn := wire.NewConn(ws)
 	defer conn.Close()
+	if !s.open(conn) {
+		return // the hub is stopping; the agent connects again later
+	}
+	defer s.release(conn)
 
 	sess, ok := s.login(conn, r.RemoteAddr)
 	if !ok {
@@ -667,9 +681,15 @@ func (s *Server) sendJob(node string, job protocol.Job, by string, started time.
 // host's next waiting command (queue.go) gets its turn.
 func (s *Server) WaitJob(ctx context.Context, j *SentJob) (wire.JobStatus, AdminCode) {
 	defer s.dispatchNext(j.node)
+	// A stopping hub ends the wait and records nothing: the run stays as it is (ADR-0142).
+	ctx, stop := s.untilClose(ctx)
+	defer stop()
 	if j.pending != nil {
 		// The install waits for its guest's fresh backup (prebackup.go); without one it ends here, never sent.
 		if st, ok := s.backupFirst(ctx, j); !ok {
+			if s.stopping() {
+				return wire.JobStatus{JobID: j.ID}, AdminHubStopping
+			}
 			s.finishRun(j, st)
 			return st, AdminOK
 		}
@@ -679,6 +699,9 @@ func (s *Server) WaitJob(ctx context.Context, j *SentJob) (wire.JobStatus, Admin
 	select {
 	case got, open := <-j.ch:
 		st = got
+		if !open && s.stopping() {
+			return wire.JobStatus{JobID: j.ID}, AdminHubStopping // Close ended the session, not the agent
+		}
 		if !open {
 			if done, ok := s.settledRun(j.node, j.ID); ok {
 				// Its result came over the agent's new session already (ADR-0114); never overwrite it.
@@ -700,6 +723,9 @@ func (s *Server) WaitJob(ctx context.Context, j *SentJob) (wire.JobStatus, Admin
 		j.sess.mu.Lock()
 		delete(j.sess.waiters, j.ID)
 		j.sess.mu.Unlock()
+		if s.stopping() {
+			return wire.JobStatus{JobID: j.ID}, AdminHubStopping
+		}
 		st, code = wire.JobStatus{JobID: j.ID, Code: protocol.CodeTimeout, Detail: "no result from the agent in time"}, AdminTimeout
 	}
 	s.finishRun(j, st)
@@ -737,6 +763,9 @@ func (s *Server) awaitSuccessor(ctx context.Context, j *SentJob, event string) (
 	case st := <-ch:
 		return st, AdminOK
 	case <-ctx.Done():
+		if s.stopping() {
+			return wire.JobStatus{JobID: j.ID}, AdminHubStopping // the run stays open (ADR-0142)
+		}
 		st := wire.JobStatus{JobID: j.ID, Code: protocol.CodeTimeout,
 			Detail: "the agent announced its restart and no agent reported back in time"}
 		s.finishRun(j, st)
