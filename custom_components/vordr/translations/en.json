@@ -20,7 +20,7 @@
       "approval": "Waiting for the hub's operator. Compare the fingerprint and admit this client on the hub:\n\n`{command}`\n\nFingerprint: `{fingerprint}`"
     },
     "error": {
-      "invalid_url": "The address must be wss://<host>[:port]/v1/ha.",
+      "invalid_url": "The address must be wss://HOST[:PORT]/v1/ha.",
       "invalid_name": "Use lower case letters, digits, dot and hyphen (at most 63 characters).",
       "invalid_ca": "This is no PEM certificate.",
       "probe_dns": "The hub's name does not resolve.",
@@ -500,7 +500,7 @@
       "description": "The hub refuses the client {name} ({reason}). Check on the hub with `vordr-hub clients`; fingerprint of this client: `{fingerprint}`."
     }
   },
-  "texts": {
+  "common": {
     "latest_version": "{pending} pending ({security} security)",
     "major": "new major version",
     "same_major": "or {tag} in the same major version",
@@ -573,7 +573,7 @@
       "fields": {
         "service": {
           "name": "Service",
-          "description": "The Compose service as <project>/<service>, as the entity's attribute updates lists it under services."
+          "description": "The Compose service as PROJECT/SERVICE, as the entity's attribute updates lists it under services."
         },
         "reason": {
           "name": "Reason (outside the window)",

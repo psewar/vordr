@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 from typing import Any
 
 from homeassistant.core import HomeAssistant
@@ -38,6 +39,31 @@ def test_every_language_has_every_text() -> None:
         assert keys(data) == keys(LANGS["en"]), lang
 
 
+# What hassfest, Home Assistant's own check, allows in strings.json and translations/en.json
+# (script/hassfest/translations.py): only the sections Home Assistant knows, and no text that looks like an HTML tag.
+# Checked here for every language, so a finding shows before the HACS default list's checks run (ADR-0145).
+HA_SECTIONS = {
+    "title", "config", "config_subentries", "options", "preview_features", "selector", "device_automation",
+    "system_health", "config_panel", "application_credentials", "issues", "entity_component", "device", "entity",
+    "exceptions", "services", "conditions", "triggers", "conversation", "common",
+}  # fmt: skip
+HTML_LIKE = re.compile(r"<[a-z].*?>", re.IGNORECASE)
+
+
+def texts(obj: Any, prefix: str = "") -> list[tuple[str, str]]:
+    if isinstance(obj, dict):
+        return [t for k, v in obj.items() for t in texts(v, f"{prefix}.{k}" if prefix else k)]
+    return [(prefix, obj)] if isinstance(obj, str) else []
+
+
+@pytest.mark.parametrize("lang", sorted(LANGS))
+def test_texts_pass_home_assistants_checks(lang: str) -> None:
+    data = LANGS[lang]
+    assert set(data) <= HA_SECTIONS, sorted(set(data) - HA_SECTIONS)
+    assert [path for path, text in texts(data) if HTML_LIKE.search(text)] == []
+    assert all(re.fullmatch(r"[a-z0-9_]+", key) for key in data["common"]), sorted(data["common"])
+
+
 @pytest.mark.parametrize("lang", sorted(LANGS))
 def test_problem_texts_complete_and_consistent(lang: str) -> None:
     data = LANGS[lang]
@@ -56,7 +82,7 @@ def test_problem_texts_complete_and_consistent(lang: str) -> None:
     for code in codes:  # one wording per code, wherever it shows
         assert attrs["reason"]["state"][code] == run_states[code] == attrs["check_failed_code"]["state"][code]
         assert data["issues"][f"problem_{code}"]["description"].startswith(run_states[code] + ".")
-    assert "{pending}" in data["texts"]["latest_version"] and "{security}" in data["texts"]["latest_version"]
+    assert "{pending}" in data["common"]["latest_version"] and "{security}" in data["common"]["latest_version"]
 
 
 def test_problem_key() -> None:

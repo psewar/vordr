@@ -193,13 +193,16 @@ Since H5, the hub sends only codes and numbers, and the integration writes every
   `problem_<key>` with the thresholds as placeholders –, states and the attribute values of `_problem` (`reason`,
   `next_step`, `check_failed_code`; all three codes).
 - **What the backend writes** (system language, like the names): `latest_version` and `release_summary` of the update
-  entity, the device name of the hub.
+  entity, the device name of the hub. Their texts are in the section `common` of the translation files, the one Home
+  Assistant keeps for texts of the integration's own
+  ([ADR-0145](../docs/adr/0145-the-integrations-own-texts-live-in-the-common-section.md)).
 - **Problem key:** the first reason; for `check_failed` and failed runs the result code, because the next step depends
   on it; an unknown code becomes `unknown`.
 - **Events** carry `message` in every supplied language, so that an automation chooses the language of its recipient,
   independent of the system language.
 - `tests/test_texts.py` keeps the files together: every language has every text, every issue text contains the next
-  step of its key, a code is called the same everywhere.
+  step of its key, a code is called the same everywhere. It also checks what hassfest, Home Assistant's own check,
+  requires: only sections Home Assistant knows, and no text that looks like an HTML tag.
 
 ## 7. Changes to the hub
 

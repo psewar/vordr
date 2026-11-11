@@ -196,13 +196,17 @@ aus ihren Übersetzungsdateien ([ADR-0027](../docs/adr/0027-protocol-2-codes-and
   `problem_<schlüssel>` mit den Schwellen als Platzhalter –, Zustände und die Attributwerte von `_problem`
   (`reason`, `next_step`, `check_failed_code`; alle drei Codes).
 - **Was das Backend schreibt** (Systemsprache, wie die Namen): `latest_version` und `release_summary` der
-  update-Entität, der Gerätename der Leitstelle.
+  update-Entität, der Gerätename der Leitstelle. Ihre Texte stehen im Abschnitt `common` der Übersetzungsdateien,
+  den Home Assistant für eigene Texte der Integration vorsieht
+  ([ADR-0145](../docs/adr/0145-the-integrations-own-texts-live-in-the-common-section.md)).
 - **Problemschlüssel:** der erste Grund; bei `check_failed` und gescheiterten Läufen der Ergebniscode, weil der
   nächste Schritt an ihm hängt; ein unbekannter Code wird `unknown`.
 - **Ereignisse** tragen `message` in jeder mitgelieferten Sprache, damit eine Automation die Sprache ihres
   Empfängers wählt, unabhängig von der Systemsprache.
 - `tests/test_texts.py` hält die Dateien zusammen: jede Sprache hat jeden Text, jeder Hinweistext enthält den
-  nächsten Schritt seines Schlüssels, ein Code heisst überall gleich.
+  nächsten Schritt seines Schlüssels, ein Code heisst überall gleich. Er prüft auch, was hassfest, die Prüfung von
+  Home Assistant selbst, verlangt: nur Abschnitte, die Home Assistant kennt, und kein Text, der wie ein HTML-Tag
+  aussieht.
 
 ## 7. Änderungen an der Leitstelle
 

@@ -178,4 +178,5 @@ Generated from the files by `python3 docs/adr/check_index.py --write`. `build.sh
 | [0142](0142-the-hub-waits-for-its-sessions-work-when-it-stops.md) | The hub waits for its sessions' work when it stops | accepted | 2026-11-11 |
 | [0143](0143-every-document-in-english-and-german.md) | Every document exists in English and German | accepted | 2026-11-11 |
 | [0144](0144-the-integration-lives-at-the-repository-root.md) | The integration lives at the repository root, where HACS looks for it | accepted | 2026-11-11 |
+| [0145](0145-the-integrations-own-texts-live-in-the-common-section.md) | The integration's own texts live in the `common` section, and its translations pass hassfest | accepted | 2026-11-11 |
 <!-- adr-index:end -->

@@ -20,7 +20,7 @@
       "approval": "Warte auf die Freigabe an der Leitstelle. Fingerprint vergleichen und dort freigeben:\n\n`{command}`\n\nFingerprint: `{fingerprint}`"
     },
     "error": {
-      "invalid_url": "Die Adresse muss wss://<host>[:port]/v1/ha lauten.",
+      "invalid_url": "Die Adresse muss wss://HOST[:PORT]/v1/ha lauten.",
       "invalid_name": "Nur Kleinbuchstaben, Ziffern, Punkt und Bindestrich (höchstens 63 Zeichen).",
       "invalid_ca": "Das ist kein PEM-Zertifikat.",
       "probe_dns": "Der Name der Leitstelle lässt sich nicht auflösen.",
@@ -500,7 +500,7 @@
       "description": "Die Leitstelle lehnt den Client {name} ab ({reason}). An der Leitstelle mit `vordr-hub clients` prüfen; Fingerprint dieses Clients: `{fingerprint}`."
     }
   },
-  "texts": {
+  "common": {
     "latest_version": "{pending} ausstehend ({security} Sicherheit)",
     "major": "neue Hauptversion",
     "same_major": "oder {tag} in derselben Hauptversion",
@@ -573,7 +573,7 @@
       "fields": {
         "service": {
           "name": "Dienst",
-          "description": "Der Compose-Dienst als <project>/<service>, wie ihn das Attribut updates der Entität unter services nennt."
+          "description": "Der Compose-Dienst als PROJEKT/DIENST, wie ihn das Attribut updates der Entität unter services nennt."
         },
         "reason": {
           "name": "Grund (ausserhalb des Fensters)",

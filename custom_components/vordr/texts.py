@@ -103,7 +103,7 @@ class Texts:
         languages = await self._hass.async_add_executor_job(lambda: sorted(f.stem for f in folder.glob("*.json")))
         for lang in languages:
             strings: dict[str, str] = {}
-            for category in ("issues", "texts"):
+            for category in ("issues", "common"):
                 strings.update(await async_get_translations(self._hass, lang, category, [DOMAIN]))
             self._strings[lang] = strings
 
@@ -120,13 +120,13 @@ class Texts:
         return {lang: self._get(lang, f"issues.problem_{key}.description").format(**values) for lang in self.languages}
 
     def latest_version(self, pending: int, security: int) -> str:
-        return self._get(self.system_language(), "texts.latest_version").format(pending=pending, security=security)
+        return self._get(self.system_language(), "common.latest_version").format(pending=pending, security=security)
 
     def packages_installed(self, count: int) -> str:
-        return self._get(self.system_language(), "texts.packages_installed").format(count=count)
+        return self._get(self.system_language(), "common.packages_installed").format(count=count)
 
     def packages_latest(self, outdated: int, ready: int) -> str:
-        return self._get(self.system_language(), "texts.packages_latest").format(outdated=outdated, ready=ready)
+        return self._get(self.system_language(), "common.packages_latest").format(outdated=outdated, ready=ready)
 
     def release_summary(self, packages: list[dict[str, Any]], pending: int) -> str | None:
         """Pending packages "name old → new", within what HA shows; "…" when more are pending than listed. Security
@@ -134,7 +134,7 @@ class Texts:
         the shorter minimum age (ADR-0111)."""
         lang = self.system_language()
         keys = ("security", "major", "waiting", "flagged", "fix")
-        markers = {key: self._get(lang, f"texts.{key}") for key in keys}
+        markers = {key: self._get(lang, f"common.{key}") for key in keys}
         out = ""
         for pkg in packages:
             name, old, new = pkg.get("name", ""), pkg.get("from", ""), pkg.get("to", "")
@@ -150,13 +150,13 @@ class Texts:
         return out or None
 
     def images_installed(self, count: int) -> str:
-        return self._get(self.system_language(), "texts.images_installed").format(count=count)
+        return self._get(self.system_language(), "common.images_installed").format(count=count)
 
     def images_latest(self, outdated: int, ready: int) -> str:
-        return self._get(self.system_language(), "texts.images_latest").format(outdated=outdated, ready=ready)
+        return self._get(self.system_language(), "common.images_latest").format(outdated=outdated, ready=ready)
 
     def images_fixable(self, fixable: int) -> str:
-        return self._get(self.system_language(), "texts.images_fixable").format(fixable=fixable)
+        return self._get(self.system_language(), "common.images_fixable").format(fixable=fixable)
 
     def images_vulnerable(self, findings: list[dict[str, Any]], newer_known: bool = False) -> str:
         """Known vulnerabilities inside images (ADR-0120): "stack/db 4 (2 fixable, 1 without fix)", the fixable ones
@@ -164,7 +164,7 @@ class Texts:
         attributes. With newer_known (a hub that says per image whether a newer image is there, ADR-0130) the fixable
         count says which: "2 fixable, newer image ready" or "2 fixed in the distribution, no newer image yet"."""
         lang = self.system_language()
-        out = self._get(lang, "texts.images_vulnerable")
+        out = self._get(lang, "common.images_vulnerable")
         for i, f in enumerate(findings):
             name = str(f.get("image", "")).removeprefix("docker.io/").removeprefix("library/")
             counts = []
@@ -172,9 +172,9 @@ class Texts:
                 key = "vuln_fixable"
                 if newer_known:
                     key = "vuln_fixable_newer" if f.get("newer") else "vuln_fixable_waiting"
-                counts.append(self._get(lang, f"texts.{key}").format(n=f["fixable"]))
+                counts.append(self._get(lang, f"common.{key}").format(n=f["fixable"]))
             if f.get("unfixed"):
-                counts.append(self._get(lang, "texts.vuln_unfixed").format(n=f["unfixed"]))
+                counts.append(self._get(lang, "common.vuln_unfixed").format(n=f["unfixed"]))
             line = f"{name} {f.get('tag', '')} ({', '.join(counts)})"
             sep = " " if i == 0 else ", "
             if len(out) + len(sep) + len(line) > SUMMARY_MAX - 3:
@@ -190,8 +190,8 @@ class Texts:
         tags stay manual. Images of Docker Hub's official library are named without their registry."""
         lang = self.system_language()
         lead = "images_by_button" if by_button else "images_report_only"
-        text = {key: self._get(lang, f"texts.{key}") for key in ("rebuilt", "major", "waiting", "same_major")}
-        text["images_report_only"] = self._get(lang, f"texts.{lead}")
+        text = {key: self._get(lang, f"common.{key}") for key in ("rebuilt", "major", "waiting", "same_major")}
+        text["images_report_only"] = self._get(lang, f"common.{lead}")
         lines: list[str] = []
         for u in updates:
             name = str(u.get("image", "")).removeprefix("docker.io/").removeprefix("library/")
