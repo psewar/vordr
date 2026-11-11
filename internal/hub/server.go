@@ -41,6 +41,13 @@ type Server struct {
 	Log        *log.Logger
 	// Backups: the backup check before installs; nil when hub.yaml has none.
 	Backups *Backups
+	// The waits of a backup before an install for its hypervisor (ADR-0147). IdlePoll: how often it looks again,
+	// and the first pause after a busy refusal. BusyPatience: how long a hypervisor that refuses the backup as busy
+	// with a check of its own is asked again, with growing pauses. StartupWait: how long the backup waits at most for
+	// a hypervisor that connected and has not reported yet. Set by NewServer; tests shorten them.
+	IdlePoll     time.Duration
+	BusyPatience time.Duration
+	StartupWait  time.Duration
 	// Releases: agent releases and their rollout; nil when hub.yaml has no agent_update section.
 	Releases *Releases
 	// AutoInstall: install runs the hub starts itself (install.auto: hub); nil without an auto_install section.
@@ -87,6 +94,10 @@ type session struct {
 	// whose result has not come yet. Both under Server.mu.
 	claimed        []string
 	claimedRunning []string
+	// connected: when this connection came (wall clock, for waits); reported: a report came on it. Until then the
+	// agent runs the check that follows its start and holds its lock (ADR-0147). Both under mu.
+	connected time.Time
+	reported  bool
 }
 
 // NewServer starts with the default limits of hub.yaml; the caller may set Limits and Version before serving. An
@@ -97,6 +108,7 @@ func NewServer(reg *Registry, clients *ClientRegistry, events *Events, key *iden
 		Reg: reg, Clients: clients, Events: events, Key: key, MaxPending: maxPending, Now: time.Now, Log: logger,
 		Limits: Limits{StaleAfter: defaultStaleDays * 24 * time.Hour, OfflineAfter: defaultOfflineMin * time.Minute,
 			RebootAfter: defaultRebootDays * 24 * time.Hour, NoReportAfter: defaultNoReportH * time.Hour},
+		IdlePoll: 5 * time.Second, BusyPatience: 2 * time.Minute, StartupWait: 10 * time.Minute,
 		Version: "dev", sessions: map[string]*session{}, haSessions: map[string]*haSession{},
 		lastSeen: map[string]time.Time{}, successors: map[string]chan wire.JobStatus{},
 		queues: map[string][]queuedJob{}, dispatching: map[string]bool{}, started: time.Now(),
@@ -178,7 +190,7 @@ func (s *Server) login(conn *wire.Conn, remote string) (*session, bool) {
 	s.Events.Log(h.Node, "hello", map[string]any{"state": state, "reason": reason, "fingerprint": fp,
 		"agent_version": h.AgentVersion, "remote": remote})
 	sess := &session{node: h.Node, conn: conn, lastSeen: s.Now(), waiters: map[string]chan wire.JobStatus{},
-		acks: h.Runs != nil}
+		acks: h.Runs != nil, connected: time.Now()}
 	if state == wire.StateApproved && h.Runs != nil {
 		// Before any job can reach the host: what the agent says about its runs replaces the hub's guess.
 		s.claim(sess, *h.Runs)
@@ -326,6 +338,9 @@ func (s *Server) loop(sess *session) {
 			if err := s.Reg.SetReportAt(sess.node, rep, s.Now()); err != nil {
 				s.Log.Printf("register: %v", err)
 			}
+			sess.mu.Lock()
+			sess.reported = true
+			sess.mu.Unlock()
 			s.Events.Log(sess.node, "report", reportFields(rep))
 			s.changed(sess.node)
 		case wire.TJobStatus:

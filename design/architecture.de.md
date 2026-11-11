@@ -584,8 +584,12 @@ Install ein frisches Backup; Gruppen `host/` und `without` bleiben bei der Alter
 - **Wiederverwenden:** Ist das letzte Backup des Gastes jünger als 15 min (der geplante Job lief eben, derselbe Install
   wird wiederholt), nimmt die Leitstelle dieses.
 - **Eins nach dem anderen:** Es läuft immer nur ein Backup. Der Agent führt einen Auftrag zur Zeit aus, und vzdump hat
-  eine Sperre je Host. Läuft auf dem Hypervisor ein eigener Lauf, wartet das Backup, bei `rejected_busy` bis zu drei
-  Versuche. Befehle an den Hypervisor warten, solange er sichert (Warteschlange 10.3).
+  eine Sperre je Host. Läuft auf dem Hypervisor ein eigener Lauf, wartet das Backup. Es wartet auch, solange der
+  Hypervisor verbunden ist und noch nicht berichtet hat: Sein Agent macht die Prüfung nach dem Start und hält dabei
+  seine Sperre (höchstens 10 min). Ein `rejected_busy` (eine eigene Prüfung oder ihr Inventar) wird mit Pausen von 5 s
+  bis 30 s erneut gefragt, bis zu 2 min lang
+  ([ADR-0147](../docs/adr/0147-a-backup-waits-for-a-hypervisor-busy-with-a-check-of-its-own.md)). Befehle an den
+  Hypervisor warten, solange er sichert (Warteschlange 10.3).
 - **Kein Lauf des Hypervisors:** Sein „Letzter Lauf“ in HA bleibt sein eigener. Das Ergebnis steht im Lauf des Gastes
   und im Ereignisprotokoll (`install_awaits_backup`, `job_sent` mit `guest`, `for`, `for_job`, `pre_install_backup`).
 - **Scheitert es** (vzdump, PBS hat das Backup nicht, Hypervisor weg, mehr als 5 h Wartezeit), endet der Lauf mit

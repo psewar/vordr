@@ -92,6 +92,7 @@ type backupFixture struct {
 	hub     *testHub
 	pbs     *testPBS
 	inst    *countingInstaller
+	hv      *Client // the hypervisor's agent; nil without one
 	vzdumps atomic.Int32
 	mu      sync.Mutex
 	vzdump  func() runner.Result // what one vzdump run does (setVzdump)
@@ -112,6 +113,13 @@ func newBackupFixture(t *testing.T, last map[string]time.Time, withHypervisor bo
 func newBackupFixtureAt(t *testing.T, last map[string]time.Time, withHypervisor bool, now func() time.Time,
 	window *policy.Window) *backupFixture {
 	t.Helper()
+	return buildBackupFixture(t, last, withHypervisor, now, window, &fakeChecker{})
+}
+
+// buildBackupFixture: hvCheck is the check of the hypervisor's agent.
+func buildBackupFixture(t *testing.T, last map[string]time.Time, withHypervisor bool, now func() time.Time,
+	window *policy.Window, hvCheck Checker) *backupFixture {
+	t.Helper()
 	f := &backupFixture{hub: startHub(t, 5), pbs: newTestPBS(t, last), inst: &countingInstaller{}}
 	f.hub.srv.Now = now
 	b, err := hub.NewBackups(f.pbs.config(t), now)
@@ -123,7 +131,8 @@ func newBackupFixtureAt(t *testing.T, last map[string]time.Time, withHypervisor 
 	t.Cleanup(cancel)
 	clients := []*Client{}
 	if withHypervisor {
-		hv := f.hub.client(t, "hv", &fakeChecker{})
+		hv := f.hub.client(t, "hv", hvCheck)
+		f.hv = hv
 		hv.Backups = &GuestBackups{Storage: "pbs", Timeout: time.Hour,
 			Exists: func(kind, id string) bool { return kind+"/"+id == "ct/302" },
 			Vzdump: func(context.Context, ...string) runner.Result {
@@ -169,6 +178,127 @@ func (f *backupFixture) install(t *testing.T) (hub.AdminResponse, wire.JobStatus
 func (f *backupFixture) run(node string) *hub.Run {
 	e, _ := f.hub.reg.Get(node)
 	return e.LastRun
+}
+
+// fast shortens the hub's waits around a busy hypervisor (ADR-0147): poll, patience with a busy one, wait for a
+// starting one.
+func (f *backupFixture) fast(poll, patience, startup time.Duration) {
+	f.hub.srv.IdlePoll, f.hub.srv.BusyPatience, f.hub.srv.StartupWait = poll, patience, startup
+}
+
+// installInBackground starts an install on the guest as the button does and delivers its end.
+func (f *backupFixture) installInBackground(t *testing.T) <-chan wire.JobStatus {
+	t.Helper()
+	job, code := f.hub.srv.StartJob("guest", protocol.VerbInstall, "all", hub.ByAdmin)
+	if code != hub.AdminOK {
+		t.Fatalf("start: %s", code)
+	}
+	done := make(chan wire.JobStatus, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		st, _ := f.hub.srv.WaitJob(ctx, job)
+		done <- st
+	}()
+	return done
+}
+
+// hvEvents counts the hub's events of one kind on the hypervisor whose JSON line contains want.
+func (f *backupFixture) hvEvents(t *testing.T, event, want string) int {
+	t.Helper()
+	lines, _, err := f.hub.srv.Events.Read(hub.EventFilter{Node: "hv", Event: event, Limit: hub.MaxEventLimit})
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, l := range lines {
+		if strings.Contains(string(l), want) {
+			n++
+		}
+	}
+	return n
+}
+
+// backedUp: vzdump succeeds and PBS has the backup.
+func (f *backupFixture) backedUp() {
+	f.setVzdump(func() runner.Result {
+		f.pbs.set("ct/302", time.Now())
+		return runner.Result{Stderr: []byte("INFO: Finished Backup of VM 302\n")}
+	})
+}
+
+func waitDone(t *testing.T, done <-chan wire.JobStatus) wire.JobStatus {
+	t.Helper()
+	select {
+	case st := <-done:
+		return st
+	case <-time.After(20 * time.Second):
+		t.Fatal("the install did not end")
+		return wire.JobStatus{}
+	}
+}
+
+// A hypervisor busy with a check of its own (its agent holds the lock) longer than three quick tries is asked again
+// with growing pauses; once the check is over the backup and the install go ahead (ADR-0147).
+func TestBackupWaitsWhileTheHypervisorIsBusy(t *testing.T) {
+	f := newBackupFixture(t, map[string]time.Time{"ct/302": time.Now().Add(-30 * time.Hour)}, true)
+	f.fast(10*time.Millisecond, 10*time.Second, 10*time.Second)
+	f.backedUp()
+	waitFor(t, "hv reported", func() bool { e, _ := f.hub.reg.Get("hv"); return e.LastReport != nil })
+	f.hv.checkMu.Lock() // a check of the hypervisor's own
+	done := f.installInBackground(t)
+	waitFor(t, "more busy refusals than the three tries before", func() bool {
+		return f.hvEvents(t, "job_status", `"rejected_busy"`) >= 4
+	})
+	f.hv.checkMu.Unlock()
+	if st := waitDone(t, done); st.Code != protocol.CodeOK || f.vzdumps.Load() != 1 || f.inst.calls.Load() != 1 {
+		t.Fatalf("result %+v, vzdump %d, installs %d", st, f.vzdumps.Load(), f.inst.calls.Load())
+	}
+}
+
+// A hypervisor that stays busy past BusyPatience gets no backup made, and nothing is installed; the run says why.
+func TestBackupGivesUpWhenTheHypervisorStaysBusy(t *testing.T) {
+	f := newBackupFixture(t, map[string]time.Time{"ct/302": time.Now().Add(-30 * time.Hour)}, true)
+	f.fast(10*time.Millisecond, 300*time.Millisecond, 10*time.Second)
+	f.backedUp()
+	waitFor(t, "hv reported", func() bool { e, _ := f.hub.reg.Get("hv"); return e.LastReport != nil })
+	f.hv.checkMu.Lock()
+	defer f.hv.checkMu.Unlock()
+	st := waitDone(t, f.installInBackground(t))
+	if st.Code != protocol.CodeFailedBackup || !strings.Contains(st.Detail, "hv stayed busy with a check of its own") ||
+		f.vzdumps.Load() != 0 || f.inst.calls.Load() != 0 {
+		t.Fatalf("result %+v, vzdump %d, installs %d", st, f.vzdumps.Load(), f.inst.calls.Load())
+	}
+}
+
+// firstCheckHolds: the check after the agent's start takes until release is closed.
+type firstCheckHolds struct {
+	fakeChecker
+	release chan struct{}
+}
+
+func (c *firstCheckHolds) Check(ctx context.Context) wire.Report {
+	<-c.release
+	return c.fakeChecker.Check(ctx)
+}
+
+// A hypervisor that connected and has not reported yet runs the check after its start and holds its lock: the hub
+// sends it no backup job until that report came, then the backup and the install go ahead (ADR-0147).
+func TestBackupWaitsForTheHypervisorsFirstReport(t *testing.T) {
+	check := &firstCheckHolds{release: make(chan struct{})}
+	f := buildBackupFixture(t, map[string]time.Time{"ct/302": time.Now().Add(-30 * time.Hour)}, true, time.Now, nil,
+		check)
+	f.fast(10*time.Millisecond, 10*time.Second, 10*time.Second)
+	f.backedUp()
+	done := f.installInBackground(t)
+	time.Sleep(300 * time.Millisecond)
+	if n := f.hvEvents(t, "job_sent", `"verb":"backup"`); n != 0 || f.vzdumps.Load() != 0 {
+		t.Fatalf("a backup job went to the hypervisor during its first check: %d jobs, vzdump %d", n, f.vzdumps.Load())
+	}
+	close(check.release)
+	if st := waitDone(t, done); st.Code != protocol.CodeOK || f.vzdumps.Load() != 1 || f.inst.calls.Load() != 1 {
+		t.Fatalf("result %+v, vzdump %d, installs %d", st, f.vzdumps.Load(), f.inst.calls.Load())
+	}
 }
 
 // The install of a guest waits in phase backing_up until the hypervisor backed it up and PBS has the backup - however

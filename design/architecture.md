@@ -574,8 +574,11 @@ every install; groups `host/` and `without` stay with the age check
 - **Reuse:** If the guest's latest backup is younger than 15 min (the scheduled job just ran, the same install is
   repeated), the hub takes that one.
 - **One at a time:** Only one backup runs at a time. The agent executes one job at a time, and vzdump has a lock per
-  host. If the hypervisor has a run of its own, the backup waits, with `rejected_busy` up to three attempts. Commands to
-  the hypervisor wait while it is backing up (queue, 10.3).
+  host. If the hypervisor has a run of its own, the backup waits. It also waits while the hypervisor connected and has
+  not reported yet: its agent runs the check after its start and holds its lock (at most 10 min). A `rejected_busy`
+  (a check of its own, or its inventory) is asked again with pauses growing from 5 s to 30 s, for up to 2 min
+  ([ADR-0147](../docs/adr/0147-a-backup-waits-for-a-hypervisor-busy-with-a-check-of-its-own.md)). Commands to the
+  hypervisor wait while it is backing up (queue, 10.3).
 - **No run of the hypervisor:** Its "Last run" in HA stays its own. The result is in the guest's run and in the event log
   (`install_awaits_backup`, `job_sent` with `guest`, `for`, `for_job`, `pre_install_backup`).
 - **If it fails** (vzdump, PBS does not have the backup, hypervisor gone, more than 5 h of waiting), the run ends with

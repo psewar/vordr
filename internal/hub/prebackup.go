@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -22,15 +23,12 @@ const (
 	// backupReuse: a backup of the guest this young is used instead of a new one - the scheduled job ran just before,
 	// or the same install is tried again. Longer than the agent's minimum gap per guest, so the hub never meets it.
 	backupReuse = 15 * time.Minute
-	// backupTries: a hypervisor busy with a short check of its own is asked again this often.
-	backupTries = 3
+	// busyPauseMax: the longest pause between two backup jobs a busy hypervisor refuses, in Server.IdlePoll.
+	busyPauseMax = 6
 	// AdminBackupHostUnavailable: the hypervisor's agent, which makes the backup, is not there (unknown, not
 	// approved, not connected, or without guest_backup in its agent.yaml).
 	AdminBackupHostUnavailable AdminCode = "backup_host_unavailable"
 )
-
-// idlePoll: how often a backup that waits for the hypervisor's own run looks again.
-var idlePoll = 5 * time.Second
 
 // pendingInstall: an install whose run waits in phase backing_up; WaitJob sends job once group is backed up.
 type pendingInstall struct {
@@ -150,10 +148,13 @@ func (s *Server) freshBackup(ctx context.Context, node, group, jobID string, rea
 }
 
 // askBackup has the hypervisor back up group, waiting for a run of its own to end first; "" when its agent reports
-// the backup done.
+// the backup done. A busy refusal means a check of the hypervisor's own holds its agent's lock - the scheduled one,
+// or the inventory after a report - and ends by itself: the backup job is sent again, with pauses that grow from
+// IdlePoll to busyPauseMax times it, for up to BusyPatience (ADR-0147).
 func (s *Server) askBackup(ctx context.Context, group, node, jobID string) string {
 	hv := s.Backups.Hypervisor()
-	for try := 1; ; try++ {
+	pause, until := s.IdlePoll, time.Now().Add(s.BusyPatience)
+	for {
 		if !s.waitIdle(ctx, hv) {
 			return hv + " was busy with a run of its own until the wait ended"
 		}
@@ -161,13 +162,15 @@ func (s *Server) askBackup(ctx context.Context, group, node, jobID string) strin
 		switch {
 		case code != AdminOK:
 			return hv + ": " + string(code)
-		case st.Code == protocol.CodeRejectedBusy && try < backupTries:
-			// A check of the hypervisor's own got the agent's lock first; it is over in moments.
+		case st.Code == protocol.CodeRejectedBusy && time.Now().Add(pause).Before(until):
 			select {
 			case <-ctx.Done():
 				return hv + " stayed busy"
-			case <-time.After(idlePoll):
+			case <-time.After(pause):
 			}
+			pause = min(2*pause, busyPauseMax*s.IdlePoll)
+		case st.Code == protocol.CodeRejectedBusy:
+			return fmt.Sprintf("%s stayed busy with a check of its own for %s", hv, s.BusyPatience)
 		case st.Code != protocol.CodeOK:
 			return strings.TrimSpace(hv + ": " + string(st.Code) + " " + st.Detail)
 		default:
@@ -176,16 +179,33 @@ func (s *Server) askBackup(ctx context.Context, group, node, jobID string) strin
 	}
 }
 
-// waitIdle waits until the hypervisor has no run of its own going (an install by button, an agent update).
+// waitIdle waits until the hypervisor has no run of its own going (an install by button, an agent update) and is not
+// starting up.
 func (s *Server) waitIdle(ctx context.Context, hv string) bool {
-	for s.running(hv) {
+	for s.running(hv) || s.startingUp(hv) {
 		select {
 		case <-ctx.Done():
 			return false
-		case <-time.After(idlePoll):
+		case <-time.After(s.IdlePoll):
 		}
 	}
 	return true
+}
+
+// startingUp: hv is connected and has not reported on this connection yet. Its agent runs the check that follows
+// every start then and holds its lock until the check and its inventory are done; a backup job now would only be
+// refused as busy (ADR-0147). Not longer than StartupWait after the connection came: an agent whose check hangs gets
+// the backup job, and the busy refusals decide.
+func (s *Server) startingUp(hv string) bool {
+	s.mu.Lock()
+	sess := s.sessions[hv]
+	s.mu.Unlock()
+	if sess == nil {
+		return false
+	}
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	return !sess.reported && time.Since(sess.connected) < s.StartupWait
 }
 
 // backupJob sends one backup job to the hypervisor and waits for its result. It is no run of the hypervisor's own:
