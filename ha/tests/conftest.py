@@ -172,10 +172,19 @@ class FakeHub:
     async def _stop(self) -> None:
         for _, ws in list(self.conns):
             await ws.close()
-        if self._runner:
-            await self._runner.cleanup()
-            self._runner = None
-        await asyncio.sleep(0.1)  # let the closed transports detach before the loop goes
+        if not self._runner:
+            return
+        servers = [site._server for site in self._runner.sites if site._server is not None]
+        await self._runner.cleanup()
+        self._runner = None
+        # Connections the app never saw stay open after the cleanup: a TLS handshake the client gave up on, or a TLS
+        # shutdown that waits for the client's close_notify. Left behind, they are collected after the loop stopped
+        # and detach from a server that is already closed (asyncio raises in __del__). So end them, and wait until
+        # every connection has detached (wait_closed does that since Python 3.12) before the loop goes.
+        for server in servers:
+            server.abort_clients()
+            async with asyncio.timeout(5):
+                await server.wait_closed()
 
     async def _handle(self, request: web.Request) -> web.WebSocketResponse:
         ws = web.WebSocketResponse()
