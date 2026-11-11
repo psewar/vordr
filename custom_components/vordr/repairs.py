@@ -1,4 +1,5 @@
-"""Repairs with a fix: the reboot a host needs (ADR-0132)."""
+"""Repairs with a fix: the reboot a host needs (ADR-0132), and installing again after a kept failed install
+(ADR-0148)."""
 
 from __future__ import annotations
 
@@ -8,7 +9,7 @@ from homeassistant.components.repairs import RepairsFlow
 from homeassistant.config_entries import ConfigEntryState
 import voluptuous as vol
 
-from .coordinator import VordrCoordinator, reboot_required
+from .coordinator import VordrCoordinator, failed_install, install_again_offered, reboot_required
 from .texts import can_reboot
 
 if TYPE_CHECKING:
@@ -16,13 +17,22 @@ if TYPE_CHECKING:
     from homeassistant.data_entry_flow import FlowResult
 
 
-class RebootFlow(RepairsFlow):
-    """Confirm, then ask the hub for the reboot - the same command as the host's reboot button. Checked again at
-    confirmation, since the repair may be older than the host's state; each case it refuses has its own reason."""
+class _HostFlow(RepairsFlow):
+    """Confirm, then ask the hub for the host's command - the same as its button. Checked again at confirmation, since
+    the repair may be older than the host's state; each case it refuses has its own reason."""
+
+    command = ""
 
     def __init__(self, entry_id: str, node: str) -> None:
         self._entry_id = entry_id
         self._node = node
+
+    def _still(self, host: dict[str, Any]) -> str:
+        """Empty while the fix still applies to host, else the abort reason."""
+        raise NotImplementedError
+
+    def _asked(self, coordinator: VordrCoordinator) -> None:
+        """The hub took the command."""
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         return await self.async_step_confirm()
@@ -40,20 +50,49 @@ class RebootFlow(RepairsFlow):
         host = coordinator.data.hosts.get(self._node)
         if host is None:
             return self.async_abort(reason="host_gone", description_placeholders=names)
-        if not reboot_required(host):
-            return self.async_abort(reason="no_longer_needed", description_placeholders=names)
-        if not can_reboot(host):
-            return self.async_abort(reason="reboot_not_offered", description_placeholders=names)
-        code = await coordinator.command(self._node, "reboot")
+        if reason := self._still(host):
+            return self.async_abort(reason=reason, description_placeholders=names)
+        code = await coordinator.command(self._node, self.command)
         if code != "ok":
             return self.async_abort(reason="command_refused", description_placeholders={**names, "code": code})
-        coordinator.reboot_asked(self._node)
+        self._asked(coordinator)
         return self.async_create_entry(data={})
+
+
+class RebootFlow(_HostFlow):
+    """The reboot a host needs (ADR-0132)."""
+
+    command = "reboot"
+
+    def _still(self, host: dict[str, Any]) -> str:
+        if not reboot_required(host):
+            return "no_longer_needed"
+        if not can_reboot(host):
+            return "reboot_not_offered"
+        return ""
+
+    def _asked(self, coordinator: VordrCoordinator) -> None:
+        coordinator.reboot_asked(self._node)
+
+
+class InstallAgainFlow(_HostFlow):
+    """Install again after a kept failed install (ADR-0148): a run that goes through clears it at the hub, and with it
+    the repair; a run that fails again keeps it."""
+
+    command = "install"
+
+    def _still(self, host: dict[str, Any]) -> str:
+        if failed_install(host) is None:
+            return "no_longer_needed"
+        if not install_again_offered(host):
+            return "install_not_offered"
+        return ""
 
 
 async def async_create_fix_flow(
     hass: HomeAssistant, issue_id: str, data: dict[str, str | int | float | None] | None
 ) -> RepairsFlow:
-    """Home Assistant asks for the flow of a fixable repair; only reboot_<node> is fixable."""
+    """Home Assistant asks for the flow of a fixable repair: install_again_<node> or reboot_<node>."""
     data = data or {}
-    return RebootFlow(str(data.get("entry_id") or ""), str(data.get("node") or ""))
+    flow = InstallAgainFlow if data.get("kind") == "install_again" else RebootFlow
+    return flow(str(data.get("entry_id") or ""), str(data.get("node") or ""))

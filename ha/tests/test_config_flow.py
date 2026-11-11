@@ -45,6 +45,12 @@ async def test_probe_names_the_failing_stage(hass: HomeAssistant, fake_hub: Fake
         result["flow_id"], {CONF_URL: fake_hub.url, CONF_NAME: "homeassistant", CONF_CA_PEM: fake_hub.cert_pem}
     )
     assert result["type"] is FlowResultType.SHOW_PROGRESS  # every stage passed
+    # The user closes the dialog while it waits for approval: the flow goes, and with it the waiting connection.
+    # Left open, it outlives the test and the fake hub, and is collected unclosed in some later test.
+    await wait_until(lambda: any(name == "homeassistant" for name, _ in fake_hub.conns))
+    hass.config_entries.flow.async_abort(result["flow_id"])
+    await hass.async_block_till_done()
+    await wait_until(lambda: not fake_hub.conns, describe=lambda: fake_hub.conns)
 
 
 async def test_wait_for_approval_then_entry(hass: HomeAssistant, fake_hub: FakeHub) -> None:

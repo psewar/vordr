@@ -41,6 +41,10 @@ without a reboot signal (container) has `reboot_required` "unknown", never "off"
   After `reboot_pending_after_days` of the hub (default 7) it becomes an error and replaces the problem hint
   `reboot_pending`
   ([ADR-0132](../docs/adr/0132-a-needed-reboot-is-a-repair-from-the-first-report.md)).
+- A failed install that the hub keeps as a problem until an install goes through shows up as the repair hint "install
+  again" where Vördr may install: once the cause is fixed, "Fix" installs again, and a run that goes through clears it,
+  even with nothing left to install
+  ([ADR-0148](../docs/adr/0148-a-kept-failed-install-is-a-repair-that-installs-again.md)).
 - Vulnerable pip/npm packages make a problem only if someone can take the fix now: by button, by refreshing the
   dependencies or by hand. If a finding waits on others (a package or a project file pins the version, there is no fix
   yet, or it is younger than the minimum age), it appears only on the sensor `_vulnerable_packages`: per finding

@@ -343,6 +343,25 @@
       "title": "Vördr: {node} needs a reboot",
       "description": "{node} has needed a reboot since {since}. This host does not allow reboots through Vördr: reboot it by hand. This notice goes away by itself once the host no longer needs a reboot."
     },
+    "install_again": {
+      "title": "Vördr: install again on {node}",
+      "description": "The last install on {node} failed: {code} ({detail}). Vördr keeps the failure as a problem until an install goes through. Once the cause is fixed, for example by hand, install again: a run that goes through clears it, even when nothing is left to install.",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Install again on {node}?",
+            "description": "Vördr asks the hub for the same install as the host's install button, also outside its window. If it goes through, the problem and this repair are gone; if the cause is still there, it fails again and both stay."
+          }
+        },
+        "abort": {
+          "hub_not_connected": "Home Assistant is not connected to the Vördr hub right now. Try again once it is.",
+          "host_gone": "The hub no longer knows {node}.",
+          "no_longer_needed": "{node} has no failed install any more.",
+          "install_not_offered": "{node} no longer allows installs through Vördr. Install by hand.",
+          "command_refused": "The hub refused the install on {node} (code {code})."
+        }
+      }
+    },
     "problem_offline": {
       "title": "Vördr: update problem on {node}",
       "description": "Not connected to the hub for more than {offline_minutes} minutes.\n\nNext step: Check the host and its agent."

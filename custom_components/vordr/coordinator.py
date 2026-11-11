@@ -41,6 +41,8 @@ HUB_DEVICE = (DOMAIN, "hub")
 # ADR-0132: after a reboot asked for through the repair, the repair stays away this long while the host still reports
 # "reboot required" - the reboot takes a moment. A finished reboot run ends the wait earlier.
 REBOOT_ASKED_HOLD = timedelta(minutes=30)
+# ADR-0148: how much of the failed install's detail the install-again repair names (the run's log excerpt).
+DETAIL_MAX = 300
 
 # The hub's refusals by its backup check (internal/hub/registry.go, prebackup.go): an install waits for a fresh
 # backup; backup_host_unavailable: the hypervisor's agent, which makes it right before the install, is not there.
@@ -89,6 +91,22 @@ def only_reboot_pending(problem: dict[str, Any]) -> bool:
     return problem_reasons(problem) == {REASON_REBOOT_PENDING}
 
 
+def failed_install(host: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The host's kept failed install of the system packages (ADR-0124); None without one."""
+    return (host or {}).get("failed_install") or None
+
+
+def install_again_offered(host: dict[str, Any] | None) -> bool:
+    """A kept failed install the repair can clear: the hub offers the install for this host (ADR-0148)."""
+    return failed_install(host) is not None and bool(((host or {}).get("capabilities") or {}).get("install"))
+
+
+def only_failed_install(problem: dict[str, Any] | None, host: dict[str, Any] | None) -> bool:
+    """The problem is nothing but the kept failed install: the install-again repair carries all of it."""
+    failed = failed_install(host)
+    return bool(problem) and failed is not None and problem_reasons(problem) == {str(failed.get("state", ""))}
+
+
 def host_device(node: str) -> tuple[str, str]:
     """Device identifier of a host."""
     return (DOMAIN, f"host:{node}")
@@ -118,6 +136,8 @@ class VordrCoordinator(DataUpdateCoordinator[VordrData]):
         self._runs: dict[str, tuple[str, str]] = {}  # node -> (job_id, state) of the last run seen
         self._packages: dict[str, str | None] = {}  # node -> the packages its problem names (placeholder)
         self._reboot_asked: dict[str, datetime] = {}  # node -> when a reboot was asked for through the repair
+        # node -> whether the install-again repair carries the whole problem (its own repair is gone then)
+        self._carried: dict[str, bool] = {}
         self.hub_device_id = ""  # set at setup; host devices hang below it
         self.texts = Texts(hass)  # loaded at setup, before the first message
         self.client = VordrClient(
@@ -271,10 +291,15 @@ class VordrCoordinator(DataUpdateCoordinator[VordrData]):
         if changed and (problem or old not in (_UNSEEN, None)):
             # A new or changed problem, or one that ended; after a restart only the problems still there.
             self.hass.bus.async_fire(EVENT_PROBLEM, self._problem_event(node, problem, limits, reboot, host))
-        if changed or snapshot:  # after a reconnect too: the hub's limits, which the repair names, may have changed
+        carried = only_failed_install(problem, host) and install_again_offered(host)
+        if changed or snapshot or carried != self._carried.get(node, False):
+            # After a reconnect too: the hub's limits, which the repair names, may have changed. And when the
+            # install-again repair starts or stops carrying the problem (capability or failed install changed).
             self._problem_issue(node, problem, limits, reboot, host)
         self._problems[node] = problem
         self._packages[node] = packages
+        self._carried[node] = carried
+        self._install_again_issue(node, host)
 
         run = host.get("last_run") or {}
         seen = (str(run.get("job_id", "")), str(run.get("state", "")))
@@ -343,8 +368,10 @@ class VordrCoordinator(DataUpdateCoordinator[VordrData]):
         self._packages.pop(node, None)
         self._runs.pop(node, None)
         self._reboot_asked.pop(node, None)
+        self._carried.pop(node, None)
         ir.async_delete_issue(self.hass, DOMAIN, f"problem_{node}")
         ir.async_delete_issue(self.hass, DOMAIN, f"reboot_{node}")
+        ir.async_delete_issue(self.hass, DOMAIN, f"install_again_{node}")
         reg = dr.async_get(self.hass)
         if entry := reg.async_get_device_by_identifier(host_device(node), self.config_entry.entry_id):
             reg.async_remove_device(entry.id)
@@ -367,9 +394,14 @@ class VordrCoordinator(DataUpdateCoordinator[VordrData]):
     ) -> None:
         """One text per problem key, so that the frontend shows all of it in the reader's language."""
         issue_id = f"problem_{node}"
-        if not problem or (only_reboot_pending(problem) and reboot_required(host)):
-            # A problem that is nothing but the long-pending reboot shows in the host's reboot repair (ADR-0132),
-            # which can also do the reboot; the problem sensor and event stay as they are.
+        if (
+            not problem
+            or (only_reboot_pending(problem) and reboot_required(host))
+            or (only_failed_install(problem, host) and install_again_offered(host))
+        ):
+            # A problem that is nothing but the long-pending reboot shows in the host's reboot repair (ADR-0132), one
+            # that is nothing but a kept failed install in the install-again repair (ADR-0148); both can also act.
+            # The problem sensor and event stay as they are.
             ir.async_delete_issue(self.hass, DOMAIN, issue_id)
             return
         ir.async_create_issue(
@@ -385,6 +417,31 @@ class VordrCoordinator(DataUpdateCoordinator[VordrData]):
     def reboot_asked(self, node: str) -> None:
         """The repair's fix sent a reboot the hub accepted: keep the repair away until it ran (REBOOT_ASKED_HOLD)."""
         self._reboot_asked[node] = dt_util.utcnow()
+
+    def _install_again_issue(self, node: str, host: dict[str, Any]) -> None:
+        """ADR-0148: a kept failed install (ADR-0124) stays a problem until an install goes through. Where the hub
+        offers the install, it is a fixable repair whose fix installs again - after the cause was fixed by hand, a run
+        with nothing left to install clears it. Gone once the hub no longer keeps the failure."""
+        issue_id = f"install_again_{node}"
+        failed = failed_install(host)
+        if failed is None or not install_again_offered(host):
+            ir.async_delete_issue(self.hass, DOMAIN, issue_id)
+            return
+        detail = " ".join(str(failed.get("log_excerpt") or "").split())
+        ir.async_create_issue(
+            self.hass,
+            DOMAIN,
+            issue_id,
+            is_fixable=True,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key="install_again",
+            translation_placeholders={
+                "node": node,
+                "code": str(failed.get("state", "")),
+                "detail": detail[:DETAIL_MAX] or "-",
+            },
+            data={"entry_id": self.config_entry.entry_id, "node": node, "kind": "install_again"},
+        )
 
     def _reboot_issue(self, node: str, host: dict[str, Any], problem: dict[str, Any] | None) -> None:
         """ADR-0132: a host that needs a reboot is a repair from its first report on, until the host reports it no

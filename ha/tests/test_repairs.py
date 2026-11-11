@@ -1,5 +1,6 @@
 """The reboot repair (ADR-0132): from the first report, fixable where the hub offers the reboot, gone once the host no
-longer needs one; one repair for the long-pending reboot instead of two."""
+longer needs one; one repair for the long-pending reboot instead of two. The install-again repair (ADR-0148): a kept
+failed install is fixable where the hub offers the install, and gone with the failure."""
 
 from __future__ import annotations
 
@@ -28,6 +29,17 @@ NEEDED = {
 }
 NOT_NEEDED = {"required": False, "reason": "", "packages": [], "checked": ["kernel"]}
 PENDING = {"reason": "reboot_pending", "reasons": ["reboot_pending"]}
+INSTALLS = {**CAN, "install": True}
+FAILED = {
+    "state": "precheck_would_remove_packages",
+    "job_id": "f1",
+    "verb": "install",
+    "scope": "all",
+    "started": "2023-11-14T22:00:00Z",
+    "finished": "2023-11-14T22:01:00Z",
+    "log_excerpt": "the upgrade would remove:\n libexample1",
+}
+KEPT = {"reason": "precheck_would_remove_packages", "reasons": ["precheck_would_remove_packages"]}
 
 
 async def setup(hass: HomeAssistant, entry: MockConfigEntry) -> None:
@@ -167,3 +179,77 @@ async def test_fix_checks_again_at_confirmation(hass: HomeAssistant, fake_hub: F
     result = await confirm(hass, flow)
     assert result["type"] is FlowResultType.ABORT and result["reason"] == "no_longer_needed"
     assert len(fake_hub.commands) == sent
+
+
+async def test_kept_failed_install_is_one_fixable_repair(
+    hass: HomeAssistant, fake_hub: FakeHub, entry: MockConfigEntry
+) -> None:
+    """A problem that is nothing but the kept failed install shows as the install-again repair, which names its code
+    and the run's detail; without the install offered the problem keeps its own repair, and another reason keeps it
+    too."""
+    fake_hub.hosts["h"] = host_view("h", capabilities=INSTALLS, problem=KEPT, failed_install=FAILED)
+    fake_hub.hosts["m"] = host_view("m", capabilities=CAN, problem=KEPT, failed_install=FAILED)
+    await setup(hass, entry)
+    again = issue(hass, "install_again_h")
+    assert again is not None and again.is_fixable and again.translation_key == "install_again"
+    assert again.translation_placeholders == {
+        "node": "h",
+        "code": "precheck_would_remove_packages",
+        "detail": "the upgrade would remove: libexample1",
+    }
+    assert issue(hass, "problem_h") is None
+    assert hass.states.get("binary_sensor.vordr_h_problem").state == STATE_ON  # the sensor stays
+    assert issue(hass, "install_again_m") is None
+    assert issue(hass, "problem_m").translation_key == "problem_precheck_would_remove_packages"
+
+    both = {"reason": "stale", "reasons": ["stale", "precheck_would_remove_packages"]}
+    await fake_hub.push_host(host_view("h", capabilities=INSTALLS, problem=both, failed_install=FAILED))
+    await wait_until(lambda: issue(hass, "problem_h") is not None)
+    assert issue(hass, "install_again_h") is not None
+
+
+async def test_fix_installs_again_and_goes_with_the_failure(
+    hass: HomeAssistant, fake_hub: FakeHub, entry: MockConfigEntry
+) -> None:
+    fake_hub.hosts["h"] = host_view("h", capabilities=INSTALLS, problem=KEPT, failed_install=FAILED)
+    await setup(hass, entry)
+    result = await confirm(hass, await start_fix(hass, "install_again_h"))
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert fake_hub.commands[-1]["command"] == "install" and fake_hub.commands[-1]["node"] == "h"
+    # The run went through: the hub no longer keeps the failure, and no repair is left for it.
+    await fake_hub.push_host(host_view("h", capabilities=INSTALLS))
+    await wait_until(lambda: issue(hass, "install_again_h") is None)
+    assert issue(hass, "problem_h") is None
+
+
+async def test_install_again_checks_again_at_confirmation(
+    hass: HomeAssistant, fake_hub: FakeHub, entry: MockConfigEntry
+) -> None:
+    """Each change between opening and confirming has its own reason, and no command goes out; a refusal of the hub
+    leaves the repair."""
+    fake_hub.hosts["h"] = host_view("h", capabilities=INSTALLS, problem=KEPT, failed_install=FAILED)
+    await setup(hass, entry)
+    sent = len(fake_hub.commands)
+
+    flow = await start_fix(hass, "install_again_h")
+    await fake_hub.push_host(host_view("h", capabilities=CAN, problem=KEPT, failed_install=FAILED))
+    await wait_until(lambda: issue(hass, "install_again_h") is None and issue(hass, "problem_h") is not None)
+    result = await confirm(hass, flow)
+    assert result["type"] is FlowResultType.ABORT and result["reason"] == "install_not_offered"
+
+    await fake_hub.push_host(host_view("h", capabilities=INSTALLS, problem=KEPT, failed_install=FAILED))
+    await wait_until(lambda: issue(hass, "install_again_h") is not None and issue(hass, "problem_h") is None)
+    flow = await start_fix(hass, "install_again_h")
+    await fake_hub.push_host(host_view("h", capabilities=INSTALLS))
+    await wait_until(lambda: issue(hass, "install_again_h") is None)
+    result = await confirm(hass, flow)
+    assert result["type"] is FlowResultType.ABORT and result["reason"] == "no_longer_needed"
+    assert len(fake_hub.commands) == sent
+
+    await fake_hub.push_host(host_view("h", capabilities=INSTALLS, problem=KEPT, failed_install=FAILED))
+    await wait_until(lambda: issue(hass, "install_again_h") is not None)
+    fake_hub.command_code = "role_forbids"
+    result = await confirm(hass, await start_fix(hass, "install_again_h"))
+    assert result["type"] is FlowResultType.ABORT and result["reason"] == "command_refused"
+    assert result["description_placeholders"] == {"node": "h", "code": "role_forbids"}
+    assert issue(hass, "install_again_h") is not None

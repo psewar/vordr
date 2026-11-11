@@ -40,6 +40,10 @@ Unbekanntes bleibt unbekannt: eine gescheiterte Prüfung macht `update.*_system`
   braucht. Wo Vördr neu starten darf, startet „Beheben“ den Neustart (wie der Neustart-Knopf); sonst sagt der Hinweis,
   dass von Hand neu zu starten ist. Nach `reboot_pending_after_days` der Leitstelle (Vorgabe 7) wird er zum Fehler und ersetzt den Problem-Hinweis `reboot_pending`
   ([ADR-0132](../docs/adr/0132-a-needed-reboot-is-a-repair-from-the-first-report.md)).
+- Ein gescheiterter Install, den die Leitstelle als Problem festhält, bis ein Install durchläuft, steht als
+  Reparaturhinweis „erneut installieren“, wo Vördr installieren darf: Ist die Ursache behoben, installiert „Beheben“
+  erneut, und ein Lauf, der durchläuft, löscht ihn, auch wenn nichts mehr zu installieren ist
+  ([ADR-0148](../docs/adr/0148-a-kept-failed-install-is-a-repair-that-installs-again.md)).
 - Verwundbare pip/npm-Pakete machen nur dann ein Problem, wenn jetzt jemand die Behebung nehmen kann: per Knopf, per
   Auffrischen der Abhängigkeiten oder von Hand. Wartet ein Fund auf andere (ein Paket oder eine Projektdatei hält die
   Version fest, es gibt noch keine Behebung, oder sie ist jünger als das Mindestalter), steht er nur am Sensor

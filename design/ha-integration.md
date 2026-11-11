@@ -175,6 +175,14 @@ If the integration cannot handle the hub's `protocol` version, it does not conne
   - warning, from the hub's `reboot_pending` an error; if the problem consists only of `reboot_pending`, `problem_<node>`
     is omitted for it (problem sensor and `vordr_problem` stay);
   - after an accepted "Fix" it stays away until the reboot run ends, at most 30 minutes.
+- **Install again as a repair issue** `install_again_<node>` while the hub keeps a failed install of the host
+  (`failed_install`, ADR-0124) and offers the install (capability `install`)
+  ([ADR-0148](../docs/adr/0148-a-kept-failed-install-is-a-repair-that-installs-again.md)):
+  - it names the code and the run's detail; "Fix" confirms, then sends the same command as the install button; on
+    confirming it is checked again (connection, host, kept failure, capability), each refusal with its own reason;
+  - a run that goes through clears the failure at the hub, and the repair goes with it; one that fails again keeps both;
+  - if the problem consists only of the kept failed install, `problem_<node>` is omitted for it (problem sensor and
+    `vordr_problem` stay); without the install offered, `problem_<node>` stays as before.
 - **Buttons** raise a refusal by the hub into the UI as an error with a code (`command_refused`); the update entity
   has `INSTALL` only with the capability `install`.
 

@@ -181,4 +181,6 @@ Generated from the files by `python3 docs/adr/check_index.py --write`. `build.sh
 | [0145](0145-the-integrations-own-texts-live-in-the-common-section.md) | The integration's own texts live in the `common` section, and its translations pass hassfest | accepted | 2026-11-11 |
 | [0146](0146-an-old-library-the-run-supersedes-is-no-removal.md) | An old library the run supersedes is no removal | accepted | 2026-11-11 |
 | [0147](0147-a-backup-waits-for-a-hypervisor-busy-with-a-check-of-its-own.md) | A backup waits for a hypervisor busy with a check of its own | accepted | 2026-11-11 |
+| [0148](0148-a-kept-failed-install-is-a-repair-that-installs-again.md) | A kept failed install is a repair that installs again | accepted | 2026-11-11 |
+| [0149](0149-any-backup-system-plugs-in-through-a-status-contract-and-a-backup-command.md) | Any backup system plugs in through a read-only status contract and a backup command | proposed | 2026-11-11 |
 <!-- adr-index:end -->

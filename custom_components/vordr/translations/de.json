@@ -343,6 +343,25 @@
       "title": "Vördr: {node} braucht einen Neustart",
       "description": "{node} braucht seit {since} einen Neustart. Dieser Host erlaubt keinen Neustart über Vördr: bitte von Hand neu starten. Der Hinweis verschwindet von selbst, sobald der Host keinen Neustart mehr braucht."
     },
+    "install_again": {
+      "title": "Vördr: erneut installieren auf {node}",
+      "description": "Der letzte Install auf {node} ist gescheitert: {code} ({detail}). Vördr hält den Fehlschlag als Problem fest, bis ein Install durchläuft. Ist die Ursache behoben, etwa von Hand, installiere erneut: Ein Lauf, der durchläuft, löscht ihn, auch wenn nichts mehr zu installieren ist.",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Auf {node} erneut installieren?",
+            "description": "Vördr bittet die Leitstelle um denselben Install wie der Installieren-Knopf des Hosts, auch ausserhalb seines Fensters. Läuft er durch, verschwinden das Problem und diese Reparatur; besteht die Ursache noch, scheitert er wieder und beides bleibt."
+          }
+        },
+        "abort": {
+          "hub_not_connected": "Home Assistant ist gerade nicht mit der Vördr-Leitstelle verbunden. Bitte später noch einmal versuchen.",
+          "host_gone": "Die Leitstelle kennt {node} nicht mehr.",
+          "no_longer_needed": "{node} hat keinen gescheiterten Install mehr.",
+          "install_not_offered": "{node} erlaubt keine Installs über Vördr mehr. Installiere von Hand.",
+          "command_refused": "Die Leitstelle hat den Install auf {node} abgelehnt (Code {code})."
+        }
+      }
+    },
     "problem_offline": {
       "title": "Vördr: Update-Problem auf {node}",
       "description": "Seit über {offline_minutes} Minuten nicht mit der Leitstelle verbunden.\n\nNächster Schritt: Host und Agent prüfen."
