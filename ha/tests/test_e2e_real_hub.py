@@ -161,13 +161,24 @@ async def test_real_hub_and_agent(hass: HomeAssistant, stack: Stack) -> None:
     assert hass.states.get("button.vordr_e2e_host_check") is not None
     assert hass.states.get("button.vordr_e2e_host_reboot") is None  # not announced, not allowed
 
-    # Button -> command -> signed job -> agent -> result in the host's view. The agent may refuse a second check
-    # within minutes (rate limit) - that is a result as well; what counts is that this job came back.
+    # Button -> command -> signed job -> agent -> result in the host's view. What counts is that this job came back.
+    # The agent may refuse it, and that is a result as well: within minutes of the first check (rate limit), or while
+    # it still gathers the first check's package inventory, which takes a while where much software is installed
+    # (busy: it checks the lock before the minimum interval).
     await hass.services.async_call("button", "press", {"entity_id": "button.vordr_e2e_host_check"}, blocking=True)
     await wait_until(lambda: hass.states.get("sensor.vordr_e2e_host_last_run").attributes.get("verb") == "check", 30)
     run = hass.states.get("sensor.vordr_e2e_host_last_run")
+
+    def last_run() -> str:
+        state = hass.states.get("sensor.vordr_e2e_host_last_run")
+        return f"last run {state.state}: {dict(state.attributes)}"
+
     await wait_until(
-        lambda: hass.states.get("sensor.vordr_e2e_host_last_run").state in ("ok", "rejected_rate_limited"), 60
+        lambda: (
+            hass.states.get("sensor.vordr_e2e_host_last_run").state in ("ok", "rejected_rate_limited", "rejected_busy")
+        ),
+        60,
+        describe=last_run,
     )
     assert run.attributes["job_id"]
 

@@ -283,8 +283,11 @@ def entry(fake_hub: FakeHub) -> MockConfigEntry:
     )
 
 
-async def wait_until(cond: Any, timeout: float = 5.0) -> None:
-    """Let the event loop run until cond() holds."""
-    async with asyncio.timeout(timeout):
-        while not cond():
-            await asyncio.sleep(0.02)
+async def wait_until(cond: Any, timeout: float = 5.0, describe: Any = None) -> None:
+    """Let the event loop run until cond() holds. On timeout, describe() says what was there instead."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while not cond():
+        if loop.time() > deadline:
+            raise TimeoutError(describe() if describe else f"not within {timeout} s")
+        await asyncio.sleep(0.02)
