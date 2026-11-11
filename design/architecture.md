@@ -504,8 +504,12 @@ install, only `check`. `vordr-agent check-config` checks the file before the ser
    `Replaces` and in addition `Breaks` or `Conflicts` against the old one (Debian Policy 7.6.2). This is how distributions
    rename or split packages. Example: in 2026 Raspberry Pi OS replaced `pcmanfm` with `pcmanfm-pi`; without this exception
    hundreds of updates would have stayed pending on a Pi ([ADR-0042](../docs/adr/0042-replaced-packages-are-no-removal.md)).
+   Also excepted is an old library the run leaves behind when a library moves to a new soname: it was installed
+   automatically, a package of the run comes from the same source package, and every installed package that depends
+   on it moves to a version without it in the same run
+   ([ADR-0146](../docs/adr/0146-an-old-library-the-run-supersedes-is-no-removal.md)).
    - The run lists such replacements in its summary (`replaced`).
-   - If `apt-cache` cannot say anything about it, every removal counts as a real one.
+   - If `apt-cache`, `apt-mark` or `dpkg-query` cannot say anything about it, every removal counts as a real one.
    - For scope `all`, `full-upgrade`, unless `install.mode` says `upgrade`
      ([ADR-0076](../docs/adr/0076-full-upgrade-by-default.md)).
    - For `scope=security`, only packages whose candidate comes from a security source

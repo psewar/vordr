@@ -512,8 +512,12 @@ automatisches Installieren, nur `check`. `vordr-agent check-config` prüft die D
    `Replaces` und zusätzlich `Breaks` oder `Conflicts` auf das alte (Debian Policy 7.6.2). So benennen Distributionen
    Pakete um oder teilen sie auf. Beispiel: Raspberry Pi OS ersetzte 2026 `pcmanfm` durch `pcmanfm-pi`; ohne diese Ausnahme
    blieben auf einem Pi deshalb Hunderte Updates liegen ([ADR-0042](../docs/adr/0042-replaced-packages-are-no-removal.md)).
+   Ebenfalls ausgenommen ist eine alte Bibliothek, die der Lauf zurücklässt, wenn eine Bibliothek auf einen neuen
+   Soname wechselt: Sie wurde automatisch installiert, ein Paket des Laufs stammt aus demselben Quellpaket, und jedes
+   installierte Paket, das von ihr abhängt, wechselt im selben Lauf auf eine Fassung ohne sie
+   ([ADR-0146](../docs/adr/0146-an-old-library-the-run-supersedes-is-no-removal.md)).
    - Der Lauf nennt solche Ersetzungen in der Zusammenfassung (`replaced`).
-   - Kann `apt-cache` nichts dazu sagen, zählt jede Entfernung als echte.
+   - Können `apt-cache`, `apt-mark` oder `dpkg-query` nichts dazu sagen, zählt jede Entfernung als echte.
    - Beim Umfang `all` `full-upgrade`, ausser `install.mode` sagt `upgrade`
      ([ADR-0076](../docs/adr/0076-full-upgrade-by-default.md)).
    - Bei `scope=security` nur Pakete, deren Kandidat aus einer Sicherheitsquelle stammt

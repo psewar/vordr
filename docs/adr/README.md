@@ -75,7 +75,7 @@ Generated from the files by `python3 docs/adr/check_index.py --write`. `build.sh
 | [0039](0039-ha-client-roles.md) | Roles for Home Assistant clients: observe, operate, admin | accepted | 2026-10-29 |
 | [0040](0040-brand-rune-shield.md) | Brand: the rune shield with Algiz | accepted | 2026-10-29 |
 | [0041](0041-reboot-with-window-and-proof.md) | Reboot on request, only inside the window, with proof | superseded by ADR-0087 | 2026-10-29 |
-| [0042](0042-replaced-packages-are-no-removal.md) | A package the run replaces is no removal | accepted | 2026-10-29 |
+| [0042](0042-replaced-packages-are-no-removal.md) | A package the run replaces is no removal | superseded by ADR-0146 | 2026-10-29 |
 | [0043](0043-queue-per-host.md) | Commands for a busy host wait in a queue at the hub | accepted | 2026-10-29 |
 | [0044](0044-same-command-joins-running-run.md) | The same command as the running run joins it instead of waiting | accepted | 2026-10-29 |
 | [0045](0045-site-decision.md) | A decision about the operation of one site | accepted | 2026-10-29 |
@@ -179,4 +179,5 @@ Generated from the files by `python3 docs/adr/check_index.py --write`. `build.sh
 | [0143](0143-every-document-in-english-and-german.md) | Every document exists in English and German | accepted | 2026-11-11 |
 | [0144](0144-the-integration-lives-at-the-repository-root.md) | The integration lives at the repository root, where HACS looks for it | accepted | 2026-11-11 |
 | [0145](0145-the-integrations-own-texts-live-in-the-common-section.md) | The integration's own texts live in the `common` section, and its translations pass hassfest | accepted | 2026-11-11 |
+| [0146](0146-an-old-library-the-run-supersedes-is-no-removal.md) | An old library the run supersedes is no removal | accepted | 2026-11-11 |
 <!-- adr-index:end -->
