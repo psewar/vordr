@@ -55,18 +55,21 @@ nothing in it may point at the infrastructure of whoever runs it.
 A pull request is complete when it contains, as far as they apply:
 
 - **Tests.** A behaviour change comes with tests; a bug fix with a test that fails without the fix. Go tests live next
-  to the code (`*_test.go`); the integration's tests are in `ha/tests/`. A refusal is tested as well as the accepted
-  case.
+  to the code (`*_test.go`); the integration lives in `custom_components/vordr/` at the root, where HACS looks for it,
+  and its tests are in `ha/tests/` ([ADR-0144](docs/adr/0144-the-integration-lives-at-the-repository-root.md)). A
+  refusal is tested as well as the accepted case.
 - **Version.**
   - Agent and hub get their version at build time: `./build.sh <X.Y.Z>`. Agents only take a release newer than the one
     they run.
-  - The integration's version is `VERSION` in `ha/custom_components/vordr/const.py` and `version` in
-    `ha/custom_components/vordr/manifest.json`, kept in step.
+  - The integration's version is `VERSION` in `custom_components/vordr/const.py` and `version` in
+    `custom_components/vordr/manifest.json`, kept in step.
   - Patch for fixes, minor for new behaviour while below 1.0.
 - **Documentation.**
   - The design documents in `design/` describe the new behaviour. They link to the ADRs instead of repeating the
     reasons.
-  - `README.md`, `README.de.md`, `ha/README.md` and `deploy/README.md` change where setup or use changes.
+  - `README.md`, `ha/README.md` and `deploy/README.md` change where setup or use changes.
+  - Every document changes in English and German in the same pull request (`name.md` and `name.de.md`, see
+    "Language and names").
 - **ADR** for every decision (see "Architecture decisions are recorded as ADRs").
 - **Configuration.**
   - A new key goes into the example file (`agent.example.yaml`, `hub.example.yaml`) and into the validation that
@@ -74,16 +77,17 @@ A pull request is complete when it contains, as far as they apply:
   - The agent's local policy stays closed by default: a new verb or scope does nothing until `agent.yaml` allows it.
   - An existing configuration keeps working without edits, or the change is marked breaking.
 - **Texts in Home Assistant.** The hub sends codes, the integration has the texts in
-  `ha/custom_components/vordr/translations/en.json` and `ha/custom_components/vordr/translations/de.json`, and in
-  `ha/custom_components/vordr/strings.json` (equal to `en.json`). `ha/tests/test_texts.py` checks that every file has
+  `custom_components/vordr/translations/en.json` and `custom_components/vordr/translations/de.json`, and in
+  `custom_components/vordr/strings.json` (equal to `en.json`). `ha/tests/test_texts.py` checks that every file has
   every text.
 
 ## Running the checks
 
 ```bash
-./build.sh                        # ADR index, site-neutral check, gofmt, go vet (Linux and Windows), go test
-                                  # (-race where gcc exists), binaries in dist/
-cd ha && ruff check . && ruff format --check . && python -m pytest -q   # integration (see ha/README.md for the venv)
+./build.sh                        # ADR index, site-neutral check, documents in both languages, gofmt, go vet
+                                  # (Linux and Windows), go test (-race where gcc exists), binaries in dist/
+ruff check custom_components ha && ruff format --check custom_components ha && python -m pytest -q
+                                  # integration, from the root (see ha/README.md for the venv)
 python3 docs/adr/check_index.py --write                              # regenerate the ADR index
 python3 tools/check_neutral.py --text <file>                         # commit message or pull request text
 ```
@@ -97,9 +101,11 @@ python3 tools/check_neutral.py --text <file>                         # commit me
 ## Language and names
 
 - Code, identifiers, comments, log and error messages, commit messages, pull request texts and ADRs are English.
-- `README.md` is English and `README.de.md` its German version; both change together
-  ([ADR-0141](docs/adr/0141-readme-in-english-with-a-german-version.md)). `ha/README.md`, `deploy/README.md` and the
-  design documents are German.
+- Every document exists in English as `name.md` and in German as `name.de.md` beside it, with the same outline; both
+  change together ([ADR-0143](docs/adr/0143-every-document-in-english-and-german.md)). Each version links the other
+  under its title and links the documents of its own language. `tools/check_docs.py` in `./build.sh` checks the pairs,
+  their outline and every link. ADRs, this file and `CLAUDE.md` are English only.
+- German texts use Swiss spelling (`ss`, never `ß`).
 - Texts users see in Home Assistant come from the translations, never from the hub.
 
 ## Tools check their own preconditions

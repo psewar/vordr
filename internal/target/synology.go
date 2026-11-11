@@ -15,7 +15,7 @@ import (
 )
 
 // synology speaks for a Synology NAS through the DSM Web API (entry.cgi), as the control panel does. Requests,
-// answers and the export format are those of DSM 7 (design/stellvertreter.md 5).
+// answers and the export format are those of DSM 7 (design/proxy-agent.md 5).
 type synology struct {
 	base       string // https://<address>:<port>
 	client     *http.Client

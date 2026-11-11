@@ -1,4 +1,4 @@
-# Attaches the integration as vordr.zip to a published release, for HACS (ADR-0136). The tag must be the version in
+# Attaches the integration as vordr.zip to a published release, for HACS (ADR-0144). The tag must be the version in
 # manifest.json; agent and hub binaries are not attached, every operator signs their own (ADR-0139).
 name: release
 
@@ -16,7 +16,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Tag matches the integration's version
         run: |
-          want="v$(python3 -c 'import json; print(json.load(open("ha/custom_components/vordr/manifest.json"))["version"])')"
+          want="v$(python3 -c 'import json; print(json.load(open("custom_components/vordr/manifest.json"))["version"])')"
           if [ "$GITHUB_REF_NAME" != "$want" ]; then
             echo "tag $GITHUB_REF_NAME differs from manifest.json ($want); nothing attached" >&2
             exit 1
@@ -25,6 +25,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          cd ha/custom_components/vordr
+          cd custom_components/vordr
           zip -r -X "$RUNNER_TEMP/vordr.zip" . -x '*__pycache__*' '*.pyc'
           gh release upload "$GITHUB_REF_NAME" "$RUNNER_TEMP/vordr.zip" --clobber

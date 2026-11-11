@@ -169,11 +169,13 @@ Generated from the files by `python3 docs/adr/check_index.py --write`. `build.sh
 | [0133](0133-site-decisions-stay-with-the-site.md) | Decisions about one site's operation stay with that site; the public tree carries a stub | accepted | 2026-11-11 |
 | [0134](0134-the-neutral-check-also-stops-operations-wording.md) | The neutral check also stops the wording of an operations log | accepted | 2026-11-11 |
 | [0135](0135-mit-license.md) | MIT license | accepted | 2026-11-11 |
-| [0136](0136-integration-via-hacs-as-a-zip-release.md) | The integration ships through HACS as a zip release of the public repository | accepted | 2026-11-11 |
+| [0136](0136-integration-via-hacs-as-a-zip-release.md) | The integration ships through HACS as a zip release of the public repository | superseded by ADR-0144 | 2026-11-11 |
 | [0137](0137-checks-run-in-github-actions.md) | The checks run in GitHub Actions on the public repository | accepted | 2026-11-11 |
 | [0138](0138-vulnerabilities-are-reported-privately-on-github.md) | Vulnerabilities are reported privately through GitHub | accepted | 2026-11-11 |
 | [0139](0139-the-release-signer-is-part-of-the-repository.md) | The release signer is part of the repository | accepted | 2026-11-11 |
 | [0140](0140-work-stays-private-the-public-repository-gets-snapshots.md) | Work stays in the private repository; the public one gets checked snapshots | accepted | 2026-11-11 |
-| [0141](0141-readme-in-english-with-a-german-version.md) | The README is English, with a German version beside it | accepted | 2026-11-11 |
+| [0141](0141-readme-in-english-with-a-german-version.md) | The README is English, with a German version beside it | superseded by ADR-0143 | 2026-11-11 |
 | [0142](0142-the-hub-waits-for-its-sessions-work-when-it-stops.md) | The hub waits for its sessions' work when it stops | accepted | 2026-11-11 |
+| [0143](0143-every-document-in-english-and-german.md) | Every document exists in English and German | accepted | 2026-11-11 |
+| [0144](0144-the-integration-lives-at-the-repository-root.md) | The integration lives at the repository root, where HACS looks for it | accepted | 2026-11-11 |
 <!-- adr-index:end -->

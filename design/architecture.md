@@ -1,470 +1,464 @@
-# Vördr – Entwurf
+# Vördr – design
 
-> **Stand:** Dieser Entwurf beschreibt den gebauten Stand: Agent für Linux (apt) und Windows (Windows Update, winget),
-> Leitstelle mit Freigabe, signierten Aufträgen, Installieren, Neustart und Selbst-Update in Ringen, Bestand von pip,
-> pipx, npm und Container-Images mit OSV-Abgleich, Backup vor dem Install. Home Assistant spricht als freigegebener
-> Client über `/v1/ha` mit der Leitstelle ([ha-integration.md](ha-integration.md)); MQTT gibt es nicht mehr
-> ([ADR-0026](../docs/adr/0026-remove-mqtt.md)). Appliances ohne eigenen Agenten: [stellvertreter.md](stellvertreter.md).
-> Was noch nicht gebaut ist, steht an seiner Stelle als „noch nicht gebaut“. Technische Namen (Verben, Zustände,
-> Konfigschlüssel, Entitäts-IDs) sind englisch, Anzeigenamen folgen der Systemsprache von Home Assistant
-> ([ADR-0075](../docs/adr/0075-display-names-follow-system-language.md)). Beispiele verwenden Platzhalter
-> (`example-host`, `vordr-hub.example`), keine echten Hostnamen.
+English · [Deutsch](architecture.de.md)
+
+> **Status:** This design describes what is built: agent for Linux (apt) and Windows (Windows Update, winget), hub with
+> approval, signed jobs, install, reboot and self-update in rings, inventory of pip, pipx, npm and container images with
+> OSV matching, backup before the install. Home Assistant talks to the hub as an approved client over `/v1/ha`
+> ([ha-integration.md](ha-integration.md)); MQTT is gone ([ADR-0026](../docs/adr/0026-remove-mqtt.md)). Appliances
+> without an agent of their own: [proxy-agent.md](proxy-agent.md). What is not built yet appears in its place as "not
+> built yet". Technical names (verbs, states, configuration keys, entity IDs) are English, display names follow the
+> system language of Home Assistant ([ADR-0075](../docs/adr/0075-display-names-follow-system-language.md)). Examples use
+> placeholders (`example-host`, `vordr-hub.example`) instead of actual host names.
 >
-> **Begründungen:** Die Entscheidungen hinter diesem Entwurf stehen als ADRs in [docs/adr](../docs/adr/README.md).
+> **Rationale:** The decisions behind this design are the ADRs in [docs/adr](../docs/adr/README.md).
 
-Vördr hält Rechner und Dienste aktuell und macht in Home Assistant sichtbar, wo das nicht gelingt: Ein Update lässt
-sich nicht einspielen, ein Lauf ist gescheitert, Updates bleiben liegen oder ein Rechner meldet sich nicht mehr.
-Bauteile: ein Agent pro Rechner (`vordr-agent`) und eine Leitstelle (`vordr-hub`), beide in Go
-([ADR-0003](../docs/adr/0003-go.md)). Das Muster
-(Ed25519-Identität mit Freigabe, ausgehender Tunnel, signiertes Selbst-Update mit Kanarienvogel) stammt aus einem
-früheren Agenten (im Folgenden: das Vorbild-Projekt); die Sicherheitsgrenzen sind hier enger gezogen, weil Aufträge
-als root wirken
+Vördr keeps hosts and services up to date and shows in Home Assistant where that does not work: an update cannot be
+installed, a run has failed, updates stay pending or a host has stopped reporting. Components: one agent per host
+(`vordr-agent`) and a hub (`vordr-hub`), both in Go ([ADR-0003](../docs/adr/0003-go.md)). The pattern
+(Ed25519 identity with approval, outbound tunnel, signed self-update with a canary) comes from an earlier agent (in the
+following: the earlier agent); the security boundaries are drawn tighter here because jobs run as root
 ([ADR-0002](../docs/adr/0002-own-project-following-an-earlier-agent.md)).
 
-## 1. Anlass und Ziel
+## 1. Motivation and goal
 
-Home Assistant kennt mit der `update`-Entität und der Seite *Einstellungen → Updates* schon eine zentrale Sicht auf
-Updates, aber nur für Geräte, die eine Integration mitbringen (HA selbst, Add-ons, HACS, ESPHome, NAS, Kameras …).
-Es fehlen Linux-Server, VMs und LXC-Container, Proxmox-Hosts, Raspberry Pis, Windows-PCs und die Programme darauf.
-Ausserdem kennt die `update`-Entität keinen Zustand „fehlgeschlagen“: Scheitert eine Installation, erscheint kurz
-eine Fehlermeldung, gespeichert wird nichts.
+With the `update` entity and the page *Settings → Updates*, Home Assistant already has a central view of updates, but
+only for devices that bring an integration (HA itself, add-ons, HACS, ESPHome, NAS, cameras …). Linux servers, VMs and
+LXC containers, Proxmox hosts, Raspberry Pis, Windows PCs and the programs on them are missing. In addition, the
+`update` entity has no state "failed": if an installation fails, an error message appears briefly and nothing is
+stored.
 
-Geprüfte Alternativen (Stand 2026-10; [ADR-0001](../docs/adr/0001-own-agent-instead-of-patchmon.md)):
+Alternatives examined (status 2026-10; [ADR-0001](../docs/adr/0001-own-agent-instead-of-patchmon.md)):
 
-| Werkzeug | Warum nicht |
+| Tool | Why not |
 |---|---|
-| PatchMon | Zentrale root-Fernausführung auf allen Hosts und ein Browser-SSH-Terminal: Ein übernommener Server bedeutet root überall. Keine HA-Anbindung. |
-| updates2mqtt | Nur Docker-Container. |
-| LNXlink | Zählt ausstehende Updates, führt aber keine Läufe aus und meldet keine Fehlschläge. |
-| HASS.Agent | Windows-Update-Sensor nur in der alten Version; ob der aktuelle Fork ihn hat, ist offen. |
+| PatchMon | Central remote execution as root on all hosts and a browser SSH terminal: one compromised server means root everywhere. No HA integration. |
+| updates2mqtt | Docker containers only. |
+| LNXlink | Counts pending updates, but runs nothing and reports no failures. |
+| HASS.Agent | Windows update sensor only in the old version; whether the current fork has it is open. |
 
-Ziele:
+Goals:
 
-1. Pro Rechner ein HA-Gerät mit seinen Update-Quellen und wichtigen Programmen, jeweils mit Update-Stand.
-2. Updates aus HA anstossen (Knopf) oder automatisch im Wartungsfenster einspielen.
-3. Jedes Problem als **gemeldeter Zustand** in HA: abgelehnt, gescheitert, hängt, Neustart nötig, Rechner stumm.
+1. One HA device per host, with its update sources and important programs, each with its update status.
+2. Trigger updates from HA (button) or install them automatically in the maintenance window.
+3. Every problem as a **reported state** in HA: rejected, failed, stuck, reboot needed, host silent.
 
-Nicht-Ziele ([ADR-0013](../docs/adr/0013-scope-limits.md)):
+Non-goals ([ADR-0013](../docs/adr/0013-scope-limits.md)):
 
-- Keine allgemeine Fernverwaltung: keine Shell, keine Dateiübertragung, keine Konfigurationsverwaltung.
-- Kein Metrik-Monitoring.
-- Geräte mit Hersteller-Firmware (Router, Firewall, NAS, Drucker, ESPHome-Geräte) bekommen keinen Agenten. Ihren
-  Update-Stand liefern die HA-Integrationen; Vördr beobachtet sie nur über den HA-Blueprint (Abschnitt 8.5).
-- Kubernetes-Workloads: Dort laufen Updates als Pull Requests (z. B. Renovate) über GitOps, nicht über einen Agenten.
+- No general remote administration: no shell, no file transfer, no configuration management.
+- No metrics monitoring.
+- Devices with vendor firmware (router, firewall, NAS, printer, ESPHome devices) get no agent. The HA integrations
+  supply their update status; Vördr only watches them through the HA blueprint (section 8.5).
+- Kubernetes workloads: updates there run as pull requests (e.g. Renovate) through GitOps, not through an agent.
 
-## 2. Grundsätze
+## 2. Principles
 
-1. **Zustand melden statt aus Fehlern ableiten.** Jedes Ergebnis ist ein fester Code (Abschnitt 7). Fehlertexte
-   gehen höchstens als Auszug für Menschen mit, nie in eine Entscheidung. Muss ein Fall unterschieden werden, bekommt
-   er einen eigenen Code ([ADR-0007](../docs/adr/0007-fixed-codes-instead-of-error-texts.md)).
-2. **Der Agent erledigt seinen Auftrag selbst, samt Prüfung.** Vor jeder Wirkung prüft er die Vorbedingungen. Stimmt
-   etwas nicht, lehnt er ab und meldet Zustand und nächsten Schritt, statt halb zu handeln. Was sich ableiten lässt,
-   leitet er ab (z. B. die Zeitzone des Hosts für sein Fenster).
-3. **Die lokale Richtlinie hat das letzte Wort.** Was ein Host erlaubt (Verben, Umfang, Fenster, Neustart), steht in
-   seiner eigenen Konfiguration. Die Leitstelle kann nur anfragen
-   ([ADR-0006](../docs/adr/0006-local-policy-decides.md)). Einzige Ausnahme: Einen Lauf, den ein Mensch mit Grund
-   verlangt, nimmt der Agent auch ausserhalb seines Fensters an
-   ([ADR-0087](../docs/adr/0087-runs-outside-the-window-with-a-reason.md)). Drückt ein Mensch in HA auf Installieren,
-   gibt die Leitstelle diesen Grund selbst mit
-   ([ADR-0109](../docs/adr/0109-the-install-button-installs-at-once.md)).
-4. **Kleinste Angriffsfläche.** Geschlossene Verbmenge, keine Shell, keine Paketnamen von aussen, keine Weboberfläche
-   in der Leitstelle. Agenten sprechen nur mit der Leitstelle, nie mit Home Assistant
+1. **Report state instead of deriving it from errors.** Every result is a fixed code (section 7). Error texts go along
+   at most as an excerpt for humans, never into a decision. If a case must be told apart, it gets its own code
+   ([ADR-0007](../docs/adr/0007-fixed-codes-instead-of-error-texts.md)).
+2. **The agent does its job itself, including the checks.** Before any effect it checks the preconditions. If
+   something is wrong, it refuses and reports the state and the next step instead of acting halfway. What can be
+   derived, it derives (e.g. the host's time zone for its window).
+3. **The local policy has the last word.** What a host allows (verbs, scope, window, reboot) is in its own
+   configuration. The hub can only ask ([ADR-0006](../docs/adr/0006-local-policy-decides.md)). The only exception: a
+   run that a human demands with a reason, the agent also accepts outside its window
+   ([ADR-0087](../docs/adr/0087-runs-outside-the-window-with-a-reason.md)). When a human presses Install in HA, the hub
+   supplies this reason itself ([ADR-0109](../docs/adr/0109-the-install-button-installs-at-once.md)).
+4. **Smallest attack surface.** Closed set of verbs, no shell, no package names from outside, no web interface in the
+   hub. Agents talk only to the hub, never to Home Assistant
    ([ADR-0005](../docs/adr/0005-closed-verbs-without-shell.md),
    [ADR-0010](../docs/adr/0010-administration-only-local.md), [ADR-0023](../docs/adr/0023-own-ha-integration.md)).
-5. **Nur Entitäten, die hier etwas bedeuten**, und gelöscht wird nur auf eine sichere Auskunft hin (Lehre aus
-   dem Vorbild-Projekt: sonst flackern Entitäten bei jedem Neustart).
-6. **Sonderfälle nur ausdrücklich und mit Grund**, der im Protokoll und in HA sichtbar bleibt (z. B. ein Lauf
-   ausserhalb des Fensters, 6.4), nie als stiller Schalter.
+5. **Only entities that mean something here**, and deletion only on a reliable answer (lesson from the earlier
+   agent: otherwise entities flicker on every restart).
+6. **Special cases only explicitly and with a reason** that stays visible in the log and in HA (e.g. a run outside the
+   window, 6.4), never as a silent switch.
 
-## 3. Überblick
+## 3. Overview
 
 ```
-┌───────────── je Rechner ─────────────┐
-│ vordr-agent (Go, statische Binary)   │
-│  ├─ Quellen: apt | winupdate | …     │
-│  ├─ lokale Richtlinie (agent.yaml)   │
-│  └─ Ed25519-Identität                │
+┌───────────── per host ───────────────┐
+│ vordr-agent (Go, static binary)      │
+│  ├─ sources: apt | winupdate | …     │
+│  ├─ local policy (agent.yaml)        │
+│  └─ Ed25519 identity                 │
 └──────────────────┬───────────────────┘
-                   │ nur ausgehend: WebSocket über TLS
+                   │ outbound only: WebSocket over TLS
                    ▼
-      vordr-hub (Leitstelle) ◀── wss /v1/ha ── Home Assistant (Integration „vordr“)
-       ├─ Register + Freigabe                   Knöpfe → Befehle (prüfen, installieren, neu starten)
-       ├─ signiert Aufträge
-       ├─ Rollout in Ringen
-       ├─ verteilt Agent-Binaries (signiert sie nicht)
-       └─ Ereignisprotokoll
+      vordr-hub (hub) ◀── wss /v1/ha ── Home Assistant (integration "vordr")
+       ├─ register + approval                   buttons → commands (check, install, reboot)
+       ├─ signs jobs
+       ├─ rollout in rings
+       ├─ distributes agent binaries (does not sign them)
+       └─ event log
 
-Betreiber-Schlüssel: signiert die Agent-Manifeste, nie auf der Leitstelle
+Operator key: signs the agent manifests, never on the hub
 ```
 
-| Teil | Läuft wo | Aufgabe |
+| Part | Runs where | Job |
 |---|---|---|
-| `vordr-agent` | auf jedem verwalteten Rechner, als systemd- bzw. Windows-Dienst | Quellen abfragen, Läufe prüfen und ausführen, Ergebnis melden, sich selbst aktualisieren |
-| `vordr-hub` | auf einem Linux-Host oder in einem eigenen Container ([ADR-0054](../docs/adr/0054-hub-in-own-container.md)), als systemd-Dienst | Agenten anmelden und freigeben, Aufträge signieren und zustellen, Rollout in Ringen, Agent-Binaries verteilen, Zustand an HA geben |
-| Home Assistant | die vorhandene Instanz, mit der Integration `custom_components/vordr` | einzige Oberfläche: Anzeige, Knöpfe, Benachrichtigungen |
-| Signieren der Releases | beim Betreiber, nie auf der Leitstelle | Betreiber-Schlüssel, signiert das Manifest jeder Agent-Version (10.4) |
+| `vordr-agent` | on every managed host, as a systemd or Windows service | query sources, check and run jobs, report the result, update itself |
+| `vordr-hub` | on a Linux host or in a container of its own ([ADR-0054](../docs/adr/0054-hub-in-own-container.md)), as a systemd service | log in and approve agents, sign and deliver jobs, rollout in rings, distribute agent binaries, pass state to HA |
+| Home Assistant | the existing instance, with the integration `custom_components/vordr` | the only interface: display, buttons, notifications |
+| Signing the releases | at the operator, never on the hub | operator key, signs the manifest of every agent version (10.4) |
 
-Verbindungen:
+Connections:
 
-- **Agent → Hub:** nur ausgehend, WebSocket über TLS (`/v1/tunnel`), Anmeldung per Ed25519-Challenge. Auf den Hosts
-  ist kein Port offen, Reconnect mit Backoff 1–30 s.
-- **Home Assistant → Hub:** die Integration verbindet sich als freigegebener Client über `/v1/ha`, auf demselben Port
-  und mit demselben Zertifikat ([ha-integration.md](ha-integration.md),
-  [ADR-0023](../docs/adr/0023-own-ha-integration.md)). Die Leitstelle braucht keinen Weg zu HA.
-- **Agent-Binaries:** Der Hub liefert sie per HTTPS mit Einmal-Token (15 min) aus. Ihre Echtheit sichert die
-  Betreiber-Signatur, nicht der Hub.
+- **Agent → hub:** outbound only, WebSocket over TLS (`/v1/tunnel`), login by Ed25519 challenge. No port is open on
+  the hosts, reconnect with backoff 1–30 s.
+- **Home Assistant → hub:** the integration connects as an approved client over `/v1/ha`, on the same port and with
+  the same certificate ([ha-integration.md](ha-integration.md),
+  [ADR-0023](../docs/adr/0023-own-ha-integration.md)). The hub needs no path to HA.
+- **Agent binaries:** the hub serves them over HTTPS with a one-time token (15 min). Their authenticity is secured by
+  the operator signature, not by the hub.
 
-## 4. Vertrauen und Schlüssel
+## 4. Trust and keys
 
-| Schlüssel | Liegt | Wofür | Wer ihn stiehlt, kann |
+| Key | Lives | Used for | Whoever steals it can |
 |---|---|---|---|
-| Agent-Identität (Ed25519) | jeder Host; Linux als Datei mit 0600, Windows DPAPI-geschützt | Anmeldung am Hub | sich als dieser Host ausgeben und dessen Zustand fälschen |
-| Hub-Schlüssel (Ed25519) | Hub | signiert jeden Auftrag; jeder Agent hat den öffentlichen Schlüssel fest in seiner Konfiguration | erlaubte Aufträge innerhalb der lokalen Richtlinien auslösen, mit Grund auch ausserhalb des Fensters |
-| Betreiber-Schlüssel (Ed25519) | beim Betreiber, nur für ihn lesbar; nie auf dem Hub. Der Ersatzschlüssel liegt getrennt davon (10.4) | signiert das Manifest der Agent-Binaries | Code auf alle Agenten bringen – darum nie auf dem Hub, dazu ein Ersatzschlüssel (10.4) |
-| Code-Signing-Zertifikat (Authenticode) | keins ([ADR-0084](../docs/adr/0084-windows-self-update-without-code-signing.md)) | erst nötig, falls Smart App Control den Tausch der Windows-Binary blockt | nichts über die Manifest-Signatur hinaus |
+| Agent identity (Ed25519) | every host; Linux as a file with 0600, Windows protected by DPAPI | login at the hub | impersonate this host and forge its state |
+| Hub key (Ed25519) | hub | signs every job; every agent has the public key fixed in its configuration | trigger allowed jobs within the local policies, with a reason also outside the window |
+| Operator key (Ed25519) | at the operator, readable only by them; never on the hub. The replacement key is kept separately from it (10.4) | signs the manifest of the agent binaries | put code on all agents – hence never on the hub, plus a replacement key (10.4) |
+| Code-signing certificate (Authenticode) | none ([ADR-0084](../docs/adr/0084-windows-self-update-without-code-signing.md)) | only needed if Smart App Control blocks the swap of the Windows binary | nothing beyond the manifest signature |
 
-**Warum Aufträge signiert werden, obwohl der Tunnel authentifiziert ist:** Im Vorbild-Projekt weist sich nur der Agent aus.
-Hier wirken Aufträge als root, also muss der Agent wissen, dass ein Auftrag vom Hub stammt, auch wenn jemand DNS oder
-das Netz umlenkt. Ein Auftrag trägt `job_id`, `node`, `verb`, `params`, `issued_at`, `expires_at` (höchstens 5 min nach
-`issued_at`) und die Signatur. Der Agent verwirft Aufträge mit fremdem `node`, abgelaufene und bereits gesehene
-`job_id` (Wiederholungsschutz) und meldet das als `rejected_invalid_job`
+**Why jobs are signed although the tunnel is authenticated:** In the earlier agent, only the agent identifies itself.
+Here jobs run as root, so the agent must know that a job comes from the hub, even if someone redirects DNS or the
+network. A job carries `job_id`, `node`, `verb`, `params`, `issued_at`, `expires_at` (at most 5 min after
+`issued_at`) and the signature. The agent discards jobs with a foreign `node`, expired jobs and `job_id`s it has
+already seen (replay protection) and reports that as `rejected_invalid_job`
 ([ADR-0002](../docs/adr/0002-own-project-following-an-earlier-agent.md)).
 
-TLS sichert die Vertraulichkeit. Das Vertrauen in Aufträge und Binaries hängt an den Signaturen
+TLS secures confidentiality. Trust in jobs and binaries rests on the signatures
 ([ADR-0032](../docs/adr/0032-self-update-signed-by-operator.md), [ADR-0035](../docs/adr/0035-backup-operator-key.md)).
 
-## 5. Bedrohungsmodell
+## 5. Threat model
 
-| Angreifer hat … | kann | kann nicht |
+| Attacker has … | can | cannot |
 |---|---|---|
-| einen Host übernommen | dessen Zustand fälschen | andere Hosts beeinflussen, Aufträge erzeugen |
-| den Hub übernommen | den Bestand lesen; erlaubte Aufträge auslösen, mit einem Grund auch ausserhalb des Fensters (ADR-0087); die HA-Anzeige fälschen | Befehle oder Code auf Hosts bringen, Pakete wählen, Umfang erweitern, Neustartverbot oder Mindestabstand umgehen, Agent-Binaries tauschen |
-| ein freigegebenes Home Assistant | Prüfen und Installieren anstossen, mit Grund auch ausserhalb des Fensters, mit Rolle `admin` auch Neustarts (12) – über den Hub, also innerhalb der Richtlinien | mehr als der Hub |
-| das Netz (mitlesen, umlenken) | Verbindungen stören | Aufträge fälschen (Hub-Signatur), Binaries unterschieben (Betreiber-Signatur und SHA-256) |
-| den Betreiber-Schlüssel | Code auf alle Agenten bringen | – darum nie auf dem Hub; Rotation über einen neuen öffentlichen Schlüssel in der Agent-Konfiguration |
+| taken over a host | forge its state | influence other hosts, create jobs |
+| taken over the hub | read the inventory; trigger allowed jobs, with a reason also outside the window (ADR-0087); forge the HA display | put commands or code on hosts, choose packages, widen the scope, get around the reboot ban or the minimum interval, swap agent binaries |
+| an approved Home Assistant | trigger check and install, with a reason also outside the window, with role `admin` also reboots (12) – through the hub, so within the policies | more than the hub |
+| the network (eavesdrop, redirect) | disturb connections | forge jobs (hub signature), slip in binaries (operator signature and SHA-256) |
+| the operator key | put code on all agents | – hence never on the hub; rotation through a new public key in the agent configuration |
 
-Zum Vergleich: Bei einem zentralen Patch-Server mit Fernausführung bedeutet ein übernommener Server root auf allen
-Hosts.
+For comparison: with a central patch server with remote execution, one compromised server means root on all hosts.
 
-Weitere Bremsen im Agenten: höchstens ein Lauf gleichzeitig, Mindestabstand zwischen zwei Installationsläufen
-(`install.min_interval_h`), Neustart nur wenn nötig, erlaubt und im Fenster (oder mit Grund, 6.4).
+Further brakes in the agent: at most one run at a time, minimum interval between two install runs
+(`install.min_interval_h`), reboot only if needed, allowed and in the window (or with a reason, 6.4).
 
-## 6. Verben
+## 6. Verbs
 
-Die Verbmenge ist geschlossen. Was hier nicht steht, gibt es nicht
+The set of verbs is closed. What is not listed here does not exist
 ([ADR-0005](../docs/adr/0005-closed-verbs-without-shell.md)).
 
-### 6.1 Aufträge vom Hub an den Agenten
+### 6.1 Jobs from the hub to the agent
 
-| Verb | Parameter | Wirkung | Lokale Bedingung |
+| Verb | Parameters | Effect | Local condition |
 |---|---|---|---|
-| `check` | – | Quellen neu abfragen (Paketlisten, Windows-Update-Suche) | immer erlaubt; höchstens alle 5 min |
-| `install` | `scope`: `security`, `all`, `app:<id>`, `pkg:<ort>[/<name>]` (pip/npm, 11.4), `image:<projekt>/<dienst>` oder `images` (Container-Images, 11.5); `outside_window` (6.4) | Updates einspielen | Umfang steht in `install.allowed_scopes` (bei `pkg:` der Ort in `packages.update`; bei `images` jeder Dienst, den ein `image:`-Eintrag nennt), Fenster offen oder ein Grund, Vorbedingungen erfüllt |
-| `reboot` | `outside_window` (6.4) | Neustart | `reboot.allowed`, Fenster offen oder ein Grund, und ein Neustart ist tatsächlich nötig |
-| `agent_update` | signiertes Manifest, Einmal-Token | Agent tauscht sich selbst | `agent_update.enabled`; Manifest vom Betreiber signiert |
-| `cancel` | `job_id` | Lauf abbrechen | nur bis zum Beginn der Paketinstallation; danach läuft der Paketmanager zu Ende, sonst bliebe das System halb aktualisiert |
-| `backup` | `guest`: `vm/<id>` oder `ct/<id>` | nur der Agent des Hypervisors: ein Backup dieses Gastes nach PBS, direkt vor dessen Install (10.2) | `guest_backup` in der `agent.yaml`; der Gast liegt auf diesem Host; höchstens ein Backup je Gast in 10 min |
+| `check` | – | query the sources again (package lists, Windows Update search) | always allowed; at most every 5 min |
+| `install` | `scope`: `security`, `all`, `app:<id>`, `pkg:<location>[/<name>]` (pip/npm, 11.4), `image:<project>/<service>` or `images` (container images, 11.5); `outside_window` (6.4) | install updates | scope is in `install.allowed_scopes` (for `pkg:` the location in `packages.update`; for `images` every service that an `image:` entry names), window open or a reason, preconditions met |
+| `reboot` | `outside_window` (6.4) | reboot | `reboot.allowed`, window open or a reason, and a reboot is actually needed |
+| `agent_update` | signed manifest, one-time token | agent swaps itself | `agent_update.enabled`; manifest signed by the operator |
+| `cancel` | `job_id` | abort a run | only until the package installation begins; after that the package manager runs to the end, otherwise the system would stay half updated |
+| `backup` | `guest`: `vm/<id>` or `ct/<id>` | only the hypervisor's agent: a backup of this guest to PBS, right before its install (10.2) | `guest_backup` in the `agent.yaml`; the guest lives on this host; at most one backup per guest in 10 min |
 
-`app:<id>` verweist auf einen Eintrag der App-Liste, die der Agent selbst aus seiner Konfiguration meldet. Paketnamen
-kommen nie vom Hub.
+`app:<id>` points to an entry of the app list that the agent reports itself from its configuration. Package names
+never come from the hub.
 
-Bewusst nicht vorhanden: Befehle ausführen, Dateien übertragen, Konfiguration ändern, Pakete neu installieren oder
-entfernen, beliebige Dienste neu starten.
+Deliberately absent: run commands, transfer files, change configuration, reinstall or remove packages, restart
+arbitrary services.
 
-### 6.2 Meldungen vom Agenten an den Hub
+### 6.2 Messages from the agent to the hub
 
-| Nachricht | Inhalt |
+| Message | Content |
 |---|---|
-| `hello` | Name, öffentlicher Schlüssel, Signatur über die Challenge (mit Kontext `vordr/hello/v1`, Nonce, Name und Schlüssel), Fakten (OS und Version, Architektur, Virtualisierung), Agent-Version, Verben, die diese Version kann, Kurzfassung der lokalen Richtlinie (daraus entstehen die passenden HA-Knöpfe) |
-| `report` | Zustand je Quelle und App (7.2) mit Fakten wie `apt_version`, `install_mode`, `unattended_upgrades`, Neustartbedarf mit Grund (7.4) |
-| `job_status` | angenommen oder abgelehnt mit Code, Phase, Fortschritt, Ergebnis (7.3) |
-| `heartbeat` | lebt, alle 30 s. Der Hub antwortet mit einem Heartbeat; 90 s Stille heisst auf beiden Seiten: Verbindung tot |
-| `inventory` | Pakete von pip, pipx und npm je Ort (11.2), nach jeder Prüfung; nur an einen Hub, dessen `status` das Merkmal `inventory` nennt |
+| `hello` | name, public key, signature over the challenge (with context `vordr/hello/v1`, nonce, name and key), facts (OS and version, architecture, virtualization), agent version, verbs this version can do, summary of the local policy (from which the matching HA buttons arise) |
+| `report` | state per source and app (7.2) with facts such as `apt_version`, `install_mode`, `unattended_upgrades`, reboot need with reason (7.4) |
+| `job_status` | accepted or rejected with code, phase, progress, result (7.3) |
+| `heartbeat` | alive, every 30 s. The hub answers with a heartbeat; 90 s of silence means on both sides: connection dead |
+| `inventory` | packages of pip, pipx and npm per location (11.2), after every check; only to a hub whose `status` names the feature `inventory` |
 
-Der Hub antwortet auf `hello` mit `status` (`pending_approval`, `approved` oder `rejected` mit Grund `bad_hello`,
-`key_mismatch`, `too_many_pending`, `rejected`) und schickt `status` erneut, sobald sich der Zustand ändert. Aufträge
-schickt er nur an freigegebene Hosts und nur mit Verben, die der Agent im `hello` genannt hat.
+The hub answers `hello` with `status` (`pending_approval`, `approved` or `rejected` with reason `bad_hello`,
+`key_mismatch`, `too_many_pending`, `rejected`) and sends `status` again as soon as the state changes. It sends jobs
+only to approved hosts and only with verbs that the agent named in the `hello`.
 
-**Merkmale der Leitstelle** (seit Leitstelle 0.18.0): Jeder `status` trägt `features`, die Nachrichtenarten, die diese
-Leitstelle über das Grundprotokoll hinaus annimmt (`inventory`, `vet`, `containers`, `image_contents`; `ack` kündigt
-sie schon in der Challenge an, 10.2). Eine ältere Leitstelle trennt die Verbindung bei
-einer Nachricht, die sie nicht kennt. Der Agent schickt eine neuere Art deshalb nur, wenn die Leitstelle sie genannt
-hat; er probiert nicht aus und liest es nicht aus einem Abbruch. So ist die Reihenfolge der Updates egal, die Betriebsregel
-„Leitstelle vor Agent“ bleibt trotzdem.
+**Hub features** (since hub 0.18.0): Every `status` carries `features`, the message types this hub accepts beyond the
+base protocol (`inventory`, `vet`, `containers`, `image_contents`; `ack` announces itself already in the challenge,
+10.2). An older hub drops the connection on a message it does not know. The agent therefore sends a newer type only if
+the hub has named it; it does not try it out and does not read it from a dropped connection. So the order of the
+updates does not matter, yet the operating rule "hub before agent" stays.
 
-### 6.3 Befehle am Host selbst
+### 6.3 Commands on the host itself
 
-Für den Betrieb vor Ort. Sie lesen und prüfen nur; keiner installiert etwas:
+For operation on site. They only read and check; none of them installs anything:
 
 ```
 vordr-agent check [--no-refresh] | identity | check-config | hub-check | version
-vordr-agent packages [--plan <ort>[/<name>] | --plan-deps <ort>:<name>[,<name>…]]   # 11.2, 11.4
-vordr-agent run                                                 # der Dienst selbst
-vordr-agent install-service [--replace-config "<grund>"] | uninstall-service   # nur Windows (11.1)
+vordr-agent packages [--plan <location>[/<name>] | --plan-deps <location>:<name>[,<name>…]]   # 11.2, 11.4
+vordr-agent run                                                 # the service itself
+vordr-agent install-service [--replace-config "<reason>"] | uninstall-service   # Windows only (11.1)
 ```
 
-Installieren und Neustart kommen nur als signierter Auftrag der Leitstelle: aus HA, aus der Warteschlange oder von der
-Automatik (10.3), ausserhalb des Fensters mit Grund (6.4). Einen Befehl am Host dafür gibt es nicht.
+Install and reboot come only as a signed job from the hub: from HA, from the queue or from the automation (10.3),
+outside the window with a reason (6.4). There is no command on the host for it.
 
-### 6.4 Läufe ausserhalb des Fensters
+### 6.4 Runs outside the window
 
-[ADR-0087](../docs/adr/0087-runs-outside-the-window-with-a-reason.md): Das Fenster bindet automatische Läufe und den
-Neustart-Knopf. Will ein Mensch einen Lauf jetzt, nennt er einen Grund. Beim Installieren tut das die Leitstelle für
-ihn ([ADR-0109](../docs/adr/0109-the-install-button-installs-at-once.md)):
+[ADR-0087](../docs/adr/0087-runs-outside-the-window-with-a-reason.md): The window binds automatic runs and the reboot
+button. If a human wants a run now, they give a reason. For installs the hub does that for them
+([ADR-0109](../docs/adr/0109-the-install-button-installs-at-once.md)):
 
-- **Installieren-Knopf:** Ein HA-`command` mit Verb `install` (Systempakete, Sicherheitsupdates, App, pip/npm-Ort
-  oder -Paket, Abhängigkeiten auffrischen) ohne Grund bekommt von der Leitstelle `hub.ButtonReason` („install started
-  in Home Assistant outside the window“), wenn das angekündigte Fenster (`policy.window`, `policy.tz`) gerade zu ist
-  und der Agent Gründe annimmt. Entschieden wird beim Absenden; ein Befehl aus der Warteschlange also erst, wenn er an
-  der Reihe ist. Ein eigener Grund bleibt, wie er ist. Kann die Leitstelle das Fenster nicht lesen (keines angekündigt,
-  unbekannte Zeitzone), gibt sie nichts mit; dann entscheidet der Agent.
-- **Vor dem Backup:** Einen Install-Auftrag ohne Grund, dessen Fenster gerade zu ist, lehnt die Leitstelle mit
-  `outside_window` ab, bevor sie ihn schickt und bevor sie den Gast sichern lässt (10.2). Das gilt für jeden Weg
-  (HA, Warteschlange) und trifft nur Agenten, die keine Gründe annehmen.
-- **Auftrag:** `install` und `reboot` tragen dann `outside_window`, den Grund: nicht leer, höchstens 200 Byte UTF-8,
-  keine Steuerzeichen (`protocol.ValidReason`). Jedes andere Verb damit ist ein ungültiger Auftrag. Die Leitstelle
-  signiert den Grund mit.
-- **Agent:** Ein Auftrag mit Grund kommt an `install.window` (auch bei `pkg:`) und `reboot.window` vorbei; der Agent
-  schreibt den Grund ins Log. Alles andere gilt weiter: erlaubter Umfang, `packages.update`, `reboot.allowed`, Neustart
-  nur wenn nötig, `install.min_interval_h`, ein Lauf zur Zeit, die Backup-Prüfung der Leitstelle.
-- **Ältere Agenten** lesen Aufträge streng und würden das unbekannte Feld als `rejected_invalid_job` ablehnen. Der
-  Agent kündigt es darum im Hello an (`policy.outside_window`); einem anderen schickt die Leitstelle keinen Grund und
-  antwortet HA mit `outside_window_unsupported`.
-- **Leitstelle:** Ein HA-`command` darf `reason` tragen. Sie prüft ihn (`bad_reason`; `bad_request` bei `check` und
-  `agent_update`), legt ihn in den Lauf (`last_run.outside_window`) und ins Ereignisprotokoll (`command`, `job_sent`,
-  `queued_job_started`). Ein Befehl, der hinter einem laufenden Lauf wartet, übernimmt den Grund, wenn er mit Grund
-  erneut kommt. Die Rollen bleiben: Neu starten braucht `admin`.
-- **HA:** Aktionen `vordr.install_outside_window` (Update-Entitäten: Systempakete oder ein pip/npm-Ort),
-  `vordr.press_outside_window` (Knöpfe: Sicherheitsupdates, Apps, Neu starten), `vordr.update_package` und
-  `vordr.refresh_dependencies` (11.4) mit dem Feld `reason`. Es gibt sie nur, wo die Leitstelle
-  `capabilities.outside_window` meldet.
+- **Install button:** An HA `command` with verb `install` (system packages, security updates, app, pip/npm location
+  or package, refresh dependencies) without a reason gets `hub.ButtonReason` from the hub ("install started
+  in Home Assistant outside the window") if the announced window (`policy.window`, `policy.tz`) is closed right now
+  and the agent accepts reasons. The decision is made when it is sent; a command from the queue is therefore decided
+  only when its turn comes. A reason of its own stays as it is. If the hub cannot read the window (none announced,
+  unknown time zone), it passes nothing along; then the agent decides.
+- **Before the backup:** An install job without a reason whose window is closed right now is rejected by the hub with
+  `outside_window` before it sends it and before it has the guest backed up (10.2). This applies to every path
+  (HA, queue) and affects only agents that do not accept reasons.
+- **Job:** `install` and `reboot` then carry `outside_window`, the reason: not empty, at most 200 bytes UTF-8,
+  no control characters (`protocol.ValidReason`). Any other verb with it is an invalid job. The hub signs the reason
+  along.
+- **Agent:** A job with a reason gets past `install.window` (also for `pkg:`) and `reboot.window`; the agent writes
+  the reason to the log. Everything else still applies: allowed scope, `packages.update`, `reboot.allowed`, reboot
+  only if needed, `install.min_interval_h`, one run at a time, the hub's backup check.
+- **Older agents** read jobs strictly and would reject the unknown field as `rejected_invalid_job`. The agent
+  therefore announces it in the hello (`policy.outside_window`); to any other the hub sends no reason and
+  answers HA with `outside_window_unsupported`.
+- **Hub:** An HA `command` may carry `reason`. The hub checks it (`bad_reason`; `bad_request` for `check` and
+  `agent_update`), puts it into the run (`last_run.outside_window`) and into the event log (`command`, `job_sent`,
+  `queued_job_started`). A command that waits behind a running run takes over the reason if it comes again with a
+  reason. The roles stay: Reboot needs `admin`.
+- **HA:** actions `vordr.install_outside_window` (update entities: system packages or a pip/npm location),
+  `vordr.press_outside_window` (buttons: security updates, apps, Reboot), `vordr.update_package` and
+  `vordr.refresh_dependencies` (11.4) with the field `reason`. They exist only where the hub reports
+  `capabilities.outside_window`.
 
-## 7. Zustände
+## 7. States
 
-### 7.1 Host (aus Sicht des Hubs)
+### 7.1 Host (from the hub's point of view)
 
-`pending_approval`, `online`, `offline` (kein Heartbeat seit 2 min), `rejected`.
+`pending_approval`, `online`, `offline` (no heartbeat for 2 min), `rejected`.
 
-### 7.2 Quelle oder App
+### 7.2 Source or app
 
-| Zustand | Bedeutung |
+| State | Meaning |
 |---|---|
-| `up_to_date` | nichts ausstehend |
-| `updates_available` | Updates ausstehend; Anzahl, davon Sicherheitsupdates |
-| `check_failed` | Abfrage gescheitert, mit Code aus 7.3 (z. B. `precheck_repo_unreachable`) |
-| `unknown` | noch nicht abgefragt oder keine sichere Auskunft; HA-Entitäten bleiben unverändert |
+| `up_to_date` | nothing pending |
+| `updates_available` | updates pending; count, of which security updates |
+| `check_failed` | query failed, with a code from 7.3 (e.g. `precheck_repo_unreachable`) |
+| `unknown` | not queried yet or no reliable answer; HA entities stay unchanged |
 
-### 7.3 Lauf
+### 7.3 Run
 
-Phasen während eines Laufs: `queued`, `prechecking`, `downloading`, `installing`, `verifying`, `rebooting`, dazu
-`backing_up`: ein Install wartet auf das Backup seines Gastes (10.2). Diese Phase setzt die Leitstelle; der Agent des
-Gastes hat den Auftrag dann noch nicht.
+Phases during a run: `queued`, `prechecking`, `downloading`, `installing`, `verifying`, `rebooting`, plus
+`backing_up`: an install waits for the backup of its guest (10.2). The hub sets this phase; the guest's agent does not
+have the job yet.
 
-Ergebnisse (`problem` = setzt `binary_sensor.<node>_problem`):
+Results (`problem` = sets `binary_sensor.<node>_problem`):
 
-| Code | Bedeutung | Nächster Schritt (Text in HA) | `problem` |
+| Code | Meaning | Next step (text in HA) | `problem` |
 |---|---|---|---|
-| `ok` | alles im gewählten Umfang eingespielt | – | nein |
-| `ok_reboot_required` | eingespielt, Neustart nötig | Neustart im Fenster oder per Knopf | nein |
-| `rejected_invalid_job` | Signatur, Host, Ablauf oder Wiederholung stimmt nicht | Hub und Uhrzeit prüfen; kann auf einen Angriff hinweisen | ja |
-| `rejected_scope_not_allowed` | Umfang lokal nicht erlaubt | Richtlinie des Hosts | nein |
-| `rejected_outside_window` | ausserhalb des Fensters | warten oder mit Grund ausserhalb des Fensters (6.4) | nein |
-| `rejected_rate_limited` | Mindestabstand nicht erreicht | warten | nein |
-| `rejected_busy` | ein anderer Lauf oder ein fremder Paketmanager hält die Sperre (z. B. unattended-upgrades) | später erneut; Doppelbetrieb beenden | nein |
-| `rejected_not_allowed` | die lokale Richtlinie verbietet das Verb (z. B. `reboot` bei `reboot.allowed: false`) | Richtlinie des Hosts | nein |
-| `rejected_unsupported` | diese Agent-Version oder Plattform kann das Verb nicht; der Hub hätte es nicht schicken dürfen | Agent aktualisieren | ja |
-| `precheck_disk_space` | zu wenig Platz (Paket-Cache, `/boot`) | aufräumen | ja |
-| `precheck_package_db_broken` | Paketdatenbank unterbrochen (`dpkg --audit` nicht leer) | `dpkg --configure -a` von Hand | ja |
-| `precheck_repo_unreachable` | Paketquelle nicht erreichbar oder ihre Signatur ungültig | Quelle und Netz prüfen | ja |
-| `precheck_would_remove_packages` | der Probelauf würde Pakete entfernen, die kein Paket des Laufs ersetzt | von Hand entscheiden | ja |
-| `precheck_version_flagged` | pip/npm-Update (11.4): eine Version des Plans, auch eine Abhängigkeit, steht in den OSV-Daten (Schadsoftware oder Schwachstelle) | Eintrag ansehen; auf eine behobene Version warten | ja |
-| `precheck_version_too_new` | pip/npm-Update: eine Version des Plans ist jünger als `packages.min_age_days` | warten, bis sie alt genug ist | nein |
-| `precheck_vetting_unavailable` | pip/npm-Update: die Leitstelle konnte den Plan nicht prüfen (keine oder veraltete OSV-Daten, keine Antwort) | Schwachstellendaten der Leitstelle prüfen | ja |
-| `precheck_not_from_registry` | npm-Update: ein Eintrag des Plans kommt nicht aus der Registry (anderer Host, git, Datei; [ADR-0128](../docs/adr/0128-check-npm-tarball-origins-and-let-npm-12-fetch-them.md)); installiert wurde nichts | ansehen, wohin die Abhängigkeit zeigt; einen solchen Ort von Hand aktualisieren | ja |
-| `failed_package_manager` | Paketmanager mit Fehler beendet; Exit-Code und Ergebnis der Nachprüfung als Attribute | Auszug lesen | ja |
-| `failed_verification` | der Lauf meldet Erfolg, die Nachprüfung findet aber noch ausstehende Updates oder eine unterbrochene Paketdatenbank | Auszug lesen | ja |
-| `failed_health` | der Lauf ging durch, aber eine Prüfung aus `health:` der `agent.yaml` (Dienst, Container, HTTP) schlägt nach 3 Minuten noch fehl | genannten Dienst ansehen | ja |
-| `failed_windows_update` | Windows Update meldet einen Fehler; `hresult` als Zahl | HRESULT nachschlagen | ja |
-| `failed_target_auth` | Stellvertreter: das Gerät lehnt das Dienstkonto ab ([stellvertreter.md](stellvertreter.md)) | Dienstkonto am Gerät und Zugangsdatei der Instanz prüfen | ja |
-| `failed_target_tls` | Stellvertreter: das Zertifikat des Geräts passt nicht zum festgenagelten Fingerabdruck bzw. Namen | Zertifikat prüfen; gewollt neu → Fingerabdruck anpassen, sonst sitzt vielleicht jemand dazwischen | ja |
-| `failed_target_hostkey` | Stellvertreter über SSH: das Gerät bietet nicht den festgenagelten Host-Schlüssel ([ADR-0094](../docs/adr/0094-ssh-drivers-use-the-system-openssh-client.md)) | Host-Schlüssel prüfen (`ssh-keyscan`); gewollt neu → `target.host_key` anpassen, sonst sitzt vielleicht jemand dazwischen | ja |
-| `failed_config_backup` | Stellvertreter: Konfigurationssicherung gescheitert oder unbrauchbar ([ADR-0090](../docs/adr/0090-appliance-installs-need-a-fresh-config-backup.md)) | Log der Instanz ansehen; ohne frische Sicherung kein Firmware-Update | ja |
-| `failed_backup` | das Backup direkt vor dem Install kam nicht zustande (vzdump scheiterte, PBS hat es nicht, der Hypervisor ist weg); installiert wurde nichts ([ADR-0096](../docs/adr/0096-fresh-backup-right-before-the-install.md)). Auch der Agent des Hypervisors beendet einen gescheiterten `backup`-Auftrag damit | Detail des Laufs und Backup-Log des Hypervisors ansehen | ja |
-| `timeout` | Lauf dauerte länger als `install.timeout_min` | Host prüfen | ja |
-| `aborted` | per `cancel` abgebrochen, vor der Installation | – | nein |
-| `interrupted` | Agent oder Host während des Laufs beendet; beim nächsten Start aus dem Laufjournal erkannt. Bei der Leitstelle auch vorläufig nach einem Tunnelabbruch, bis das nächste Hello sagt, ob der Lauf weitergeht (10.2, ADR-0114) | Paketdatenbank prüfen | ja |
+| `ok` | everything in the chosen scope installed | – | no |
+| `ok_reboot_required` | installed, reboot needed | reboot within the window or with the button | no |
+| `rejected_invalid_job` | signature, host, expiry or replay is wrong | check hub and clock; may point to an attack | yes |
+| `rejected_scope_not_allowed` | scope not allowed locally | the host's policy | no |
+| `rejected_outside_window` | outside the window | wait or run outside the window with a reason (6.4) | no |
+| `rejected_rate_limited` | minimum interval not reached | wait | no |
+| `rejected_busy` | another run or a foreign package manager holds the lock (e.g. unattended-upgrades) | try again later; end the double operation | no |
+| `rejected_not_allowed` | the local policy forbids the verb (e.g. `reboot` with `reboot.allowed: false`) | the host's policy | no |
+| `rejected_unsupported` | this agent version or platform cannot do the verb; the hub should not have sent it | update the agent | yes |
+| `precheck_disk_space` | too little space (package cache, `/boot`) | clean up | yes |
+| `precheck_package_db_broken` | package database interrupted (`dpkg --audit` not empty) | `dpkg --configure -a` by hand | yes |
+| `precheck_repo_unreachable` | package source not reachable or its signature invalid | check source and network | yes |
+| `precheck_would_remove_packages` | the dry run would remove packages that no package of the run replaces | decide by hand | yes |
+| `precheck_version_flagged` | pip/npm update (11.4): a version of the plan, a dependency too, is in the OSV data (malware or vulnerability) | look at the entry; wait for a fixed version | yes |
+| `precheck_version_too_new` | pip/npm update: a version of the plan is younger than `packages.min_age_days` | wait until it is old enough | no |
+| `precheck_vetting_unavailable` | pip/npm update: the hub could not vet the plan (no or stale OSV data, no answer) | check the hub's vulnerability data | yes |
+| `precheck_not_from_registry` | npm update: an entry of the plan does not come from the registry (other host, git, file; [ADR-0128](../docs/adr/0128-check-npm-tarball-origins-and-let-npm-12-fetch-them.md)); nothing was installed | see where the dependency points; update such a location by hand | yes |
+| `failed_package_manager` | package manager ended with an error; exit code and result of the verification as attributes | read the excerpt | yes |
+| `failed_verification` | the run reports success, but the verification still finds pending updates or an interrupted package database | read the excerpt | yes |
+| `failed_health` | the run went through, but a check from `health:` in the `agent.yaml` (service, container, HTTP) still fails after 3 minutes | look at the named service | yes |
+| `failed_windows_update` | Windows Update reports an error; `hresult` as a number | look up the HRESULT | yes |
+| `failed_target_auth` | proxy agent: the device rejects the service account ([proxy-agent.md](proxy-agent.md)) | check the service account on the device and the instance's credentials file | yes |
+| `failed_target_tls` | proxy agent: the device's certificate does not match the pinned fingerprint or name | check the certificate; if it is new on purpose → adjust the fingerprint, otherwise someone may be in the middle | yes |
+| `failed_target_hostkey` | proxy agent over SSH: the device does not offer the pinned host key ([ADR-0094](../docs/adr/0094-ssh-drivers-use-the-system-openssh-client.md)) | check the host key (`ssh-keyscan`); if it is new on purpose → adjust `target.host_key`, otherwise someone may be in the middle | yes |
+| `failed_config_backup` | proxy agent: configuration backup failed or unusable ([ADR-0090](../docs/adr/0090-appliance-installs-need-a-fresh-config-backup.md)) | look at the instance's log; without a fresh backup no firmware update | yes |
+| `failed_backup` | the backup right before the install did not come about (vzdump failed, PBS does not have it, the hypervisor is gone); nothing was installed ([ADR-0096](../docs/adr/0096-fresh-backup-right-before-the-install.md)). The hypervisor's agent also ends a failed `backup` job with it | look at the run's detail and the hypervisor's backup log | yes |
+| `timeout` | run took longer than `install.timeout_min` | check the host | yes |
+| `aborted` | aborted by `cancel`, before the installation | – | no |
+| `interrupted` | agent or host ended during the run; detected from the run journal at the next start. At the hub also provisionally after a tunnel drop, until the next hello says whether the run goes on (10.2, ADR-0114) | check the package database | yes |
 
-Abgelehnte Aufträge ohne `problem` sind erwartbare Antworten und stehen nur im Sensor „Letzter Lauf“. Wiederholen sie
-sich, bis Updates liegen bleiben, greift `stale` (7.5).
+Rejected jobs without `problem` are expected answers and appear only in the sensor "Last run". If they repeat until
+updates stay pending, `stale` (7.5) takes effect.
 
-**Gescheiterter Install bleibt** ([ADR-0124](../docs/adr/0124-a-failed-system-install-stays-until-one-goes-through.md)):
-Endet ein Install der Systempakete (Umfang `security` oder `all`) mit einem Code mit `problem`, merkt sich die Leitstelle
-ihn neben dem letzten Lauf. Er bleibt Grund des Problems, auch wenn danach ein `check`, ein Image-, pip/npm- oder
-Agent-Update läuft, eine Ablehnung kommt oder ein Lauf noch unterwegs ist. Erst ein Install der Systempakete, der
-durchgeht (`ok`, `ok_reboot_required`), mit mindestens seinem Umfang (`all` deckt `security`), hebt ihn auf. Bei einem
-Kanarienvogel hält er damit auch die späteren Ringe und die Verteilung neuer Agenten an (10.3, 10.4). Die Ansicht
-trägt den gemerkten Lauf neben dem letzten (`failed_install`, mit Auszug und Laufprotokoll), und HA zeigt ihn am
-Problem-Sensor.
+**A failed install stays** ([ADR-0124](../docs/adr/0124-a-failed-system-install-stays-until-one-goes-through.md)):
+If an install of the system packages (scope `security` or `all`) ends with a code with `problem`, the hub remembers it
+next to the last run. It remains the reason for the problem, even if afterwards a `check`, an image, pip/npm or agent
+update runs, a rejection comes or a run is still under way. Only an install of the system packages that goes through
+(`ok`, `ok_reboot_required`), with at least its scope (`all` covers `security`), lifts it. With a canary it thus also
+holds back the later rings and the distribution of new agents (10.3, 10.4). The view carries the remembered run next to
+the last one (`failed_install`, with excerpt and run log), and HA shows it on the problem sensor.
 
-**Einordnung ohne Fehlertexte:** Der Agent wertet nur Exit-Codes und strukturierte Ausgaben aus (Zeilen des
-Probelaufs, `APT::Status-Fd`, Ergebniscodes von Windows Update). Nach einem Fehlschlag fragt er den Zustand gezielt
-nach (Sperre, `dpkg --audit`, freier Platz, Quellen). Der Code entsteht aus diesen Prüfungen; der Fehlertext geht nur
-als `log_excerpt` mit ([ADR-0007](../docs/adr/0007-fixed-codes-instead-of-error-texts.md)).
+**Classification without error texts:** The agent evaluates only exit codes and structured output (lines of the dry
+run, `APT::Status-Fd`, result codes of Windows Update). After a failure it asks for the state in a targeted way (lock,
+`dpkg --audit`, free space, sources). The code arises from these checks; the error text goes along only as
+`log_excerpt` ([ADR-0007](../docs/adr/0007-fixed-codes-instead-of-error-texts.md)).
 
-### 7.4 Neustart
+### 7.4 Reboot
 
-`reboot_required` (ja/nein) mit `reboot_reason` = `kernel`, `libraries`, `windows_update` oder `other`, dazu die
-auslösenden Pakete als Liste. Erkennung:
+`reboot_required` (yes/no) with `reboot_reason` = `kernel`, `libraries`, `windows_update` or `other`, plus the
+triggering packages as a list. Detection:
 
-- laufender Kernel gegen den neuesten installierten Kernel derselben Variante (`kernel`). Die Variante ist der letzte
-  Teil nach der Version (`pve`, `amd64`, `generic`, `2712`). Raspberry Pi OS installiert die Kernel für Pi 5 (`2712`)
-  und Pi 4 (`v8`) nebeneinander, und dpkg hält `v8` für neuer. Ohne den Vergleich je Variante verlangte ein Pi 5
-  dauernd einen Neustart, und jeder Neustart endete mit `failed_verification`,
-- `/var/run/reboot-required` und `.pkgs`, wo vorhanden (Ubuntu),
-- `needrestart -b`, wo installiert (maschinenlesbare Ausgabe, `libraries`),
-- unter Windows die Registry-Schlüssel von Windows Update und Component Based Servicing (`windows_update`, 11.1).
+- running kernel against the newest installed kernel of the same flavor (`kernel`). The flavor is the last part after
+  the version (`pve`, `amd64`, `generic`, `2712`). Raspberry Pi OS installs the kernels for Pi 5 (`2712`) and Pi 4
+  (`v8`) side by side, and dpkg considers `v8` newer. Without the comparison per flavor, a Pi 5 would demand a reboot
+  all the time, and every reboot would end with `failed_verification`,
+- `/var/run/reboot-required` and `.pkgs`, where present (Ubuntu),
+- `needrestart -b`, where installed (machine-readable output, `libraries`),
+- on Windows the registry keys of Windows Update and Component Based Servicing (`windows_update`, 11.1).
 
-### 7.5 Hängt
+### 7.5 Stuck
 
-Der Hub setzt `stale` (mit `problem`), wenn Updates länger als `stale_after_days` (Standard 7) ausstehen, ohne dass ein
-Lauf sie einspielt, gleich aus welchem Grund. Das fängt auch Fälle, für die es keinen eigenen Code gibt
+The hub sets `stale` (with `problem`) if updates have been pending longer than `stale_after_days` (default 7) without
+a run installing them, whatever the reason. That also catches cases for which there is no code of their own
 ([ADR-0014](../docs/adr/0014-stale-after-seven-days.md)).
 
-### 7.6 Selbst-Update des Agenten
+### 7.6 Self-update of the agent
 
-Phasen `downloading`, `verifying`, `rebooting`, dann ein Ergebnis aus 7.3
+Phases `downloading`, `verifying`, `rebooting`, then a result from 7.3
 ([ADR-0032](../docs/adr/0032-self-update-signed-by-operator.md)):
 
-| Code | wann |
+| Code | when |
 |---|---|
-| `ok` | die neue Version meldet sich auf ihrer ersten freigegebenen Verbindung; oder sie läuft schon |
-| `rejected_invalid_job` | Manifest oder Signatur ungültig, oder die Release ist nicht neuer (`older_release`) |
-| `rejected_unsupported` | Selbst-Update ist auf dem Host aus (z. B. ohne `agent_update.enabled`), oder die Release hat keine Binary für OS und Architektur des Hosts |
-| `rejected_busy` | ein anderer Lauf ist offen |
-| `precheck_repo_unreachable` | der Download scheitert |
-| `failed_verification` | Hash oder Grösse falsch; der Probelauf der neuen Binary scheitert; oder die neue Version erreicht binnen 10 min keine freigegebene Verbindung (hängt sie, greift nach 15 min der Update-Wächter, [ADR-0098](../docs/adr/0098-update-guard-rolls-back-a-hung-new-agent.md)), und der Agent ist auf die alte zurückgesprungen |
-| `failed_package_manager` | Schreiben, Markierung, Start des Update-Wächters oder Tausch der Binary scheitert |
-| `timeout` | nach der Phase `rebooting` meldet sich binnen 30 min kein Agent |
+| `ok` | the new version reports on its first approved connection; or it already runs |
+| `rejected_invalid_job` | manifest or signature invalid, or the release is not newer (`older_release`) |
+| `rejected_unsupported` | self-update is off on the host (e.g. without `agent_update.enabled`), or the release has no binary for the host's OS and architecture |
+| `rejected_busy` | another run is open |
+| `precheck_repo_unreachable` | the download fails |
+| `failed_verification` | hash or size wrong; the dry run of the new binary fails; or the new version reaches no approved connection within 10 min (if it hangs, the update guard takes effect after 15 min, [ADR-0098](../docs/adr/0098-update-guard-rolls-back-a-hung-new-agent.md)), and the agent has jumped back to the old one |
+| `failed_package_manager` | writing, marking, starting the update guard or swapping the binary fails |
+| `timeout` | after the phase `rebooting` no agent reports within 30 min |
 
-Ausser `ok` und `rejected_busy` setzen alle `problem`. Fristen: Einmal-Token für den Download 15 min, Bestätigung
-durch die neue Version 10 min, Warten der Leitstelle 30 min (10.4). Unter Windows gilt dasselbe (10.4,
+Except `ok` and `rejected_busy`, all set `problem`. Deadlines: one-time token for the download 15 min, confirmation by
+the new version 10 min, the hub's wait 30 min (10.4). On Windows the same applies (10.4,
 [ADR-0084](../docs/adr/0084-windows-self-update-without-code-signing.md)).
 
-## 8. Home-Assistant-Entitäten
+## 8. Home Assistant entities
 
-Die Entitäten legt die Integration `custom_components/vordr` an, die sich als freigegebener Client über `/v1/ha` mit
-der Leitstelle verbindet ([ha-integration.md](ha-integration.md), Abschnitte 6 und 6a). Begründungen:
-[ADR-0023](../docs/adr/0023-own-ha-integration.md) (Integration statt MQTT),
-[ADR-0017](../docs/adr/0017-entity-ids-with-prefix.md) (Entitäts-IDs),
-[ADR-0021](../docs/adr/0021-device-name-vordr-node.md) (Gerätename).
+The entities are created by the integration `custom_components/vordr`, which connects to the hub as an approved client
+over `/v1/ha` ([ha-integration.md](ha-integration.md), sections 6 and 6a). Rationale:
+[ADR-0023](../docs/adr/0023-own-ha-integration.md) (integration instead of MQTT),
+[ADR-0017](../docs/adr/0017-entity-ids-with-prefix.md) (entity IDs),
+[ADR-0021](../docs/adr/0021-device-name-vordr-node.md) (device name).
 
-Entitäts-IDs setzt die Integration ausdrücklich (englisch, mit Präfix `vordr_`, damit sie nicht mit Entitäten anderer
-Integrationen gleichen Hostnamens kollidieren); Anzeigenamen kommen aus den Übersetzungen und folgen der Systemsprache
-von HA. `<id>` ist der Hostname mit `_` statt `-` und `.`. Den Zustand schiebt die Leitstelle als `HostView`. Was sie
-nicht weiss, steht dort als `null`, und HA zeigt „unbekannt“ – nie eine Vermutung. Ohne Verbindung zur Leitstelle
-sind alle Entitäten nicht verfügbar.
+The integration sets entity IDs explicitly (English, with prefix `vordr_`, so they do not collide with entities of
+other integrations with the same host name); display names come from the translations and follow the system language
+of HA. `<id>` is the host name with `_` instead of `-` and `.`. The hub pushes the state as `HostView`. What it does
+not know is `null` there, and HA shows "unknown" – never a guess. Without a connection to the hub, all entities are
+unavailable.
 
-### 8.1 Gerät je Host
+### 8.1 Device per host
 
-Name „Vördr <node>“, Kennung `("vordr", "host:<node>")`, Hersteller „Vördr“, Modell aus den Fakten (z. B.
-„Debian 13 · lxc“), `sw_version` = Agent-Version, unter dem Hub-Gerät.
+Name "Vördr <node>", identifier `("vordr", "host:<node>")`, manufacturer "Vördr", model from the facts (e.g.
+"Debian 13 · lxc"), `sw_version` = agent version, under the hub device.
 
-| Entität | Typ | Anzeigename | Inhalt | Gibt es nur, wenn |
+| Entity | Type | Display name | Content | Exists only if |
 |---|---|---|---|---|
-| `update.vordr_<id>_system` | update | Systempakete | siehe 8.3 | der letzte Bericht eine Paketquelle nennt |
-| `update.vordr_<id>_<app>` | update | Name der App | echte Versionen (installiert, verfügbar) | noch nicht gebaut; bis dahin ein Knopf je App (unten) |
-| `update.vordr_<id>_agent` | update | Agent | Agent-Version gegen freigegebene Version; Installieren = `agent_update` (10.4) | die Leitstelle verteilt Agent-Releases |
-| `update.vordr_<id>_containers` | update | Container-Images | veraltete und verwundbare Images, Neubauten per Knopf (11.5) | `packages.containers` am Host |
-| `update.vordr_<id>_packages_<ort>` | update | Pakete <ort> | pip/npm-Pakete eines Orts; Installieren = alle Kandidaten, Dienst `vordr.update_package` = eines, `vordr.refresh_dependencies` = Abhängigkeiten mit Fund (11.4) | der Ort steht in `packages.update` und die Leitstelle hat OSV-Daten |
-| `sensor.vordr_<id>_last_run` | sensor (enum) | Letzter Lauf | Phase oder Ergebniscode (7.3) des letzten Auftrags; Attribute `job_id`, `verb`, `scope`, `started`, `finished`, `reason`, `log_excerpt` | immer |
-| `sensor.vordr_<id>_pending_updates` | sensor | Ausstehende Updates | Anzahl; unbekannt, wenn die Prüfung scheiterte | der letzte Bericht eine Paketquelle nennt |
-| `sensor.vordr_<id>_security_updates` | sensor | Sicherheitsupdates | Anzahl | wie oben |
-| `sensor.vordr_<id>_last_report` | sensor (timestamp) | Letzte Meldung | Zeitpunkt des letzten `report` | immer |
-| `binary_sensor.vordr_<id>_reboot_required` | binary_sensor | Neustart nötig | an/aus; **unbekannt**, wenn kein Signal antwortete (`checked` leer, z. B. Container); Attribute `reason`, `packages`, `checked` | immer |
-| `binary_sensor.vordr_<id>_problem` | binary_sensor (problem) | Update-Problem | an bei `offline` (nach `offline_after_min`, Standard 10; nicht, solange der Host angekündigt hat, dass er schläft oder herunterfährt, siehe 11.1), Codes mit `problem` (7.3), `check_failed`, `stale`; Attribute `reason`, `reasons`, `next_step`, `check_failed_code` – Codes, die HA übersetzt (design/ha-integration.md, 6b) –, dazu `failed_install` (Auftrag, Umfang, Code, Zeiten, Auszug, Laufprotokoll), solange ein gescheiterter Install der Systempakete gemerkt ist (ADR-0124), nicht im Recorder | immer |
-| `binary_sensor.vordr_<id>_online` | binary_sensor (connectivity) | Verbunden | Tunnel steht (sofort, ohne Karenz) | immer |
-| `sensor.vordr_<id>_malicious_packages` | sensor | Schädliche Pakete | installierte pip/npm-Pakete, die OSV als Schadsoftware führt; Attribut `findings` (11.2) | der Agent schickt einen Paketbestand |
-| `sensor.vordr_<id>_vulnerable_packages` | sensor | Verwundbare Pakete | Pakete mit bekannter Schwachstelle; Attribute `findings` (je Fund auch `reach` und `held_by`, ADR-0129), `waiting`, `locations`, `packages_total`. Die Listen (`findings`, `locations`, `undecided`, bei den veralteten Paketen `updates`) stehen nur im Zustand, nicht in der Historie (ADR-0101) | wie oben |
-| `sensor.vordr_<id>_outdated_packages` | sensor | Veraltete Pakete | direkte pip/npm-Pakete mit neuerem Release; Attribut `updates` mit `latest` und `candidate` (11.3) | wie oben |
-| `button.vordr_<id>_check` | button | Jetzt prüfen | Befehl `check` | der Agent kann `check` |
-| `button.vordr_<id>_install_security` | button | Sicherheitsupdates installieren | Befehl `install_security` | der Agent kann `install`, `security` ist erlaubt und nicht schon Standardumfang |
-| `button.vordr_<id>_reboot` | button (restart) | Neu starten | Befehl `reboot` | der Agent kann `reboot` und `reboot.allowed` |
-| `button.vordr_<id>_install_app_<app>` | button | Name der App | Befehl `install_app:<app>` | die App steht in `apps` und `app:<app>` ist erlaubt |
+| `update.vordr_<id>_system` | update | System packages | see 8.3 | the last report names a package source |
+| `update.vordr_<id>_<app>` | update | name of the app | real versions (installed, available) | not built yet; until then one button per app (below) |
+| `update.vordr_<id>_agent` | update | Agent | agent version against approved version; Install = `agent_update` (10.4) | the hub distributes agent releases |
+| `update.vordr_<id>_containers` | update | Container images | outdated and vulnerable images, rebuilds by button (11.5) | `packages.containers` on the host |
+| `update.vordr_<id>_packages_<location>` | update | Packages <location> | pip/npm packages of a location; Install = all candidates, service `vordr.update_package` = one, `vordr.refresh_dependencies` = dependencies with a finding (11.4) | the location is in `packages.update` and the hub has OSV data |
+| `sensor.vordr_<id>_last_run` | sensor (enum) | Last run | phase or result code (7.3) of the last job; attributes `job_id`, `verb`, `scope`, `started`, `finished`, `reason`, `log_excerpt` | always |
+| `sensor.vordr_<id>_pending_updates` | sensor | Pending updates | count; unknown if the check failed | the last report names a package source |
+| `sensor.vordr_<id>_security_updates` | sensor | Security updates | count | as above |
+| `sensor.vordr_<id>_last_report` | sensor (timestamp) | Last report | time of the last `report` | always |
+| `binary_sensor.vordr_<id>_reboot_required` | binary_sensor | Reboot required | on/off; **unknown** if no signal answered (`checked` empty, e.g. container); attributes `reason`, `packages`, `checked` | always |
+| `binary_sensor.vordr_<id>_problem` | binary_sensor (problem) | Update problem | on for `offline` (after `offline_after_min`, default 10; not while the host has announced that it sleeps or shuts down, see 11.1), codes with `problem` (7.3), `check_failed`, `stale`; attributes `reason`, `reasons`, `next_step`, `check_failed_code` – codes that HA translates (design/ha-integration.md, 6b) –, plus `failed_install` (job, scope, code, times, excerpt, run log) as long as a failed install of the system packages is remembered (ADR-0124), not in the recorder | always |
+| `binary_sensor.vordr_<id>_online` | binary_sensor (connectivity) | Connected | tunnel is up (immediately, without grace period) | always |
+| `sensor.vordr_<id>_malicious_packages` | sensor | Malicious packages | installed pip/npm packages that OSV lists as malware; attribute `findings` (11.2) | the agent sends a package inventory |
+| `sensor.vordr_<id>_vulnerable_packages` | sensor | Vulnerable packages | packages with a known vulnerability; attributes `findings` (per finding also `reach` and `held_by`, ADR-0129), `waiting`, `locations`, `packages_total`. The lists (`findings`, `locations`, `undecided`, for the outdated packages `updates`) are only in the state, not in the history (ADR-0101) | as above |
+| `sensor.vordr_<id>_outdated_packages` | sensor | Outdated packages | direct pip/npm packages with a newer release; attribute `updates` with `latest` and `candidate` (11.3) | as above |
+| `button.vordr_<id>_check` | button | Check now | command `check` | the agent can do `check` |
+| `button.vordr_<id>_install_security` | button | Install security updates | command `install_security` | the agent can do `install`, `security` is allowed and not already the default scope |
+| `button.vordr_<id>_reboot` | button (restart) | Restart | command `reboot` | the agent can do `reboot` and `reboot.allowed` |
+| `button.vordr_<id>_install_app_<app>` | button | name of the app | command `install_app:<app>` | the app is in `apps` and `app:<app>` is allowed |
 
-Knöpfe entstehen nur für Verben, die der Agent im Hello angekündigt hat **und** die seine Richtlinie erlaubt. Eine
-Richtlinie allein bietet nichts an, was die Agent-Version nicht kann. Hat ein Host noch keinen Bericht, werden die
-Paket-Entitäten weder angelegt noch gelöscht (unentschieden); erst ein Bericht entscheidet.
+Buttons exist only for verbs that the agent announced in the hello **and** that its policy allows. A policy alone
+offers nothing that the agent version cannot do. If a host has no report yet, the package entities are neither
+created nor deleted (undecided); only a report decides.
 
-### 8.2 Hub-Gerät
+### 8.2 Hub device
 
-| Entität | Typ | Anzeigename | Inhalt |
+| Entity | Type | Display name | Content |
 |---|---|---|---|
-| `binary_sensor.vordr_hub_online` | binary_sensor (connectivity) | Leitstelle | Last Will des Hubs |
-| `sensor.vordr_hub_hosts_online` | sensor | Hosts verbunden | Anzahl |
-| `sensor.vordr_hub_hosts_with_problem` | sensor | Hosts mit Problem | Anzahl; Attribut mit der Liste |
-| `sensor.vordr_hub_pending_approvals` | sensor | Wartende Freigaben | Anzahl; Attribut mit Namen und Fingerprints |
-| `sensor.vordr_hub_vulnerability_data` | sensor (timestamp) | Schwachstellendaten | wann die Leitstelle ihre OSV-Daten zuletzt geholt hat (das älteste Ökosystem); je Ökosystem Zustand `ok`, `stale`, `missing` und Fehlercode (11.2) |
+| `binary_sensor.vordr_hub_online` | binary_sensor (connectivity) | Hub | last will of the hub |
+| `sensor.vordr_hub_hosts_online` | sensor | Hosts connected | count |
+| `sensor.vordr_hub_hosts_with_problem` | sensor | Hosts with problem | count; attribute with the list |
+| `sensor.vordr_hub_pending_approvals` | sensor | Pending approvals | count; attribute with names and fingerprints |
+| `sensor.vordr_hub_vulnerability_data` | sensor (timestamp) | Vulnerability data | when the hub last fetched its OSV data (the oldest ecosystem); per ecosystem state `ok`, `stale`, `missing` and error code (11.2) |
 
-### 8.3 Die Entität „Systempakete“
+### 8.3 The entity "System packages"
 
-Eine `update`-Entität erwartet zwei Versionen; für eine Paketmenge gibt es keine einzelne. Darum:
+An `update` entity expects two versions; for a set of packages there is no single one. Therefore:
 
-- `installed_version`: das Betriebssystem, z. B. `Debian GNU/Linux 13 (trixie)`.
-- `latest_version`: gleich `installed_version`, wenn nichts aussteht oder der Install-Knopf nichts davon nähme, sonst
-  z. B. `12 ausstehend (3 Sicherheit)`; `null` (unbekannt), wenn die Prüfung scheiterte. „Überspringen“ in HA gilt nur,
-  bis sich die Menge ändert. Geprüft: HA vergleicht zuerst auf Gleichheit; zwei verschiedene Freitexte kann
-  AwesomeVersion nicht vergleichen, dann gilt die Entität als `on`.
-- **`on` nur, wenn Vördr etwas installieren würde** ([ADR-0106](../docs/adr/0106-update-entity-on-only-when-vordr-would-install.md),
-  seit Leitstelle 0.22.0 und Integration 0.20.0):
-  - Die Leitstelle meldet je Host `installable`: so viele ausstehende Updates nähme der Install-Knopf nach der
-    Richtlinie des Hosts. Mit Standardumfang `all` alle, mit `security` oder nur dem Knopf für Sicherheitsupdates die
-    Sicherheitsupdates, ohne beides keine.
-  - Ist es 0, ist die Entität `off`. Ein Host, dessen Richtlinie nur `security` erlaubt, zeigt seine übrigen Updates
-    dann nur noch in den Sensoren und der Zusammenfassung.
-  - Häufen sie sich, meldet `stale` (aus `pending_since`, alle ausstehenden Updates) das Problem nach
-    `stale_after_days` weiterhin.
-  - Eine ältere Leitstelle schickt das Feld nicht; dann gilt die alte Regel.
-- `release_summary`: die ersten Pakete mit alter → neuer Version (HA erlaubt höchstens 255 Zeichen).
-- `in_progress` und `update_percentage` während eines Laufs, Fortschritt aus `APT::Status-Fd`.
-- Install-Knopf: Auftrag `install` mit `install.default_scope` des Hosts.
+- `installed_version`: the operating system, e.g. `Debian GNU/Linux 13 (trixie)`.
+- `latest_version`: equal to `installed_version` if nothing is pending or the Install button would take none of it,
+  otherwise e.g. `12 pending (3 security)`; `null` (unknown) if the check failed. "Skip" in HA applies only until the
+  set changes. Verified: HA compares for equality first; AwesomeVersion cannot compare two different free texts, and
+  then the entity counts as `on`.
+- **`on` only if Vördr would install something** ([ADR-0106](../docs/adr/0106-update-entity-on-only-when-vordr-would-install.md),
+  since hub 0.22.0 and integration 0.20.0):
+  - The hub reports `installable` per host: that many pending updates the Install button would take under the
+    host's policy. With default scope `all` all of them, with `security` or only the button for security updates the
+    security updates, with neither none.
+  - If it is 0, the entity is `off`. A host whose policy allows only `security` then shows its other updates only in
+    the sensors and the summary.
+  - If they pile up, `stale` (from `pending_since`, all pending updates) still reports the problem after
+    `stale_after_days`.
+  - An older hub does not send the field; then the old rule applies.
+- `release_summary`: the first packages with old → new version (HA allows at most 255 characters).
+- `in_progress` and `update_percentage` during a run, progress from `APT::Status-Fd`.
+- Install button: job `install` with the host's `install.default_scope`.
 
-### 8.4 Befehle und Schwellen
+### 8.4 Commands and thresholds
 
-Befehle kommen als `command` über `/v1/ha` ([ha-integration.md](ha-integration.md), Abschnitt 5): `check`, `install`
-(Standardumfang), `install_security`, `install_app:<id>`, `reboot`, `agent_update`, dazu die Befehle für pip/npm-Orte
-und Container-Images (11.4, 11.5). Die Leitstelle prüft jeden gegen die Verben und die gemeldete Richtlinie des Hosts
-und gegen die Rolle des Clients (12), bevor sie einen Auftrag signiert; der Agent prüft trotzdem selbst.
+Commands come as `command` over `/v1/ha` ([ha-integration.md](ha-integration.md), section 5): `check`, `install`
+(default scope), `install_security`, `install_app:<id>`, `reboot`, `agent_update`, plus the commands for pip/npm
+locations and container images (11.4, 11.5). The hub checks each against the verbs and the reported policy of the host
+and against the client's role (12) before it signs a job; the agent checks it itself anyway.
 
-Übernommen aus dem Vorbild-Projekt: Entitäten entstehen und verschwinden nur auf eine vollständige Sicht hin, und
-„noch nicht entschieden“ ist etwas anderes als „soll nicht existieren“ (Tri-State, ha-integration.md 6a).
+Taken over from the earlier agent: entities appear and disappear only on a complete view, and "not yet decided" is
+something other than "should not exist" (tri-state, ha-integration.md 6a).
 
-`hub.yaml` dazu: `stale_after_days` (Standard 7), `offline_after_min` (Standard 10), `reboot_pending_after_days`
-(Standard 7), `no_report_after_hours` (Standard 26). Einen `mqtt`-Abschnitt lehnt `check-config` ab: MQTT gibt es seit
-Leitstelle 0.6 nicht mehr ([ADR-0026](../docs/adr/0026-remove-mqtt.md)).
+`hub.yaml` for this: `stale_after_days` (default 7), `offline_after_min` (default 10), `reboot_pending_after_days`
+(default 7), `no_report_after_hours` (default 26). `check-config` rejects an `mqtt` section: MQTT has been gone since
+hub 0.6 ([ADR-0026](../docs/adr/0026-remove-mqtt.md)).
 
-### 8.5 Auf der HA-Seite
+### 8.5 On the HA side
 
-- Alle `update`-Entitäten erscheinen ohne weiteres Zutun unter *Einstellungen → Updates*.
-- Je Host-Problem ein Reparaturhinweis und das Ereignis `vordr_problem` für Automationen (ha-integration.md 6a).
-- Noch nicht gebaut: ein Blueprint, der aus `binary_sensor.*_problem` eine Benachrichtigung bzw. einen
-  Aufgabeneintrag mit `next_step` macht und alle übrigen `update`-Entitäten (aus Integrationen) auf „hängt seit
-  N Tagen“ prüft. Damit gälte 7.5 auch für Geräte ohne Agent.
+- All `update` entities appear under *Settings → Updates* without further action.
+- One repair issue per host problem and the event `vordr_problem` for automations (ha-integration.md 6a).
+- Not built yet: a blueprint that turns `binary_sensor.*_problem` into a notification or a task entry with
+  `next_step` and checks all other `update` entities (from integrations) for "stuck for N days". 7.5 would then also
+  apply to devices without an agent.
 
-## 9. Lokale Richtlinie
+## 9. Local policy
 
-Beispiel `/etc/vordr/agent.yaml` (Windows: `%ProgramData%\vordr\agent.yaml`):
+Example `/etc/vordr/agent.yaml` (Windows: `%ProgramData%\vordr\agent.yaml`):
 
 ```yaml
-node: example-host                  # Standard: Hostname
+node: example-host                  # default: host name
 hub:
   url: wss://vordr-hub.example/v1/tunnel
-  public_key: "<base64>"            # Hub-Schlüssel; Aufträge ohne gültige Signatur werden abgelehnt
-  ca_file: /etc/vordr/hub-ca.pem    # optional: nur diesen CAs trauen statt den System-Wurzeln (interne PKI)
+  public_key: "<base64>"            # hub key; jobs without a valid signature are rejected
+  ca_file: /etc/vordr/hub-ca.pem    # optional: trust only these CAs instead of the system roots (internal PKI)
 install:
-  allowed_scopes: [security, all]   # app:<id> ist erlaubt, wenn die App unter apps steht;
-                                    # image:<projekt>/<dienst> ("*" erlaubt) für Compose-Dienste (11.5, ADR-0119)
-  default_scope: security           # Install-Knopf der Entität "Systempakete"
-  auto: hub                         # off | hub (siehe 10.3; local noch nicht gebaut)
+  allowed_scopes: [security, all]   # app:<id> is allowed if the app is listed under apps;
+                                    # image:<project>/<service> ("*" allows) for Compose services (11.5, ADR-0119)
+  default_scope: security           # Install button of the entity "System packages"
+  auto: hub                         # off | hub (see 10.3; local not built yet)
   window: {days: [mon, tue, wed, thu, fri, sat, sun], start: "02:00", end: "05:00"}
   min_interval_h: 6
   timeout_min: 60
@@ -473,435 +467,423 @@ reboot:
   window: {days: [sun], start: "03:00", end: "04:00"}
 agent_update:
   enabled: true
-  public_key: "<base64>"            # Betreiber-Schlüssel
+  public_key: "<base64>"            # operator key
 apps:
   - id: gitlab
     name: GitLab
     source: apt-package
     package: gitlab-ce
-guest_backup:                       # nur auf dem Hypervisor (10.2, ADR-0096)
-  storage: pbs                      # ein Proxmox-Backup-Server-Speicher dieses Hosts (/etc/pve/storage.cfg)
-  timeout_min: 60                   # je Backup; 5 bis 240
+guest_backup:                       # only on the hypervisor (10.2, ADR-0096)
+  storage: pbs                      # a Proxmox Backup Server storage of this host (/etc/pve/storage.cfg)
+  timeout_min: 60                   # per backup; 5 to 240
 ```
 
-Fenster gelten in der Ortszeit des Hosts. Fehlt ein Schlüssel, gilt der strengere Wert: kein Neustart, kein
-automatisches Installieren, nur `check`. `vordr-agent check-config` prüft die Datei, bevor der Dienst sie übernimmt
+The windows apply in the host's local time. If a key is missing, the stricter value applies: no reboot, no automatic
+install, only `check`. `vordr-agent check-config` checks the file before the service takes it over
 ([ADR-0006](../docs/adr/0006-local-policy-decides.md)).
 
-## 10. Abläufe
+## 10. Flows
 
-### 10.1 Anmeldung und Freigabe
+### 10.1 Enrollment and approval
 
-1. Beim ersten Start erzeugt der Agent seine Identität, verbindet sich, signiert die Challenge und schickt `hello`.
-2. Der Hub legt den Host als `pending_approval` an; HA zeigt ihn unter „Wartende Freigaben“ mit Fingerprint.
-3. Freigegeben wird nur am Hub selbst: `vordr-hub approve <node> --fingerprint <fp>`, nach Abgleich mit
-   `vordr-agent identity` am Host. HA kann keine Hosts zulassen
+1. On first start the agent creates its identity, connects, signs the challenge and sends `hello`.
+2. The hub registers the host as `pending_approval`; HA shows it under "Pending approvals" with its fingerprint.
+3. Approval happens only at the hub itself: `vordr-hub approve <node> --fingerprint <fp>`, after comparing with
+   `vordr-agent identity` on the host. HA cannot admit hosts
    ([ADR-0010](../docs/adr/0010-administration-only-local.md)).
-4. Erst danach entstehen die HA-Entitäten, und der Hub nimmt Meldungen an.
+4. Only then do the HA entities appear, and the hub accepts reports.
 
-### 10.2 Installationslauf (apt)
+### 10.2 Install run (apt)
 
-1. Auftrag prüfen: Signatur, Host, Ablauf, Wiederholung. Sonst `rejected_invalid_job`.
-2. Richtlinie prüfen: Umfang, Fenster, Mindestabstand. Sonst `rejected_*`.
-3. Eigene Sperre nehmen; ist die Sperre des Paketmanagers belegt: `rejected_busy`.
-4. Vorbedingungen: freier Platz, `dpkg --audit` leer, `apt-get update --error-on=any` erfolgreich.
-5. Probelauf (`apt-get -s`), daraus der Plan. Würde er Pakete entfernen: `precheck_would_remove_packages`.
-   Ausgenommen sind Pakete, die ein Paket desselben Laufs ausdrücklich ersetzt. Das neue Paket erklärt dafür
-   `Replaces` und zusätzlich `Breaks` oder `Conflicts` auf das alte (Debian Policy 7.6.2). So benennen Distributionen
-   Pakete um oder teilen sie auf. Beispiel: Raspberry Pi OS ersetzte 2026 `pcmanfm` durch `pcmanfm-pi`; ohne diese Ausnahme
-   blieben auf einem Pi deshalb Hunderte Updates liegen ([ADR-0042](../docs/adr/0042-replaced-packages-are-no-removal.md)).
-   - Der Lauf nennt solche Ersetzungen in der Zusammenfassung (`replaced`).
-   - Kann `apt-cache` nichts dazu sagen, zählt jede Entfernung als echte.
-   - Beim Umfang `all` `full-upgrade`, ausser `install.mode` sagt `upgrade`
+1. Check the job: signature, host, expiry, replay. Otherwise `rejected_invalid_job`.
+2. Check the policy: scope, window, minimum interval. Otherwise `rejected_*`.
+3. Take the agent's own lock; if the package manager's lock is held: `rejected_busy`.
+4. Preconditions: free space, `dpkg --audit` empty, `apt-get update --error-on=any` successful.
+5. Dry run (`apt-get -s`), from it the plan. If it would remove packages: `precheck_would_remove_packages`.
+   Excepted are packages that a package of the same run explicitly replaces. For this the new package declares
+   `Replaces` and in addition `Breaks` or `Conflicts` against the old one (Debian Policy 7.6.2). This is how distributions
+   rename or split packages. Example: in 2026 Raspberry Pi OS replaced `pcmanfm` with `pcmanfm-pi`; without this exception
+   hundreds of updates would have stayed pending on a Pi ([ADR-0042](../docs/adr/0042-replaced-packages-are-no-removal.md)).
+   - The run lists such replacements in its summary (`replaced`).
+   - If `apt-cache` cannot say anything about it, every removal counts as a real one.
+   - For scope `all`, `full-upgrade`, unless `install.mode` says `upgrade`
      ([ADR-0076](../docs/adr/0076-full-upgrade-by-default.md)).
-   - Bei `scope=security` nur Pakete, deren Kandidat aus einer Sicherheitsquelle stammt
-     (`apt-get install --only-upgrade` mit den Namen aus dem eigenen Probelauf). Ihr Plan darf nur ändern, was aus
-     einem Sicherheitsarchiv oder aus der Release des Hosts selbst kommt, wie unattended-upgrades
+   - For `scope=security`, only packages whose candidate comes from a security source
+     (`apt-get install --only-upgrade` with the names from the agent's own dry run). Their plan may change only what comes
+     from a security archive or from the host's own release, like unattended-upgrades
      ([ADR-0116](../docs/adr/0116-security-runs-stay-within-security-archives-and-the-release.md)).
-     - Release des Hosts: Label `Debian` oder `Ubuntu`, Suite ohne Bindestrich, Version gleich `VERSION_ID` aus
-       `/etc/os-release` oder eine Zwischenversion davon (`12.15` auf Debian 12). Ist die Release unbekannt, zählen
-       nur die Sicherheitsarchive.
-     - Nicht aus `-updates`, `-backports`, `-proposed`, einer anderen Release oder einem Hersteller-Repo, auch wenn
-       dessen Suite `stable` heisst.
-     - Erst alle zusammen. Reicht dieser Plan weiter, einzeln in der Reihenfolge des Probelaufs: Ein Update bleibt,
-       wenn der Plan mit den bisher behaltenen und ihm innerhalb bleibt.
-     - Zurückgehaltene bleiben ausstehend. Das Ergebnis ist `ok`, und `detail` nennt sie mit dem, was sie bräuchten.
-       Hält der Lauf alles zurück, lädt er nichts und schreibt kein Journal. Läuft die Zeit beim Auswählen ab, endet
-       er mit `timeout`.
-6. Herunterladen (`apt-get -d`), dann das Laufjournal schreiben (`/var/lib/vordr/run.json`), bevor ein Paket
-   angefasst wird. Der Download füllt nur den Paket-Cache. Scheitert er (Spiegel nicht erreichbar, apt belegt), hat der
-   Lauf nichts geändert, schreibt kein Journal und zählt nicht für `install.min_interval_h`. Ein Aussetzer des Spiegels
-   kostet so nicht das ganze Fenster. Unter Windows Update laufen Download und Installation in einem Skript, dort steht das
-   Journal weiter davor.
-7. Ausführen mit `DEBIAN_FRONTEND=noninteractive` und `--force-confold`, Fortschritt über `APT::Status-Fd`.
-8. Nachprüfen: ausstehende Updates im Umfang, `dpkg --audit`, Neustartbedarf.
-9. Ergebniscode melden, Journal schliessen.
+     - The host's own release: label `Debian` or `Ubuntu`, suite without a hyphen, version equal to `VERSION_ID` from
+       `/etc/os-release` or an intermediate version of it (`12.15` on Debian 12). If the release is unknown, only the
+       security archives count.
+     - Not from `-updates`, `-backports`, `-proposed`, another release or a vendor repo, even if its suite is called
+       `stable`.
+     - All together first. If that plan reaches further, one by one in the order of the dry run: an update stays if the
+       plan with the ones kept so far and this one stays within the limits.
+     - Held-back updates stay pending. The result is `ok`, and `detail` names them with what they would need.
+       If the run holds back everything, it downloads nothing and writes no journal. If time runs out during selection,
+       it ends with `timeout`.
+6. Download (`apt-get -d`), then write the run journal (`/var/lib/vordr/run.json`) before any package is touched.
+   The download only fills the package cache. If it fails (mirror unreachable, apt busy), the run has changed nothing,
+   writes no journal and does not count toward `install.min_interval_h`. A mirror outage thus does not cost the whole
+   window. Under Windows Update, download and installation run in one script; there the journal still comes first.
+7. Execute with `DEBIAN_FRONTEND=noninteractive` and `--force-confold`, progress through `APT::Status-Fd`.
+8. Verify: pending updates in scope, `dpkg --audit`, need for a reboot.
+9. Report the result code, close the journal.
 
-**Backup-Prüfung vor dem Lauf (Leitstelle, optional):** Hat `hub.yaml` einen Abschnitt `backup`, fragt die
-Leitstelle vor jedem `install` den Backup-Server nach dem letzten Backup der Gruppe des Hosts (erste Umsetzung:
-Proxmox Backup Server, PBS; eigenes
-Lese-Token, nur `DatastoreAudit`, Zertifikat per Fingerprint gepinnt). Ist es älter als `max_age_hours` (Standard 26),
-fehlt es, antwortet PBS nicht (ein Abruf jünger als 30 min zählt noch) oder nennt `hub.yaml` keine Gruppe, lehnt sie
-mit `backup_stale`, `backup_missing`, `backup_unreachable` bzw. `backup_unmapped` ab, bevor ein Auftrag hinausgeht.
-Hosts ohne Backup stehen ausdrücklich mit Grund drin (`without`). Prüfen statt Zeitplan: ein gescheitertes oder
-verspätetes Backup hält die Installation an. HA zeigt je Host den Sensor „Letztes Backup“ und die Ablehnung als
-Fehler mit Alter und Grenze ([ADR-0030](../docs/adr/0030-backup-required.md)).
+**Backup check before the run (hub, optional):** If `hub.yaml` has a `backup` section, the hub asks the backup server
+for the latest backup of the host's group before every `install` (first implementation: Proxmox Backup Server, PBS; its
+own read token, only `DatastoreAudit`, certificate pinned by fingerprint). If the backup is older than `max_age_hours`
+(default 26), is missing, PBS does not answer (a query younger than 30 min still counts) or `hub.yaml` names no group, the hub
+refuses with `backup_stale`, `backup_missing`, `backup_unreachable` or `backup_unmapped` respectively, before any job
+goes out. Hosts without a backup are listed explicitly with a reason (`without`). Check instead of schedule: a failed or
+late backup halts the installation. HA shows the sensor "Last backup" per host and the refusal as an error with the age
+and the limit ([ADR-0030](../docs/adr/0030-backup-required.md)).
 
-**Konfigurationssicherung statt PBS (Appliances):** Ein Eintrag `config_backup: true` statt `group` oder `without`
-gilt für eine Appliance hinter einem Stellvertreter. Die Leitstelle nimmt dann das Alter aus dem Fakt
-`config_backup_at`, den der Agent in seinem letzten Bericht unter der Quelle `config-backup` meldet. PBS fragt sie dafür
-nicht. Es gelten dieselbe Grenze und dieselben Codes `backup_stale` und `backup_missing`. Der Sensor „Letztes Backup“
-zeigt diese Sicherung ([ADR-0090](../docs/adr/0090-appliance-installs-need-a-fresh-config-backup.md),
-[Stellvertreter 4.4](stellvertreter.md#44-konfigurationssicherung-adr-0090)).
+**Configuration backup instead of PBS (appliances):** An entry `config_backup: true` instead of `group` or `without`
+applies to an appliance behind a proxy agent. The hub then takes the age from the fact `config_backup_at`, which the
+agent reports in its latest report under the source `config-backup`. It does not ask PBS for this. The same limit and the
+same codes `backup_stale` and `backup_missing` apply. The sensor "Last backup" shows this backup
+([ADR-0090](../docs/adr/0090-appliance-installs-need-a-fresh-config-backup.md),
+[Proxy agent 4.4](proxy-agent.md#44-configuration-backup-adr-0090)).
 
-**Backup direkt vor dem Install (Leitstelle und Agent des Hypervisors; erste Umsetzung: Proxmox VE mit PBS):** Mit
-`backup.before_install.hypervisor: <node>` bekommt jeder Gast mit einer Gruppe `vm/<id>` oder `ct/<id>` vor jedem
-Install ein frisches Backup; Gruppen `host/` und `without` bleiben bei der Altersprüfung
+**Backup right before the install (hub and the hypervisor's agent; first implementation: Proxmox VE with PBS):** With
+`backup.before_install.hypervisor: <node>`, every guest with a group `vm/<id>` or `ct/<id>` gets a fresh backup before
+every install; groups `host/` and `without` stay with the age check
 ([ADR-0096](../docs/adr/0096-fresh-backup-right-before-the-install.md)).
 
-- **Vor dem Lauf:** Das Alter des letzten Backups hält einen solchen Gast nicht mehr auf. Die Leitstelle lehnt aber ab,
-  wenn PBS nicht antwortet (`backup_unreachable`) oder der Agent des Hypervisors nicht da ist, nicht freigegeben ist
-  oder `backup` nicht anbietet (`backup_host_unavailable`).
-- **Lauf:** Der Install-Lauf beginnt in der Phase `backing_up`, mit seiner endgültigen `job_id`. Die Leitstelle
-  schickt dem Hypervisor den signierten Auftrag `backup` mit dem Gast und wartet auf das Ergebnis. Danach fragt sie
-  PBS mit dem Lese-Token, ob die Gruppe ein Backup hat, das nicht älter ist als der Moment des Auftrags (1 min
-  Uhrabweichung). Erst dann geht der Install mit derselben `job_id` hinaus.
-- **Erneut entscheiden:** Das Warten auf das Backup kann dauern: andere Gäste werden vorher gesichert, das Backup
-  selbst braucht Minuten. Zwei Mal prüft die Leitstelle deshalb erneut, was sie beim Start geprüft hat (Fenster nach
-  [ADR-0109](../docs/adr/0109-the-install-button-installs-at-once.md), Mindestabstand nach
-  [ADR-0110](../docs/adr/0110-the-hub-checks-the-minimum-interval-before-the-backup.md)): wenn das Backup an der Reihe
-  ist, und bevor der Install hinausgeht.
-  - Ein Install aus HA ohne Grund bekommt dann den Grund des Knopfs, wenn das Fenster inzwischen zu ist.
-  - Jeder andere Install ohne Grund endet mit `rejected_outside_window`, ohne dass er gesendet wird. Ebenso einer, den
-    der Mindestabstand aufhält (`rejected_rate_limited`).
-  - Schliesst das Fenster vor dem Backup, wird nichts gesichert.
-- **Wiederverwenden:** Ist das letzte Backup des Gastes jünger als 15 min (der geplante Job lief eben, derselbe Install
-  wird wiederholt), nimmt die Leitstelle dieses.
-- **Eins nach dem anderen:** Es läuft immer nur ein Backup. Der Agent führt einen Auftrag zur Zeit aus, und vzdump hat
-  eine Sperre je Host. Läuft auf dem Hypervisor ein eigener Lauf, wartet das Backup, bei `rejected_busy` bis zu drei
-  Versuche. Befehle an den Hypervisor warten, solange er sichert (Warteschlange 10.3).
-- **Kein Lauf des Hypervisors:** Sein „Letzter Lauf“ in HA bleibt sein eigener. Das Ergebnis steht im Lauf des Gastes
-  und im Ereignisprotokoll (`install_awaits_backup`, `job_sent` mit `guest`, `for`, `for_job`, `pre_install_backup`).
-- **Scheitert es** (vzdump, PBS hat das Backup nicht, Hypervisor weg, mehr als 5 h Wartezeit), endet der Lauf mit
-  `failed_backup` und dem Grund im Detail. Installiert wurde nichts.
-- **Agent des Hypervisors** (`guest_backup` in der `agent.yaml`, Kapitel 9):
-  - Er bietet `backup` nur unter Linux als root an, mit `vzdump` und einem `pbs:`-Speicher in `/etc/pve/storage.cfg`.
-    `check-config` prüft den Speicher.
-  - Er sichert nur Gäste dieses Hosts (Konfigurationsdatei unter `/etc/pve/lxc` bzw. `/etc/pve/qemu-server`) und
-    jeden höchstens einmal in 10 min (`rejected_rate_limited`).
-  - Aufruf: `vzdump <id> --storage <speicher> --mode snapshot --remove 0 --lockwait <timeout_min/2>
-    --notes-template "vordr: before install, job <job_id>"`. Snapshot-Modus fällt bei Speichern ohne Snapshots von
-    selbst auf Suspend zurück, nie auf Stop. `--remove 0`: Vördr löscht nie ein Backup; die Aufbewahrung regeln die
-    Prune-Jobs von PBS.
-  - **Umask 022** wie beim Scheduler von Proxmox: Der Agent startet `vzdump` über eine feste `sh`-Zeile
-    (`umask 022 && exec "$0" "$@"`; die Argumente werden nie Teil des Skripts). Die Unit des Agenten hat `UMask=0077`,
-    und `vzdump` legt sein Temp-Verzeichnis und darin die `pct.conf` mit der geerbten Umask an. Bei unprivilegierten
-    Containern liest `proxmox-backup-client` sie als gemappter root (uid 100000). Unter 0077 scheitert das mit
-    „Permission denied“.
-  - Er hält seine Sperre wie ein Install. Ein Backup bricht nicht ab, wenn der Agent stoppt; das Protokoll liegt unter
-    `<state_dir>/runs/<job>.log`, und ein gescheitertes Backup nennt diesen Pfad im Detail.
-- **Neustart der Leitstelle:** Ein Lauf, der beim Neustart noch in `backing_up` steht, endet mit `interrupted`. Der
-  Auftrag ging nie hinaus.
+- **Before the run:** The age of the latest backup no longer holds such a guest back. But the hub refuses if PBS does not
+  answer (`backup_unreachable`) or the hypervisor's agent is absent, not approved or does not offer `backup`
+  (`backup_host_unavailable`).
+- **Run:** The install run begins in the phase `backing_up`, with its final `job_id`. The hub sends the hypervisor the
+  signed job `backup` with the guest and waits for the result. Then it asks PBS with the read token whether the group has
+  a backup that is not older than the moment of the job (1 min clock skew). Only then does the install go out with the
+  same `job_id`.
+- **Deciding again:** Waiting for the backup can take a while: other guests are backed up first, the backup itself takes
+  minutes. The hub therefore re-checks twice what it checked at the start (window per
+  [ADR-0109](../docs/adr/0109-the-install-button-installs-at-once.md), minimum interval per
+  [ADR-0110](../docs/adr/0110-the-hub-checks-the-minimum-interval-before-the-backup.md)): when the backup's turn comes,
+  and before the install goes out.
+  - An install from HA without a reason then gets the button's reason if the window has closed in the meantime.
+  - Every other install without a reason ends with `rejected_outside_window` without being sent. So does one that the
+    minimum interval holds back (`rejected_rate_limited`).
+  - If the window closes before the backup, nothing is backed up.
+- **Reuse:** If the guest's latest backup is younger than 15 min (the scheduled job just ran, the same install is
+  repeated), the hub takes that one.
+- **One at a time:** Only one backup runs at a time. The agent executes one job at a time, and vzdump has a lock per
+  host. If the hypervisor has a run of its own, the backup waits, with `rejected_busy` up to three attempts. Commands to
+  the hypervisor wait while it is backing up (queue, 10.3).
+- **No run of the hypervisor:** Its "Last run" in HA stays its own. The result is in the guest's run and in the event log
+  (`install_awaits_backup`, `job_sent` with `guest`, `for`, `for_job`, `pre_install_backup`).
+- **If it fails** (vzdump, PBS does not have the backup, hypervisor gone, more than 5 h of waiting), the run ends with
+  `failed_backup` and the reason in the detail. Nothing was installed.
+- **The hypervisor's agent** (`guest_backup` in `agent.yaml`, chapter 9):
+  - It offers `backup` only under Linux as root, with `vzdump` and a `pbs:` storage in `/etc/pve/storage.cfg`.
+    `check-config` checks the storage.
+  - It backs up only guests of this host (configuration file under `/etc/pve/lxc` or `/etc/pve/qemu-server`) and each at
+    most once in 10 min (`rejected_rate_limited`).
+  - Call: `vzdump <id> --storage <storage> --mode snapshot --remove 0 --lockwait <timeout_min/2>
+    --notes-template "vordr: before install, job <job_id>"`. For storages without snapshots, snapshot mode falls back to
+    suspend by itself, never to stop. `--remove 0`: Vördr never deletes a backup; retention is handled by the prune jobs
+    of PBS.
+  - **Umask 022** like the Proxmox scheduler: The agent starts `vzdump` through a fixed `sh` line
+    (`umask 022 && exec "$0" "$@"`; the arguments never become part of the script). The agent's unit has `UMask=0077`,
+    and `vzdump` creates its temp directory and in it the `pct.conf` with the inherited umask. For unprivileged
+    containers, `proxmox-backup-client` reads it as mapped root (uid 100000). Under 0077 this fails with
+    "Permission denied".
+  - It holds its lock like an install. A backup does not abort when the agent stops; the log is at
+    `<state_dir>/runs/<job>.log`, and a failed backup names this path in the detail.
+- **Hub restart:** A run that is still in `backing_up` at the restart ends with `interrupted`. The job never went out.
 
-`vordr-hub backup <node>` zeigt die Entscheidung mit „a fresh backup by <hypervisor> before the install“. Synology
-Active Backup for Business wurde dafür geprüft und verworfen
+`vordr-hub backup <node>` shows the decision with "a fresh backup by <hypervisor> before the install". Synology
+Active Backup for Business was examined for this and rejected
 ([ADR-0097](../docs/adr/0097-synology-active-backup-for-business-for-backups-before-installs.md)).
 
-**Festlegungen zum Lauf:**
+**Rules for the run:**
 
-- **Fenster:** Ist `install.window` gesetzt, gilt es auch für den Knopf in HA. Ohne Fenster darf der Knopf jederzeit;
-  automatisch (`auto: hub`) geht nur mit Fenster. Ausserhalb des Fensters nur mit Grund (6.4).
-- **Fortschritt:** Download erst getrennt (`apt-get -d`), dann die Installation. Prozent des ganzen Laufs:
-  Vorprüfung bis 5, Download bis 35 (`dlstatus`), Installation bis 95 (`pmstatus`, mit Paket), Nachprüfung bis 100.
-  Höchstens eine Meldung pro Sekunde und Phase; der Hub legt Phase, Prozent und Paket in den letzten Lauf, HA zeigt
-  sie in `update.*_system` (`update_percentage`) und am Sensor „Letzter Lauf“ (`progress`, `item`).
-- **Fristen:** `install.timeout_min` gilt bis zum Beginn der Installation. dpkg wird nie mittendrin gestoppt; die
-  Installation selbst endet spätestens nach der doppelten Frist mit `timeout`.
-- **Tunnel und Neustart:** Ein Lauf gehört nicht zur Verbindung, die ihn brachte. Fortschritt und Ergebnis gehen über
-  die jeweils aktuelle Verbindung, sonst aus dem Journal bei der nächsten. Ein Ergebnis, das nach einem Tunnelabbruch
-  kommt, löst beim Hub das vorläufige `interrupted` ab. Ein Stopp des Dienstes wartet auf den Lauf (`KillMode=mixed`,
+- **Window:** If `install.window` is set, it also applies to the button in HA. Without a window the button is allowed at
+  any time; automatic installs (`auto: hub`) work only with a window. Outside the window only with a reason (6.4).
+- **Progress:** Download first, separately (`apt-get -d`), then the installation. Percent of the whole run:
+  precheck up to 5, download up to 35 (`dlstatus`), installation up to 95 (`pmstatus`, with package), verification up
+  to 100. At most one message per second and phase; the hub puts phase, percent and package into the latest run, HA
+  shows them in `update.*_system` (`update_percentage`) and on the sensor "Last run" (`progress`, `item`).
+- **Deadlines:** `install.timeout_min` applies until the installation begins. dpkg is never stopped in the middle; the
+  installation itself ends at the latest after twice the deadline with `timeout`.
+- **Tunnel and reboot:** A run does not belong to the connection that brought it. Progress and result go over the
+  current connection, otherwise from the journal at the next one. A result that arrives after a tunnel drop replaces the
+  provisional `interrupted` at the hub. Stopping the service waits for the run (`KillMode=mixed`,
   `TimeoutStopSec=30min`; [ADR-0029](../docs/adr/0029-runs-survive-disconnects.md)).
-- **Handschlag zu Läufen** (Leitstelle 0.26.0, Agent 0.15.0;
-  [ADR-0114](../docs/adr/0114-agent-names-its-run-and-the-hub-acknowledges-results.md)): Beim Tunnelabbruch muss die
-  Leitstelle raten, was aus dem Lauf wurde. Seit dem Handschlag sagt es der Agent beim nächsten Hello.
-  - Die Leitstelle kündigt `ack` schon in der Challenge an (`features`), weil das Hello vor dem Status kommt und eine
-    ältere Leitstelle ein Hello mit unbekanntem Feld ablehnt. Nur dann schickt der Agent `runs`.
-  - `runs.running`: die Aufträge, die der Agent gerade ausführt (vom geprüften Auftrag bis zum gesendeten Ergebnis;
-    ein Neustart des Hosts, bis er wirklich herunterfährt). `runs.unacknowledged`: Ergebnisse, die er hält und auf
-    dieser Verbindung schickt – das Journal, bis die Leitstelle es quittiert hat, ein Selbst-Update und ein Neustart
-    nach dem Start.
-  - Die Leitstelle gleicht ihren letzten Lauf damit ab, bevor ein Auftrag den Host erreichen kann: Nennt der Agent
-    ihn als laufend, läuft er wieder (Ereignis `run_continues`), und Warteschlange, Verteilung und Automatik warten.
-    Nennt er ihn gar nicht, ist der Lauf weg: `interrupted` mit „the agent reported no such run…“ (`run_lost`), und
-    der Host ist sofort frei statt erst nach der Frist des Auftrags. Ein Install, der noch auf das Backup seines
-    Gastes wartet (`backing_up`), bleibt, wie er ist: Er ging noch nicht hinaus.
-  - Jeder als laufend genannte Auftrag hält den Host besetzt, bis sein Ergebnis kommt, auch einer, der kein eigener
-    Lauf des Hosts ist (das Backup eines Gastes auf dem Hypervisor).
-  - Ein Endstatus ohne Journal, den keine Verbindung nimmt, bleibt im Speicher des Agenten, steht im nächsten Hello
-    und geht auf der nächsten freigegebenen Verbindung hinaus.
-  - Endet die alte Verbindung bei der Leitstelle erst nach dem neuen Hello, wartet der Auftrag weiter
-    (`job_continues`), statt `interrupted` zu verbuchen.
-  - Jeden Endstatus speichert die Leitstelle und quittiert ihn dann mit `ack` (Auftrags-ID). Erst damit gilt das
-    Ergebnis im Journal als gemeldet (`acknowledged`), sonst schickt der Agent es bei jeder neuen Verbindung wieder.
-    Eine zweite Kopie ändert nichts (`job_status_again`) und wird wieder quittiert. Ebenso der Neustart-Marker.
-  - Das Selbst-Update bleibt bei seiner Regel: Der Marker verschwindet, sobald das Ergebnis auf der ersten
-    freigegebenen Verbindung gesendet ist; das Verschwinden ist die Bestätigung für den Wächter (ADR-0098).
-  - Ältere Agenten schicken kein `runs` und bekommen kein `ack`; mit einer älteren Leitstelle gilt ein gesendetes
-    Ergebnis wie bisher als gemeldet. Ein Journal von vorher (`reported`) gilt als nicht quittiert und geht einmal
-    mehr hinaus.
-- **Was der Lauf getan hat:** Das Ergebnis eines Laufs, der Pakete
-  angefasst hat, trägt eine Zusammenfassung – Paketzahl und -namen (höchstens 100), Dauer, Pfad des Laufprotokolls am
-  Host (`<state_dir>/runs/<job>.log`, die ganze Ausgabe von apt, die letzten 10 Läufe) und die Dienste, die laut
-  `needrestart -b` noch alte Bibliotheken nutzen. HA zeigt sie am Sensor „Letzter Lauf“ und im Ereignis
-  `vordr_run_finished` (`summary`). Phasen, Paketzahl und Dauer stehen auch im Journal des Agenten.
-- **Umfang `all`:** `install.mode` (`upgrade` oder `full-upgrade`) übersteuert die Voreinstellung `full-upgrade`.
-  Mit `upgrade` bleiben Pakete liegen, die neue Abhängigkeiten brauchen (unter Ubuntu typisch Kernel und
-  `linux-firmware`); ein Lauf, der Pakete entfernen würde, wird in beiden Fällen abgelehnt
-  ([ADR-0031](../docs/adr/0031-install-mode-full-upgrade.md), abgelöst durch
-  [ADR-0076](../docs/adr/0076-full-upgrade-by-default.md)). Docker-Pakete werden nicht zurückgehalten
+- **Handshake on runs** (hub 0.26.0, agent 0.15.0;
+  [ADR-0114](../docs/adr/0114-agent-names-its-run-and-the-hub-acknowledges-results.md)): When the tunnel drops, the hub
+  has to guess what became of the run. Since the handshake, the agent says so at the next hello.
+  - The hub announces `ack` already in the challenge (`features`), because the hello comes before the status and an
+    older hub rejects a hello with an unknown field. Only then does the agent send `runs`.
+  - `runs.running`: the jobs the agent is executing right now (from the checked job to the sent result; for a reboot of
+    the host, until it actually shuts down). `runs.unacknowledged`: results it holds and sends on this connection: the
+    journal until the hub has acknowledged it, a self-update and a reboot after the start.
+  - The hub reconciles its latest run with this before a job can reach the host: If the agent names it as running, it is
+    running again (event `run_continues`), and queue, distribution and automation wait. If the agent does not name it at
+    all, the run is gone: `interrupted` with "the agent reported no such run…" (`run_lost`), and the host is free
+    immediately instead of only after the job's deadline. An install that is still waiting for its guest's backup
+    (`backing_up`) stays as it is: it has not gone out yet.
+  - Every job named as running keeps the host busy until its result arrives, even one that is not a run of the host
+    itself (a guest's backup on the hypervisor).
+  - A final status without a journal that no connection takes stays in the agent's memory, appears in the next hello
+    and goes out on the next approved connection.
+  - If the old connection ends at the hub only after the new hello, the job keeps waiting (`job_continues`) instead of
+    being recorded as `interrupted`.
+  - The hub stores every final status and then acknowledges it with `ack` (job ID). Only with that does the result in
+    the journal count as reported (`acknowledged`); otherwise the agent sends it again on every new connection.
+    A second copy changes nothing (`job_status_again`) and is acknowledged again. The same holds for the reboot marker.
+  - The self-update keeps its rule: The marker disappears as soon as the result has been sent on the first approved
+    connection; the disappearance is the confirmation for the guard (ADR-0098).
+  - Older agents send no `runs` and get no `ack`; with an older hub a sent result counts as reported as before. A journal
+    from before (`reported`) counts as not acknowledged and goes out once more.
+- **What the run did:** The result of a run that touched packages carries a summary: package count and names (at most
+  100), duration, path of the run log on the host (`<state_dir>/runs/<job>.log`, the full output of apt, the last 10
+  runs) and the services that, according to `needrestart -b`, still use old libraries. HA shows it on the sensor
+  "Last run" and in the event `vordr_run_finished` (`summary`). Phases, package count and duration are also in the agent's
+  journal.
+- **Scope `all`:** `install.mode` (`upgrade` or `full-upgrade`) overrides the default `full-upgrade`.
+  With `upgrade`, packages that need new dependencies stay behind (under Ubuntu typically kernel and
+  `linux-firmware`); a run that would remove packages is refused in both cases
+  ([ADR-0031](../docs/adr/0031-install-mode-full-upgrade.md), superseded by
+  [ADR-0076](../docs/adr/0076-full-upgrade-by-default.md)). Docker packages are not held back
   ([ADR-0077](../docs/adr/0077-hold-docker-packages.md)).
-  - Mit `upgrade` simuliert der Check zusätzlich `apt-get -s upgrade` und markiert, was nur `full-upgrade` nähme, als
-    `kept_back` (je Paket und gezählt je Quelle). Es bleibt ausstehend, zählt aber nicht als installierbar für den
-    Umfang `all`: Die Leitstelle zieht es von `installable` ab und meldet `kept_back`, und die Automatik mit
-    `auto_scope: all` startet dafür keinen Lauf. Der Umfang `security` installiert nach Namen und ist nicht betroffen.
-    Schlägt die zweite Simulation fehl, wird nichts markiert
-    ([ADR-0127](../docs/adr/0127-count-only-what-the-upgrade-mode-installs.md)).
-- Nach einem gelungenen Lauf leert der Agent den Paket-Cache (`apt-get clean`).
-- **Prüfung nach dem Update** (`health:` in `agent.yaml`;
+  - With `upgrade`, the check additionally simulates `apt-get -s upgrade` and marks what only `full-upgrade` would take
+    as `kept_back` (per package and counted per source). It stays pending but does not count as installable for scope
+    `all`: The hub subtracts it from `installable` and reports `kept_back`, and the automation with `auto_scope: all`
+    starts no run for it. Scope `security` installs by name and is not affected. If the second simulation fails, nothing
+    is marked ([ADR-0127](../docs/adr/0127-count-only-what-the-upgrade-mode-installs.md)).
+- After a successful run the agent empties the package cache (`apt-get clean`).
+- **Check after the update** (`health:` in `agent.yaml`;
   [ADR-0038](../docs/adr/0038-health-checks-after-install.md),
   [ADR-0061](../docs/adr/0061-restart-containers-after-install.md)):
-  - Je Eintrag eine Art: `systemd` (Unit aktiv), `docker` (Container läuft, und ist gesund, wo er einen Healthcheck
-    hat) oder `http` (GET mit 2xx/3xx in 10 s; das Zertifikat wird nicht geprüft, lokale Dienste).
-  - Nach einem Lauf, der Pakete geändert hat und mit `ok`/`ok_reboot_required` endet, wiederholt der Agent die
-    Prüfungen bis zu 3 Minuten lang alle 15 s; ein Upgrade startet Dienste neu.
-  - Schlägt danach noch eine fehl, endet der Lauf mit `failed_health`, mit der fehlgeschlagenen Prüfung im Auszug.
-  - Namen sind nur Namen (Muster ohne Optionen und Shell); sie werden zu Befehlsargumenten.
-  - Container: Vor einem Install der Systempakete merkt sich der Agent die laufenden Container mit Neustart-Richtlinie
-    (`always`, `unless-stopped`) und startet danach die, die nicht laufen, vor den Prüfungen (ADR-0061). Die Liste
-    steht auch im Laufjournal: Wird der Lauf abgebrochen (Agent oder Host gestoppt), holt der nächste Start des
-    Agenten diese Container zurück, bevor er sich meldet; das Ergebnis `interrupted` nennt sie (`restarted`) und die,
-    die nicht starten ([ADR-0125](../docs/adr/0125-bring-back-containers-after-an-interrupted-run.md)).
-- **Neustart** (Verb `reboot`; [ADR-0041](../docs/adr/0041-reboot-with-window-and-proof.md)):
-  - Nur mit `reboot.allowed` und im `reboot.window` (ausserhalb nur mit Grund, 6.4), nur wenn der Host ihn wirklich
-    braucht (dieselben Signale wie der Bericht: `reboot-required`, laufender gegen neuesten Kernel), und nur, wenn
-    sonst nichts läuft.
-  - Höchstens einer pro Stunde, gegen Neustart-Schleifen.
-  - Vor dem Neustart schreibt der Agent `reboot.json` mit der Boot-Kennung (`/proc/sys/kernel/random/boot_id`) und
-    meldet die Phase `rebooting`. Die Leitstelle wartet deshalb auf ihn, statt `interrupted` zu melden.
-  - Der Agent nach dem Start belegt den Neustart mit einer neuen Boot-Kennung und prüft, dass keiner mehr nötig ist.
-    Erst dann meldet er `ok`; sonst `failed_verification`, mit dem Grund.
-  - HA bietet den Knopf nur bei Hosts, die es erlauben. Die Rolle des Clients muss `admin` sein (12).
-  - Containern (LXC) bringt ein Neustart nichts. Sie teilen den Kernel des Hosts, und der Agent sieht dort meist
-    keinen Bedarf.
-- **Neustart-Hinweise** folgen der Fähigkeit des Hosts: Erlaubt er keinen Neustart über Vördr, heisst der nächste
-  Schritt bei `ok_reboot_required` und `reboot_pending` „von Hand neu starten“. HA zeigt laufenden und neuesten Kernel
-  am Sensor „Neustart nötig“.
-- **Mindestabstand** `install.min_interval_h` zählt ab dem Journal, also nur Läufe, die Pakete angefasst haben. Er
-  hält Läufe der Systempakete und von Apps zurück, nicht pip/npm-Läufe und das Auffrischen von Abhängigkeiten (die
-  zählen aber mit). Auch die Leitstelle kennt ihn
+  - One kind per entry: `systemd` (unit active), `docker` (container is running, and healthy where it has a
+    healthcheck) or `http` (GET with 2xx/3xx within 10 s; the certificate is not checked, local services).
+  - After a run that changed packages and ends with `ok`/`ok_reboot_required`, the agent repeats the checks every 15 s for
+    up to 3 minutes; an upgrade restarts services.
+  - If one still fails after that, the run ends with `failed_health`, with the failed check in the excerpt.
+  - Names are only names (pattern without options and shell); they become command arguments.
+  - Containers: Before an install of the system packages, the agent notes the running containers with a restart policy
+    (`always`, `unless-stopped`) and afterwards starts those that are not running, before the checks (ADR-0061). The list
+    is also in the run journal: If the run is aborted (agent or host stopped), the next start of the agent brings these
+    containers back before it reports; the result `interrupted` names them (`restarted`) and those that do not start
+    ([ADR-0125](../docs/adr/0125-bring-back-containers-after-an-interrupted-run.md)).
+- **Reboot** (verb `reboot`; [ADR-0041](../docs/adr/0041-reboot-with-window-and-proof.md)):
+  - Only with `reboot.allowed` and within `reboot.window` (outside only with a reason, 6.4), only if the host really
+    needs it (the same signals as the report: `reboot-required`, running versus newest kernel), and only if nothing else
+    is running.
+  - At most one per hour, against reboot loops.
+  - Before the reboot the agent writes `reboot.json` with the boot ID (`/proc/sys/kernel/random/boot_id`) and reports the
+    phase `rebooting`. The hub therefore waits for it instead of reporting `interrupted`.
+  - After the start, the agent proves the reboot with a new boot ID and checks that none is needed any more. Only then
+    does it report `ok`; otherwise `failed_verification`, with the reason.
+  - HA offers the button only for hosts that allow it. The client's role must be `admin` (12).
+  - A reboot does nothing for containers (LXC). They share the host's kernel, and the agent usually sees no need there.
+- **Reboot hints** follow the host's capability: If it does not allow a reboot through Vördr, the next step for
+  `ok_reboot_required` and `reboot_pending` is "reboot manually". HA shows the running and newest kernel on the sensor
+  "Reboot needed".
+- **Minimum interval** `install.min_interval_h` counts from the journal, so only runs that touched packages. It holds
+  back runs of the system packages and of apps, not pip/npm runs and the refresh of dependencies (which do count,
+  though). The hub knows it too
   ([ADR-0110](../docs/adr/0110-the-hub-checks-the-minimum-interval-before-the-backup.md)):
-  - Der Agent meldet `policy.min_interval_h` im Hello, dazu `last_install` (Start des Laufs im Journal) und mit dem
-    Ergebnis jedes Laufs, der ins Journal schrieb, `install_started`. Die Leitstelle hält das als `last_install` im
-    Register.
-  - Liegt `last_install` plus Mindestabstand noch vor uns, lehnt sie einen solchen Install mit `rate_limited` ab:
-    bevor sie ihn schickt und bevor sie den Gast sichern lässt, auf jedem Weg. Die Automatik zählt den Host dann
-    noch nicht als fällig; ihr Versuch für das Fenster bleibt.
-  - `HostView.next_install` sagt, ab wann es wieder geht. HA nennt die Uhrzeit in der Ablehnung.
-  - Ältere Agenten melden keinen Mindestabstand; dann prüft nur der Agent. Die Leitstelle liest das Hello streng,
-    darum kommt sie vor den Agenten.
-- **Plattenlast:** Die Unit gibt dem Agenten die IO-Klasse `idle`, gut für Prüfungen. Paketläufe laufen mit
-  `ionice -c2 -n7`, sonst käme dpkg auf einem Host mit dauernder Plattenlast kaum voran.
-- Nach dem Lauf schickt der Agent sofort einen neuen Bericht, damit die Zähler in HA dem Ergebnis vorangehen.
-- `install-agent.sh --replace-config "<grund>"` ersetzt eine geänderte `agent.yaml` (Sicherung, Diff, Grund ins
-  Systemlog), wie bei der Leitstelle. Unter Windows gilt dasselbe für `install-service` (11.1).
+  - The agent reports `policy.min_interval_h` in the hello, plus `last_install` (start of the run in the journal) and,
+    with the result of every run that wrote to the journal, `install_started`. The hub keeps this as `last_install` in the
+    registry.
+  - If `last_install` plus the minimum interval is still ahead of us, the hub refuses such an install with
+    `rate_limited`: before it sends it and before it has the guest backed up, on every path. The automation then does not
+    yet count the host as due; its attempt for the window stays.
+  - `HostView.next_install` says from when it works again. HA names the time in the refusal.
+  - Older agents report no minimum interval; then only the agent checks. The hub reads the hello strictly, which is why
+    it comes before the agents.
+- **Disk load:** The unit gives the agent the IO class `idle`, good for checks. Package runs run with `ionice -c2 -n7`,
+  otherwise dpkg would hardly make progress on a host with constant disk load.
+- After the run the agent immediately sends a new report, so that the counters in HA get ahead of the result.
+- `install-agent.sh --replace-config "<reason>"` replaces a changed `agent.yaml` (backup, diff, reason into the system
+  log), as with the hub. Under Windows the same applies to `install-service` (11.1).
 
-### 10.3 Automatisch einspielen
+### 10.3 Install automatically
 
-`install.auto` legt fest, wer einen Lauf auslöst ([ADR-0036](../docs/adr/0036-automatic-install-in-rings.md)):
+`install.auto` determines who triggers a run ([ADR-0036](../docs/adr/0036-automatic-install-in-rings.md)):
 
-- `hub`: Der Hub plant Läufe in Ringen. Ring `canary` kommt zuerst, die übrigen Ringe erst, wenn der Kanarienvogel
-  `canary_clean_h` Stunden ohne Problem läuft. Ist der Hub weg, wird nicht installiert; HA sieht dann den Hub offline.
-  Unter Windows lehnt die Richtlinie `hub` ab: dort nur per Knopf
+- `hub`: The hub plans runs in rings. Ring `canary` comes first, the other rings only when the canary has run
+  `canary_clean_h` hours without a problem. If the hub is gone, nothing is installed; HA then sees the hub offline.
+  Under Windows the policy refuses `hub`: there only by button
   ([ADR-0086](../docs/adr/0086-windows-update-source.md)).
-- `local`: Der Agent löst selbst im Fenster aus, auch ohne Hub (für Hosts, die unabhängig patchen sollen). Ergebnisse
-  meldet er nach, sobald der Hub erreichbar ist. **Noch nicht gebaut:** Bis es das gibt, lehnt die Richtlinie den Wert
-  ab (`check-config`, Start des Agenten), statt ihn still anzunehmen
+- `local`: The agent triggers by itself within the window, even without a hub (for hosts that should patch
+  independently). It reports results afterwards as soon as the hub is reachable. **Not built yet:** Until it exists, the
+  policy refuses the value (`check-config`, agent start) instead of silently accepting it
   ([ADR-0074](../docs/adr/0074-refuse-auto-local-until-built.md)).
-- `off`: nur auf Knopfdruck.
+- `off`: only on a button press.
 
-Läuft auf dem Host zusätzlich `unattended-upgrades`, meldet der Agent das als Fakt. Beide konkurrieren um die Sperre
-(`rejected_busy`). Vördr empfiehlt, auf jedem Host mit `auto: hub` unattended-upgrades abzuschalten
-([ADR-0080](../docs/adr/0080-security-updates-everywhere-unattended-upgrades-off.md)), schaltet aber selbst nichts um.
-Den Hypervisor nur per Knopf aktualisieren und nie über Vördr neu starten
-([ADR-0088](../docs/adr/0088-hypervisor-updates-by-button-only.md)). Auf Linux-Gästen, deren Richtlinie `all`
-erlaubt, nimmt die Automatik alles statt nur Sicherheitsupdates
-([ADR-0108](../docs/adr/0108-automatic-installs-take-every-update-on-linux-guests.md)). Als
-Sicherheitsupdate gilt nur, was aus einem `-security`-Archiv kommt, Hersteller-Repos nie. Darum bleibt ein Host, der
-nur `security` erlaubt, bei `security`.
+If `unattended-upgrades` also runs on the host, the agent reports that as a fact. Both compete for the lock
+(`rejected_busy`). Vördr recommends turning off unattended-upgrades on every host with `auto: hub`
+([ADR-0080](../docs/adr/0080-security-updates-everywhere-unattended-upgrades-off.md)) but switches nothing itself.
+Update the hypervisor only by button and never reboot it through Vördr
+([ADR-0088](../docs/adr/0088-hypervisor-updates-by-button-only.md)). On Linux guests whose policy allows `all`, the
+automation takes everything instead of only security updates
+([ADR-0108](../docs/adr/0108-automatic-installs-take-every-update-on-linux-guests.md)). Only what comes from a
+`-security` archive counts as a security update, vendor repos never. This is why a host that allows only `security`
+stays with `security`.
 
-**Festlegungen zu `auto: hub`:**
+**Rules for `auto: hub`:**
 
-- **Beide Seiten müssen es wollen:** Der Agent sagt `install.auto: hub` (mit Fenster und `default_scope`), die
-  Leitstelle hat einen Abschnitt `auto_install`. Fehlt eines, startet sie nichts von selbst.
-- **Umfang der Automatik** ([ADR-0059](../docs/adr/0059-own-auto-scope.md)):
-  `install.auto_scope` (`security` oder `all`), ohne Angabe `default_scope`.
-  So installiert ein Host von selbst nur Sicherheitsupdates, während der Knopf in HA weiter alles installiert. Agenten
-  vor 0.8.2 melden das Feld nicht; für sie gilt `default_scope` wie bisher.
-- **Fenster und Zeitzone kommen vom Agenten:** Er meldet sein `install.window` und seine Zeitzone im Hello, als
-  IANA-Name: unter Linux aus `/etc/timezone` oder dem Link `/etc/localtime`, unter Windows aus der Windows-Zonen-ID in
-  der Registry über die CLDR-Tabelle ([ADR-0112](../docs/adr/0112-windows-time-zone-through-the-cldr-table.md)). Die Leitstelle plant damit, statt zu fragen und
-  `rejected_outside_window` zu sammeln. Es bleibt eine einzige Quelle, und der Agent prüft das Fenster weiterhin
-  selbst. Agenten vor 0.7.4 melden kein Fenster und nehmen deshalb nicht teil (Ereignis `auto_install_unavailable`,
-  Grund `no_window`).
-- **Wann:**
-  - Alle 5 Minuten prüft die Leitstelle je Host: im Fenster (in der Zeitzone des Hosts), verbunden, kein Lauf offen,
-    etwas zu tun (`security`: Sicherheitsupdates ausstehend, `all`: irgendetwas ausstehend).
-  - Höchstens ein Versuch je Host in 20 Stunden, also einer je Fenster, was auch daraus wird.
-  - Vorher läuft die Backup-Prüfung. Ist das Backup nicht frisch, folgt nur das Ereignis `auto_install_skipped`.
-- **Ringe** (Kanarienvögel: [ADR-0058](../docs/adr/0058-site-decision.md)):
-  - Hosts in `auto_install.canary` installieren, sobald ihr Fenster offen ist.
-  - Die anderen nur, solange jeder Kanarienvogel ohne Problem ist. Ein gescheiterter Lauf, `offline` oder `stale` hält
-    sie an.
-  - Und nur, wenn jedes ausstehende Update ihres automatischen Umfangs entweder seit `delay_hours` (Standard 24)
-    aussteht oder vor dem Beginn der letzten sauberen Installation eines Kanarienvogels zum ersten Mal gemeldet wurde
-    ([ADR-0107](../docs/adr/0107-ring-delay-per-update-ended-by-a-clean-canary-run.md), seit Leitstelle 0.22.0).
-    Sauber heisst: Verb `install`, Umfang `security` oder `all`, Ergebnis `ok` oder `ok_reboot_required`, und der Lauf
-    hat Pakete geändert (seine Zusammenfassung nennt mindestens eines). Ein Lauf, der nichts zu tun fand, beendet keine
-    Wartezeit. Das passiert, wenn im Umfang nichts aussteht, oder bei `install.mode: upgrade`, das einen neuen Kernel
-    in jedem Fenster liegen lässt.
-  - Ein sauberer Lauf trifft nur, was er nicht liegen liess
+- **Both sides must want it:** The agent says `install.auto: hub` (with window and `default_scope`), the hub has an
+  `auto_install` section. If either is missing, the hub starts nothing by itself.
+- **Scope of the automation** ([ADR-0059](../docs/adr/0059-own-auto-scope.md)):
+  `install.auto_scope` (`security` or `all`), `default_scope` if not given.
+  This way a host installs only security updates by itself, while the button in HA still installs everything. Agents
+  before 0.8.2 do not report the field; for them `default_scope` applies as before.
+- **Window and time zone come from the agent:** It reports its `install.window` and its time zone in the hello, as an
+  IANA name: under Linux from `/etc/timezone` or the link `/etc/localtime`, under Windows from the Windows zone ID in
+  the registry through the CLDR table ([ADR-0112](../docs/adr/0112-windows-time-zone-through-the-cldr-table.md)). The
+  hub plans with this instead of asking and collecting `rejected_outside_window`. There stays a single source, and the
+  agent still checks the window itself. Agents before 0.7.4 report no window and therefore do not take part (event
+  `auto_install_unavailable`, reason `no_window`).
+- **When:**
+  - Every 5 minutes the hub checks per host: within the window (in the host's time zone), connected, no run open,
+    something to do (`security`: security updates pending, `all`: anything pending).
+  - At most one attempt per host in 20 hours, so one per window, whatever comes of it.
+  - The backup check runs first. If the backup is not fresh, only the event `auto_install_skipped` follows.
+- **Rings** (canaries: [ADR-0058](../docs/adr/0058-site-decision.md)):
+  - Hosts in `auto_install.canary` install as soon as their window is open.
+  - The others only as long as every canary is without a problem. A failed run, `offline` or `stale` holds them back.
+  - And only if every pending update of their automatic scope has either been pending for `delay_hours` (default 24) or
+    was first reported before the start of a canary's latest clean install
+    ([ADR-0107](../docs/adr/0107-ring-delay-per-update-ended-by-a-clean-canary-run.md), since hub 0.22.0).
+    Clean means: verb `install`, scope `security` or `all`, result `ok` or `ok_reboot_required`, and the run changed
+    packages (its summary names at least one). A run that found nothing to do ends no delay. That happens when nothing is
+    pending in the scope, or with `install.mode: upgrade`, which leaves a new kernel behind in every window.
+  - A clean run meets only what it did not leave behind
     ([ADR-0118](../docs/adr/0118-a-canary-run-meets-only-what-it-installed.md)).
-    - Er zählt erst, wenn ein vollständiger Bericht des Kanarienvogels nach dem Ende des Laufs eingegangen ist.
-      Das Register führt dazu das Ende der letzten sauberen Installation (`clean_install_end`) und den Empfang des
-      vollständigen Berichts hinter der Liste ausstehender Updates (`pending_at`).
-    - Was dieser Bericht noch als ausstehend nennt (Quelle und Paket), hat der Lauf nicht installiert:
-      zurückgehalten (ADR-0116), ausserhalb seines Umfangs, von apt zurückgestellt oder erst jetzt beim
-      Kanarienvogel angekommen. Für diese Updates endet keine Wartezeit.
-  - Gemessen wird je Update: Das Register führt je Host die ausstehenden Updates des letzten vollständigen Berichts
-    (Quelle, Paket, Zielversion, Sicherheit, erstmals gemeldet) und den Beginn der letzten sauberen Installation.
-    Eine neue Zielversion ist ein neues Update.
-  - „Erstmals gemeldet“ ist der spätere Zeitpunkt aus der Prüfzeit des Agenten und dem Empfang an der Leitstelle. Ein
-    Host, dessen Uhr nachgeht, etwa ein Board ohne Echtzeituhr vor dem Zeitabgleich, datiert neue Updates sonst Tage
-    zurück und überspringt die Wartezeit. Eine vorgehende Uhr verlängert sie nur.
-  - So folgen die übrigen Hosts dem Kanarienvogel im selben Fenster, Minuten nach seinem Lauf. Ein Host mit
-    altem Rückstand nimmt ein neues Update nicht mehr vor dem Kanarienvogel. Hatte kein Kanarienvogel etwas zu tun,
-    gilt die Wartezeit.
-  - Bis Leitstelle 0.21 galt `pending_since` (seit wann irgendetwas aussteht) für den ganzen Host.
-- Der Lauf trägt `by: auto` und erscheint in HA wie jeder andere.
+    - It counts only once a complete report from the canary has arrived after the end of the run. For this the registry
+      keeps the end of the latest clean install (`clean_install_end`) and the receipt of the complete report behind the
+      list of pending updates (`pending_at`).
+    - What this report still names as pending (source and package) was not installed by the run: held back (ADR-0116),
+      outside its scope, deferred by apt or only now arrived at the canary. For these updates no delay ends.
+  - Measured per update: The registry keeps, per host, the pending updates of the latest complete report (source,
+    package, target version, security, first reported) and the start of the latest clean install. A new target version is
+    a new update.
+  - "First reported" is the later of the agent's check time and the receipt at the hub. A host whose clock runs slow,
+    such as a board without a real-time clock before time sync, would otherwise date new updates days back and skip the
+    delay. A clock that runs fast only lengthens it.
+  - This way the other hosts follow the canary in the same window, minutes after its run. A host with an old backlog no
+    longer takes a new update before the canary. If no canary had anything to do, the delay applies.
+  - Until hub 0.21, `pending_since` (since when anything has been pending) applied to the whole host.
+- The run carries `by: auto` and appears in HA like any other.
 
-### 10.4 Selbst-Update
+### 10.4 Self-update
 
-Wie im Vorbild-Projekt: Das Manifest (Version, Datei je OS/Arch, SHA-256) signiert der Betreiber ausserhalb der
-Leitstelle, der Hub verteilt es. Der Agent prüft **zuerst die Signatur**, dann den Eintrag für sein OS und seine
-Architektur, lädt die Binary neben sich, prüft den Hash, lässt die neue Datei `version` sagen, tauscht sie ein und
-startet neu (systemd `Restart=always` bzw. Windows-Dienst). Rollout in denselben Ringen wie 10.3 ([ADR-0032](../docs/adr/0032-self-update-signed-by-operator.md)).
+As in the earlier agent: The operator signs the manifest (version, file per OS/arch, SHA-256) outside the hub, the hub
+distributes it. The agent checks **the signature first**, then the entry for its OS and architecture, downloads the
+binary next to itself, checks the hash, has the new file say `version`, swaps it in and restarts (systemd
+`Restart=always` or the Windows service). Rollout in the same rings as 10.3 ([ADR-0032](../docs/adr/0032-self-update-signed-by-operator.md)).
 
-**Festlegungen:**
+**Rules:**
 
-- **Veröffentlichen:** Ein Release besteht aus `manifest.json`, seiner Signatur `manifest.sig` (Kontext
-  `vordr/agent-manifest/v1`, Betreiber-Schlüssel) und den Binaries aus `./build.sh`; alles liegt in `<state_dir>/agent`
-  der Leitstelle. Signiert wird ausserhalb der Leitstelle, mit `vordr-release sign`
-  ([ADR-0139](../docs/adr/0139-the-release-signer-is-part-of-the-repository.md)). Der Betreiber-Schlüssel liegt nie auf der Leitstelle. Die Leitstelle prüft die Signatur ebenfalls
-  (`agent_update.public_key` in `hub.yaml`), nur um die gültige Version zu kennen.
-- **Auftrag** `agent_update` trägt das Manifest samt Signatur und ein Einmal-Token. Mit dem Token lädt der Agent seine
-  Binary über `https://<leitstelle>/v1/agent/<datei>`; das Token gilt 15 Minuten.
-- **Agent:** Er prüft das Manifest gegen den Schlüssel in **seiner** `agent.yaml`, dann Hash und Grösse. Probelauf
-  der neuen Binary: `version` muss die Manifest-Version sagen, `check-config` die eigene `agent.yaml` annehmen. Dann
-  setzt er die Markierung `update.json`, tauscht die Binary (die alte bleibt als `.old`) und beendet sich; systemd
-  startet die neue. Das gibt es unter Linux als root und unter Windows als Dienst, jeweils mit `agent_update.enabled`.
-- **Unter Windows** ([ADR-0084](../docs/adr/0084-windows-self-update-without-code-signing.md)):
-  - Eine laufende `.exe` lässt sich umbenennen, aber nicht überschreiben. Der Tausch benennt sie in `.old` um und legt
-    die neue an ihren Platz; die neue heisst bis dahin `vordr-agent.new.exe`, damit der Probelauf sie starten kann.
-  - Neustart ([ADR-0103](../docs/adr/0103-windows-service-restarts-cleanly-after-a-self-update.md)):
-    - Danach hält der Agent den Dienst sauber an (Exit-Code 0), und der Update-Wächter startet ihn mit der neuen
-      Binary wieder. Ein sauberer Stopp zählt beim Dienstmanager nicht als Fehlschlag.
-    - Der Wächter lauscht dafür auf ein benanntes Ereignis des Auftrags (`Global\vordr-update-guard-<job>`), das nur
-      besteht, solange er läuft. Der Tausch wartet, bis es da ist; sonst gibt es keinen Tausch.
-    - Erreicht der Agent keinen Wächter, beendet er sich mit Code 3, und die Wiederherstellung des Dienstes (von
-      `install-service` gesetzt) startet ihn nach 10 s.
-    - Warum nicht immer so: Der Dienstmanager zählt Fehlschläge einen Tag lang, und der dritte führt `rollback.cmd`
-      aus. Endete jeder Neustart mit Code 3, spränge das dritte Selbst-Update binnen eines Tages zurück. Agenten bis
-      0.11.0 starten so neu. Weil immer der laufende Agent tauscht, wirkt der saubere Stopp erst bei einem Update, das
-      ein Agent ab 0.11.1 ausführt.
-  - Rücksprung nach 10 Minuten ohne Verbindung: Die laufende `.exe` wird zu `.failed`, die alte zurückgelegt, dann
-    Neustart wie oben. `.failed` löscht der nächste Start.
-  - Startet die neue gar nicht, führt der Dienstmanager beim dritten Fehlschlag statt eines Neustarts `rollback.cmd`
-    aus. Das legt die alte Binary nur zurück, solange ein Selbst-Update offen ist, und startet den Dienst in jedem
-    Fall. Seit ADR-0103 braucht das drei Abstürze der neuen Binary, nicht mehr den geplanten Neustart und zwei.
-  - Die Binary ist nicht mit Authenticode signiert; ihre Echtheit sichert wie unter Linux das Betreiber-Manifest.
-- **Bestätigen oder zurück:**
-  - Die neue Version meldet das Ergebnis `ok` auf ihrer ersten freigegebenen Verbindung.
-  - Gelingt die nicht innerhalb von 10 Minuten, legt sie die alte Binary zurück und beendet sich.
-  - Startet die neue gar nicht, macht nach vier gescheiterten Starts `OnFailure` → `vordr-agent-rollback.service`
-    (`/usr/local/lib/vordr/rollback.sh`) dasselbe.
-  - Hängt die neue, macht der Update-Wächter dasselbe
+- **Publishing:** A release consists of `manifest.json`, its signature `manifest.sig` (context
+  `vordr/agent-manifest/v1`, operator key) and the binaries from `./build.sh`; everything lies in `<state_dir>/agent`
+  of the hub. Signing happens outside the hub, with `vordr-release sign`
+  ([ADR-0139](../docs/adr/0139-the-release-signer-is-part-of-the-repository.md)). The operator key never lies on the hub. The hub also checks the signature
+  (`agent_update.public_key` in `hub.yaml`), only to know the valid version.
+- **Job** `agent_update` carries the manifest with its signature and a one-time token. With the token the agent downloads
+  its binary over `https://<hub>/v1/agent/<file>`; the token is valid for 15 minutes.
+- **Agent:** It checks the manifest against the key in **its own** `agent.yaml`, then hash and size. Trial run of the new
+  binary: `version` must say the manifest version, `check-config` must accept the agent's own `agent.yaml`. Then it sets
+  the marker `update.json`, swaps the binary (the old one stays as `.old`) and exits; systemd starts the new one. This
+  exists under Linux as root and under Windows as a service, each with `agent_update.enabled`.
+- **Under Windows** ([ADR-0084](../docs/adr/0084-windows-self-update-without-code-signing.md)):
+  - A running `.exe` can be renamed but not overwritten. The swap renames it to `.old` and puts the new one in its
+    place; until then the new one is called `vordr-agent.new.exe`, so that the trial run can start it.
+  - Restart ([ADR-0103](../docs/adr/0103-windows-service-restarts-cleanly-after-a-self-update.md)):
+    - Afterwards the agent stops the service cleanly (exit code 0), and the update guard starts it again with the new
+      binary. A clean stop does not count as a failure for the service manager.
+    - For this the guard listens for a named event of the job (`Global\vordr-update-guard-<job>`), which exists only while
+      the guard runs. The swap waits until it is there; otherwise there is no swap.
+    - If the agent does not reach a guard, it exits with code 3, and the service's recovery (set by `install-service`)
+      starts it after 10 s.
+    - Why not always this way: The service manager counts failures for a day, and the third one runs `rollback.cmd`.
+      If every restart ended with code 3, the third self-update within a day would roll back. Agents up to 0.11.0
+      restart this way. Because the running agent always does the swap, the clean stop takes effect only with an update
+      that an agent from 0.11.1 performs.
+  - Rollback after 10 minutes without a connection: The running `.exe` becomes `.failed`, the old one is put back, then
+    restart as above. The next start deletes `.failed`.
+  - If the new one does not start at all, the service manager runs `rollback.cmd` at the third failure instead of a
+    restart. It puts the old binary back only while a self-update is open, and starts the service in any case. Since
+    ADR-0103 this takes three crashes of the new binary, no longer the planned restart and two.
+  - The binary is not signed with Authenticode; as under Linux, its authenticity is secured by the operator manifest.
+- **Confirm or roll back:**
+  - The new version reports the result `ok` on its first approved connection.
+  - If that does not succeed within 10 minutes, it puts the old binary back and exits.
+  - If the new one does not start at all, after four failed starts `OnFailure` → `vordr-agent-rollback.service`
+    (`/usr/local/lib/vordr/rollback.sh`) does the same.
+  - If the new one hangs, the update guard does the same
     ([ADR-0098](../docs/adr/0098-update-guard-rolls-back-a-hung-new-agent.md)):
-    - Der alte Agent startet ihn vor dem Tausch aus der eigenen Binary. Unter Linux läuft er als transiente Unit
-      `vordr-agent-update-guard.service` (`systemd-run`, `Type=exec`), unter Windows als vom Dienst gelöster Prozess.
-      Lässt er sich nicht starten, gibt es keinen Tausch.
-    - Er endet, sobald die Markierung weg ist.
-    - Ist das Update nach 15 Minuten noch offen und `.old` noch da, legt er `.old` zurück und vermerkt den Grund in der
-      Markierung (`rolled_back`). Dann beendet er den hängenden Agenten hart und lässt den Dienst neu starten.
-    - Unter Windows setzt das voraus, dass der Dienst in keinem Job-Objekt läuft, das seine Kindprozesse mitbeenden
-      würde (prüfbar mit `IsProcessInJob` auf dem Dienstprozess). Dann überlebt der gelöste Wächter das Ende des
-      Dienstes, wie ADR-0098 annimmt.
-  - Die alte Version meldet danach `failed_verification`, mit dem Grund aus der Markierung, sofern einer drinsteht.
-  - Die Leitstelle wertet das Ende der Verbindung nach der Phase `rebooting` nicht als Abbruch: Der Agent hat seinen
-    Neustart angekündigt. Der Lauf bleibt offen, bis der nächste Agent das Ergebnis meldet. Kommt bis zum Ende der
-    Wartezeit (30 Minuten) keiner, gilt er als `timeout`.
-- **Ringe** (Kanarienvögel: [ADR-0058](../docs/adr/0058-site-decision.md)):
-  - Zuerst `agent_update.canary`.
-  - Die anderen erst, wenn jeder Kanarienvogel die Version seit `canary_clean_hours` (Standard 24) ohne Problem
-    fährt. Das Register merkt sich dafür `agent_since`.
-  - Ein Fehlversuch wird nach `retry_after_hours` (Standard 6) wiederholt.
-  - Der Knopf „Installieren“ an der Update-Entität „Agent“ des Hosts in HA erzwingt das Update je Host sofort.
-- **Nur wo eine Binary passt** ([ADR-0102](../docs/adr/0102-offer-an-agent-release-only-where-it-has-a-binary.md)):
-  - Der Agent meldet im Hello neben `arch` auch `goos`, also den Bau, unter dem das Manifest seine Binary führt.
-  - Hat die Release keine Binary für diese Plattform, bietet die Leitstelle sie dem Host weder im Rollout noch über
-    „Installieren“ an. Der Knopf endet mit `no_binary_for_platform`.
-  - Die Host-Ansicht trägt dann `agent_release_no_binary`, und HA zeigt dort kein Update an.
-  - Ein solcher Kanarienvogel hält die anderen nicht auf. Mindestens ein Kanarienvogel muss die Release aber
-    gefahren haben, sonst bleibt der zweite Ring zu.
-  - Agenten vor 0.11.0 melden `goos` nicht. Ihnen bietet die Leitstelle die Release wie bisher an, und der Agent lehnt
-    selbst mit `rejected_unsupported` ab, wenn seine Binary fehlt.
-- `install-agent.sh` richtet Rücksprung-Skript und -Unit ein und räumt eine hängende Markierung weg: Eine
-  Handinstallation ist ein Neuanfang.
-- Den Tausch macht immer der Agent, der schon läuft. Eine Änderung am Selbst-Update-Pfad wirkt deshalb erst beim Update
-  danach. Beispiel: Die Korrektur der Dateirechte kam mit 0.7.2, installiert hat 0.7.2 aber noch 0.7.1 mit `0700`.
-  Muss eine Korrektur sofort greifen, geht das nur von Hand (`install-agent.sh`) oder über ein Zwischen-Release.
-- Während des Tauschs ist der Host unter Linux etwa 30 s ohne Agenten (`RestartSec` der Unit).
+    - The old agent starts it before the swap from its own binary. Under Linux it runs as the transient unit
+      `vordr-agent-update-guard.service` (`systemd-run`, `Type=exec`), under Windows as a process detached from the
+      service. If it cannot be started, there is no swap.
+    - It ends as soon as the marker is gone.
+    - If the update is still open after 15 minutes and `.old` is still there, it puts `.old` back and records the reason
+      in the marker (`rolled_back`). Then it kills the hung agent hard and has the service restart.
+    - Under Windows this requires that the service does not run in a job object that would also end its child
+      processes (checkable with `IsProcessInJob` on the service process). Then the detached guard survives the end of
+      the service, as ADR-0098 assumes.
+  - The old version then reports `failed_verification`, with the reason from the marker, if one is in it.
+  - The hub does not treat the end of the connection after the phase `rebooting` as an abort: The agent has announced its
+    restart. The run stays open until the next agent reports the result. If none does by the end of the waiting time
+    (30 minutes), it counts as `timeout`.
+- **Rings** (canaries: [ADR-0058](../docs/adr/0058-site-decision.md)):
+  - First `agent_update.canary`.
+  - The others only when every canary has run the version for `canary_clean_hours` (default 24) without a problem. The
+    registry remembers `agent_since` for this.
+  - A failed attempt is repeated after `retry_after_hours` (default 6).
+  - The button "Install" on the host's update entity "Agent" in HA forces the update per host immediately.
+- **Only where a binary fits** ([ADR-0102](../docs/adr/0102-offer-an-agent-release-only-where-it-has-a-binary.md)):
+  - Besides `arch`, the agent reports `goos` in the hello, that is, the build under which the manifest lists its binary.
+  - If the release has no binary for this platform, the hub offers it to the host neither in the rollout nor through
+    "Install". The button ends with `no_binary_for_platform`.
+  - The host view then carries `agent_release_no_binary`, and HA shows no update there.
+  - Such a canary does not hold the others back. But at least one canary must have run the release, otherwise the second
+    ring stays closed.
+  - Agents before 0.11.0 do not report `goos`. The hub offers them the release as before, and the agent itself refuses
+    with `rejected_unsupported` if its binary is missing.
+- `install-agent.sh` sets up the rollback script and unit and clears a hanging marker: A manual installation is a fresh
+  start.
+- The swap is always done by the agent that is already running. A change to the self-update path therefore takes effect
+  only with the update after it. Example: The fix for the file permissions came with 0.7.2, but 0.7.2 was still
+  installed by 0.7.1 with `0700`. If a fix must take effect at once, that works only by hand (`install-agent.sh`) or
+  through an intermediate release.
+- During the swap the host is without an agent for about 30 s under Linux (the unit's `RestartSec`).
 
-**Nachgeschärft nach einer Sicherheitsdurchsicht:**
+**Tightened after a security review:**
 
-- **Nur aufwärts** ([ADR-0034](../docs/adr/0034-only-newer-releases.md)):
-  Jedes Manifest, das der Betreiber je signiert hat, bleibt gültig. Ein Agent auf einer Release
-  (`X.Y.Z`) nimmt deshalb nur eine neuere. Sonst lehnt er mit `rejected_invalid_job`, Grund `older_release` ab. Sonst
-  könnte, wer die Leitstelle übernimmt, ein altes Manifest erneut schicken und damit einen alten Agenten mit bekanntem
-  Fehler zurückbringen. Die Verteilung bietet einem neueren Agenten keine ältere Release an. Ein von Hand gebauter
-  Agent (Datum oder Zusatz in der Version) nimmt jede Release. Alten Code zurückbringen heisst: ihn unter einer neuen
-  Version veröffentlichen.
-- **Ersatzschlüssel** ([ADR-0035](../docs/adr/0035-backup-operator-key.md)):
-  `agent_update.backup_public_key` in `agent.yaml` und `hub.yaml`. Sein geheimer Teil liegt nur beim Betreiber, nie
-  auf der Leitstelle und getrennt vom Betreiber-Schlüssel, so dass beide nicht mit demselben Gerät oder Zugang verloren
-  gehen. Ist der Betreiber-Schlüssel verloren oder kompromittiert, erreichen mit dem Ersatz signierte Releases trotzdem
-  jeden Host, ohne Besuch am Gerät. Den Eintrag verstehen Agenten
-  erst ab 0.7.3: Ältere lehnen die unbekannte Zeile in `agent.yaml` ab.
-- **Auslöser:** Jeder Lauf trägt `by` (`ha:<client>`, `admin`, `rollout`), in `job_sent` und in HA.
+- **Upward only** ([ADR-0034](../docs/adr/0034-only-newer-releases.md)):
+  Every manifest the operator has ever signed stays valid. An agent on a release
+  (`X.Y.Z`) therefore accepts only a newer one. Otherwise it refuses with `rejected_invalid_job`, reason `older_release`.
+  Otherwise whoever takes over the hub could send an old manifest again and so bring back an old agent with a known
+  defect. Distribution does not offer a newer agent an older release. A hand-built agent (date or suffix in the version)
+  accepts every release. Bringing back old code means publishing it under a new version.
+- **Backup key** ([ADR-0035](../docs/adr/0035-backup-operator-key.md)):
+  `agent_update.backup_public_key` in `agent.yaml` and `hub.yaml`. Its secret part lies only with the operator, never on
+  the hub and separate from the operator key, so that both are not lost with the same device or access. If the operator
+  key is lost or compromised, releases signed with the backup key still reach every host, without a visit to the device.
+  Agents understand the entry only from 0.7.3: Older ones refuse the unknown line in `agent.yaml`.
+- **Trigger:** Every run carries `by` (`ha:<client>`, `admin`, `rollout`), in `job_sent` and in HA.
 
-## 11. Quellen
+## 11. Sources
 
-| Quelle | Plattform | Stand | Sicherheitsupdates erkannt an | Neustart |
+| Source | Platform | Status | Security updates detected by | Reboot |
 |---|---|---|---|---|
-| `apt` | Debian, Ubuntu, Raspberry Pi OS, Proxmox VE und Backup Server | gebaut | Ursprung `*-security` | 7.4 |
-| `winget` | Windows 10/11 (Programme) | gebaut (11.1) | – (winget kennt keine Einstufung) | Registry, siehe unten |
-| `winupdate` | Windows (System) | gebaut (11.1) | Klassifizierung „Security Updates“ | Registry wie `winget` |
-| `dnf`, `apk` | RHEL-Familie, Alpine | noch nicht gebaut | Advisory-Typ bzw. – | – |
-| Apps `apt-package`, `winget-package` | wie `apt` bzw. `winget` | gebaut: Knopf je App (8.1); eigene Update-Entität noch nicht | – | – |
-| Container-Images | Linux-Hosts mit Docker-Engine | gebaut (11.5) | – | – |
+| `apt` | Debian, Ubuntu, Raspberry Pi OS, Proxmox VE and Backup Server | built | origin `*-security` | 7.4 |
+| `winget` | Windows 10/11 (programs) | built (11.1) | – (winget has no classification) | registry, see below |
+| `winupdate` | Windows (system) | built (11.1) | classification "Security Updates" | registry as for `winget` |
+| `dnf`, `apk` | RHEL family, Alpine | not built yet | advisory type or – | – |
+| Apps `apt-package`, `winget-package` | as `apt` or `winget` | built: button per app (8.1); separate update entity not built yet | – | – |
+| Container images | Linux hosts with Docker Engine | built (11.5) | – | – |
 
-Jede Quelle liefert einen Bericht (`source.Report`) mit Zustand, Paketen und Fakten. `source.Presence` sagt `present`,
-`absent` oder `unknown`; nur `present` und `absent` lösen Anlegen oder Löschen von Entitäten aus. Im Agenten
-(`internal/agent`) stehen dafür zwei schmale Schnittstellen:
+Each source delivers a report (`source.Report`) with state, packages and facts. `source.Presence` says `present`,
+`absent` or `unknown`; only `present` and `absent` trigger creating or deleting entities. In the agent
+(`internal/agent`) there are two narrow interfaces for this:
 
 ```go
 type Checker interface {
@@ -915,839 +897,829 @@ type Installer interface {
 }
 ```
 
-Plan, Ausführung und Nachprüfung (10.2) liegen in der Quelle hinter `Install`; das Ergebnis trägt immer einen Code
-aus 7.3. Windows Update läuft über die COM-Schnittstelle des Windows Update Agent
-(`Microsoft.Update.Session`, Suche `IsInstalled=0 and IsHidden=0 and Type='Software'`, `ResultCode` und `HResult` je
-Update; Einzelheiten in 11.1 unter „Windows Update“); dafür läuft der Agent unter Windows als LocalSystem.
+Plan, execution and verification (10.2) sit in the source behind `Install`; the result always carries a code from 7.3.
+Windows Update runs through the COM interface of the Windows Update Agent (`Microsoft.Update.Session`, search
+`IsInstalled=0 and IsHidden=0 and Type='Software'`, `ResultCode` and `HResult` per update; details in 11.1 under
+"Windows Update"); for this the agent runs as LocalSystem on Windows.
 
 ### 11.1 winget
 
-Programme unter Windows aktualisiert der Agent mit winget (winget vor Windows Update;
-[ADR-0048](../docs/adr/0048-winget-before-windows-update.md)). Die Tabelle von
-`winget upgrade` ist übersetzt und auf Konsolenbreite gekürzt. Der Agent liest sie deshalb nicht, sondern fragt
-Microsofts PowerShell-Modul `Microsoft.WinGet.Client` (dieselbe COM-Schnittstelle wie winget selbst;
+The agent updates programs on Windows with winget (winget before Windows Update;
+[ADR-0048](../docs/adr/0048-winget-before-windows-update.md)). The table from
+`winget upgrade` is translated and truncated to the console width. The agent therefore does not read it but queries
+Microsoft's PowerShell module `Microsoft.WinGet.Client` (the same COM interface that winget itself uses;
 [ADR-0050](../docs/adr/0050-winget-via-powershell-module.md)):
 
-- **Check:** `Get-WinGetPackage`, davon die mit `IsUpdateAvailable` (Id, installierte und neueste Version, Quelle).
-  Angeheftete Pakete (`winget pin`) zählen nicht. Das Modul hält sich daran wie `winget upgrade`: Ein blockierend
-  angeheftetes Paket bleibt draussen, auch wenn der Katalog eine neuere Version hat.
-- **Hauptversionssprünge** ([ADR-0052](../docs/adr/0052-major-version-jumps.md)):
-  - **Was markiert wird:** Ein Paket, dessen Version mit einer anderen Zahl beginnt, trägt `major` (z. B.
+- **Check:** `Get-WinGetPackage`, of which those with `IsUpdateAvailable` (id, installed and latest version, source).
+  Pinned packages (`winget pin`) do not count. The module follows this like `winget upgrade`: A package with a blocking
+  pin stays out, even if the catalog has a newer version.
+- **Major version jumps** ([ADR-0052](../docs/adr/0052-major-version-jumps.md)):
+  - **What is marked:** A package whose version starts with a different number carries `major` (e.g.
     3.9 → 4.0).
-  - **Was nicht:** Kalenderversionen (erste Zahl ab 1000) und Versionen ohne Zahl vorn.
-  - **Wo es erscheint:** Die Leitstelle reicht es durch, HA schreibt „neue Hauptversion“ in die Zusammenfassung des
-    Update-Eintrags (Integration 0.10.7).
-  - **Nur winget markiert:** Die stabilen Updates einer Distribution bleiben in ihrer Hauptversion.
-  - **Wer einen Sprung nicht will,** heftet das Paket an (`winget pin add --id <id> --blocking`); „alle“ lässt es
-    dann aus.
-- **Install:** `Update-WinGetPackage -Mode Silent` je Paket, nacheinander, in einem PowerShell-Prozess. Er meldet je
-  Paket eine JSON-Zeile mit winget's eigenem Status (`PSInstallResultStatus`), dem Exit-Code des Installers und
-  `RebootRequired`. Daraus:
+  - **What is not:** Calendar versions (first number from 1000) and versions without a leading number.
+  - **Where it appears:** The hub passes it on, HA writes "new major version" into the summary of the update entry
+    (integration 0.10.7).
+  - **Only winget marks:** The stable updates of a distribution stay within their major version.
+  - **Whoever does not want a jump** pins the package (`winget pin add --id <id> --blocking`); "all" then leaves it
+    out.
+- **Install:** `Update-WinGetPackage -Mode Silent` per package, one after the other, in one PowerShell process. It
+  reports one JSON line per package with winget's own status (`PSInstallResultStatus`), the exit code of the installer
+  and `RebootRequired`. From this:
 
   | winget | Code |
   |---|---|
-  | `Ok`, `NoApplicableUpgrade` | `ok` (mit `RebootRequired` → `ok_reboot_required`) |
+  | `Ok`, `NoApplicableUpgrade` | `ok` (with `RebootRequired` → `ok_reboot_required`) |
   | `DownloadError`, `CatalogError` | `precheck_repo_unreachable` |
-  | `InstallError` mit Installer-Code 1618 (anderes MSI läuft) | `rejected_busy` |
-  | alles andere | `failed_package_manager`, Status und Codes im Auszug |
+  | `InstallError` with installer code 1618 (another MSI is running) | `rejected_busy` |
+  | everything else | `failed_package_manager`, status and codes in the excerpt |
 
-  Danach fragt der Agent die Liste neu ab. Steht ein Paket des Laufs noch darin, heisst das `failed_verification`.
-- **Vorprüfungen:** Windows Installer beschäftigt (Mutex `Global\_MSIExecute`) → `rejected_busy`. Weniger als
-  2 GiB frei auf dem Systemlaufwerk → `precheck_disk_space`, denn winget nennt vorher keine Downloadgrösse.
-- **Umfang:** `all` = alles, was winget aktualisieren würde. `app:<id>` = ein Paket aus `apps` mit
-  `source: winget-package` und der winget-Id als `package`. `security` findet nichts, weil winget nicht einstuft.
-- **Ohne Adminrechte** (Agent im Vordergrund statt als Dienst) nur `app:<id>`. Jeder maschinenweite Installer würde
-  sonst per UAC fragen, und niemand antwortet. `all` endet dann mit `rejected_unsupported`. Fakt
-  `install_context`: `elevated` oder `user`.
-- **Fehlt das Modul,** ist der Check `check_failed` mit Fakt `winget_client: missing` und dem nächsten Schritt im
-  Auszug. Die Quelle verschwindet dann nicht stillschweigend.
-- **Neustart:** Es gelten die Registry-Schlüssel von Windows Update und Component Based Servicing (`RebootPending`,
-  `RebootRequired`), Grund `windows_update`. `PendingFileRenameOperations` zählt nicht: Edge, Office und Treiber
-  hinterlassen dort wochenlang Einträge, auf einem gewöhnlichen PC oft über tausend.
-- **Dienst** ([ADR-0015](../docs/adr/0015-windows-service-localsystem.md)):
-  `vordr-agent install-service` (als Administrator) macht alles in einem Schritt:
-  - prüft zuerst alles, was ablehnen kann, und ändert bis dahin nichts (Exit 2): Adminrechte, `agent.yaml`, mit
-    `hub-check` die Leitstelle, eine schon installierte `agent.yaml`, Dienstverwaltung und vorhandenen Dienst;
-  - ersetzt eine abweichende `agent.yaml` in `%ProgramData%\vordr` nur mit `--replace-config "<grund>"`, wie
-    `install-agent.sh` unter Linux: alte Datei als `agent.yaml.bak-<zeit>`, Abweichung angezeigt, Grund ins
-    `agent.log` (unter Windows das Log des Agenten, wie unter Linux das Systemlog). Ohne Grund lehnt es ab und nennt
-    beide Dateien und den nächsten Schritt;
-  - installiert PowerShell 7 (als MSI) und das Modul für alle Benutzer, gibt `%ProgramData%\vordr` und `state_dir` nur
-    SYSTEM und Administratoren frei und sichert die alte `agent.yaml`, solange ein vorhandener Dienst noch läuft;
-  - hält erst dann den Dienst an, legt die Binary nach `%ProgramFiles%\Vordr` (die vorige bis zum Erfolg als
-    `vordr-agent.exe.old`) und `agent.yaml` nach `%ProgramData%\vordr`;
-  - richtet den Dienst unter LocalSystem ein (automatischer Start, Neustart nach Absturz) und startet ihn.
-  - **Rückweg:** Scheitert ein Schritt nach dem Anhalten, macht es die Schritte rückwärts rückgängig (Dienst,
-    Dienstkonfiguration, `agent.yaml`, Binary) und startet den Dienst wieder, wenn er vorher lief. Den Zustand danach
-    erfragt es bei der Dienstverwaltung und meldet ihn als Fakt: Exit 3, wenn der Dienst wie vorher ist; Exit 1 nur,
-    wenn etwas nicht zurückging (Zeilen `STUCK`).
+  Afterwards the agent queries the list again. If a package of the run is still in it, that is `failed_verification`.
+- **Prechecks:** Windows Installer busy (mutex `Global\_MSIExecute`) → `rejected_busy`. Less than
+  2 GiB free on the system drive → `precheck_disk_space`, because winget does not state a download size beforehand.
+- **Scope:** `all` = everything winget would update. `app:<id>` = one package from `apps` with
+  `source: winget-package` and the winget id as `package`. `security` finds nothing, because winget does not classify.
+- **Without admin rights** (agent in the foreground instead of as a service) only `app:<id>`. Every machine-wide
+  installer would otherwise ask through UAC, and nobody answers. `all` then ends with `rejected_unsupported`. Fact
+  `install_context`: `elevated` or `user`.
+- **If the module is missing,** the check is `check_failed` with fact `winget_client: missing` and the next step in the
+  excerpt. The source does not disappear silently then.
+- **Reboot:** The registry keys of Windows Update and Component Based Servicing apply (`RebootPending`,
+  `RebootRequired`), reason `windows_update`. `PendingFileRenameOperations` does not count: Edge, Office and drivers
+  leave entries there for weeks, often over a thousand on an ordinary PC.
+- **Service** ([ADR-0015](../docs/adr/0015-windows-service-localsystem.md)):
+  `vordr-agent install-service` (as administrator) does everything in one step:
+  - first checks everything that can reject, and changes nothing until then (exit 2): admin rights, `agent.yaml`, the
+    hub with `hub-check`, an already installed `agent.yaml`, the service manager and an existing service;
+  - replaces a differing `agent.yaml` in `%ProgramData%\vordr` only with `--replace-config "<reason>"`, like
+    `install-agent.sh` on Linux: old file as `agent.yaml.bak-<time>`, difference shown, reason into
+    `agent.log` (on Windows the agent's log, like the system log on Linux). Without a reason it rejects and names
+    both files and the next step;
+  - installs PowerShell 7 (as MSI) and the module for all users, grants `%ProgramData%\vordr` and `state_dir` to SYSTEM
+    and administrators only, and backs up the old `agent.yaml` while an existing service is still running;
+  - only then stops the service, puts the binary into `%ProgramFiles%\Vordr` (the previous one as
+    `vordr-agent.exe.old` until success) and `agent.yaml` into `%ProgramData%\vordr`;
+  - sets up the service under LocalSystem (automatic start, restart after crash) and starts it.
+  - **Way back:** If a step fails after the stop, it undoes the steps in reverse (service, service configuration,
+    `agent.yaml`, binary) and starts the service again if it ran before. It then asks the service manager for the state
+    and reports it as a fact: exit 3 if the service is as before; exit 1 only if something could not be undone (lines
+    `STUCK`).
 
-  **PowerShell 7 ist Pflicht für den Dienst**
+  **PowerShell 7 is mandatory for the service**
   ([ADR-0053](../docs/adr/0053-powershell-7-for-the-service.md)):
-  - Als LocalSystem lehnt `Microsoft.WinGet.Client` Windows PowerShell 5.1 ab („This cmdlet is not supported in
-    Windows PowerShell“); mit `pwsh` aus `%ProgramFiles%\PowerShell\7` läuft der Check.
-  - Der Agent nimmt PowerShell 7 für alle Benutzer, wenn es da ist, sonst 5.1.
-  - Läuft er als LocalSystem ohne PowerShell 7, meldet er das vor jedem Aufruf als Fakt
-    `winget_client: needs_powershell_7` mit dem nächsten Schritt, und `install` lehnt mit `rejected_unsupported` ab.
-  - **Falle:** `winget install Microsoft.PowerShell --scope machine` nimmt sonst das msix-Paket. Das scheitert mit
-    0x80070005 und entfernt dabei die Store-Fassung des Benutzers. Darum `--installer-type wix`.
+  - As LocalSystem, `Microsoft.WinGet.Client` rejects Windows PowerShell 5.1 ("This cmdlet is not supported in
+    Windows PowerShell"); with `pwsh` from `%ProgramFiles%\PowerShell\7` the check runs.
+  - The agent uses PowerShell 7 for all users if it is there, otherwise 5.1.
+  - If it runs as LocalSystem without PowerShell 7, it reports this before every call as fact
+    `winget_client: needs_powershell_7` with the next step, and `install` rejects with `rejected_unsupported`.
+  - **Trap:** `winget install Microsoft.PowerShell --scope machine` otherwise takes the msix package. That fails with
+    0x80070005 and removes the user's Store version in the process. Hence `--installer-type wix`.
 
   Log: `<state_dir>\agent.log`.
-- **Schlafen ist kein Ausfall** (Leitstelle ab 0.15.0; [ADR-0051](../docs/adr/0051-sleep-is-no-outage.md)):
-  Ein PC schläft oder ist aus, ohne dass etwas kaputt ist.
-  - **Ankündigung:** Der Dienst bekommt die Ankündigung von Windows (`PBT_APMSUSPEND`, Herunterfahren) und meldet
-    sie der Leitstelle als Nachricht `power` (`sleeping`, `shutdown`), bevor die Verbindung abreisst.
-  - **Bis der PC sich wieder meldet,** zählt die fehlende Verbindung nicht als `offline`; das gilt für jede neue
-    Anmeldung und jede Nachricht. Die Host-Sicht trägt `power`, HA bleibt ohne Problem.
-  - **Ohne Ankündigung** (Absturz, Netz weg) gilt die Regel wie bisher.
-  - **Rückmeldung statt Raten:** Der Zustand kommt als Meldung vom PC und wird nicht aus der abgerissenen
-    Verbindung erraten.
-  - **Alte Leitstellen** (vor 0.15.0) kennen `power` nicht und trennen die Verbindung. Darum zuerst die Leitstelle
-    erneuern, dann Windows-Agenten anmelden.
-- **Zeitzone für `install.window`** (seit Agent 0.15.0,
+- **Sleeping is not an outage** (hub since 0.15.0; [ADR-0051](../docs/adr/0051-sleep-is-no-outage.md)):
+  A PC sleeps or is off without anything being broken.
+  - **Announcement:** The service receives the announcement from Windows (`PBT_APMSUSPEND`, shutdown) and reports it
+    to the hub as message `power` (`sleeping`, `shutdown`) before the connection drops.
+  - **Until the PC reports again,** the missing connection does not count as `offline`; this holds for every new
+    login and every message. The host view carries `power`, HA stays without a problem.
+  - **Without an announcement** (crash, network gone) the rule applies as before.
+  - **Feedback instead of guessing:** The state comes as a report from the PC and is not guessed from the dropped
+    connection.
+  - **Old hubs** (before 0.15.0) do not know `power` and drop the connection. So renew the hub first, then enroll
+    Windows agents.
+- **Time zone for `install.window`** (since agent 0.15.0,
   [ADR-0112](../docs/adr/0112-windows-time-zone-through-the-cldr-table.md)):
-  - Der Agent liest die Windows-Zonen-ID (`TimeZoneKeyName` unter
+  - The agent reads the Windows zone id (`TimeZoneKeyName` under
     `HKLM\SYSTEM\CurrentControlSet\Control\TimeZoneInformation`).
-  - Daraus wird über die Tabelle `internal/agent/zone_table.go` (CLDR windowsZones, Gebiet 001) der IANA-Name.
-  - Die Tabelle erzeugt `tools/windows_zones.ps1` aus der ICU von .NET.
-  - Gemeldet wird die Hauptzone des Gebiets, etwa `America/New_York` für „Eastern Standard Time“, auch für andere Orte
-    derselben Windows-Zone. Die Regeln sind dieselben.
-  - Ohne Zeitzone bleiben unbekannte IDs und Hosts, auf denen die Sommerzeit abgeschaltet ist. Ältere Agenten melden
-    unter Windows keine Zeitzone: Die Leitstelle kann das Fenster dann nicht planen (`autoNoZone`), und der Knopf
-    ausserhalb des Fensters bekommt keinen Grund ([ADR-0109](../docs/adr/0109-the-install-button-installs-at-once.md)).
-- **Noch nicht unter Windows:** das Neustart-Verb.
+  - From it, the table `internal/agent/zone_table.go` (CLDR windowsZones, territory 001) yields the IANA name.
+  - The table is generated by `tools/windows_zones.ps1` from the ICU of .NET.
+  - The main zone of the territory is reported, e.g. `America/New_York` for "Eastern Standard Time", also for other
+    places in the same Windows zone. The rules are the same.
+  - Without a time zone remain unknown ids and hosts on which daylight saving time is turned off. Older agents report
+    no time zone on Windows: The hub then cannot schedule the window (`autoNoZone`), and the button outside the window
+    gets no reason ([ADR-0109](../docs/adr/0109-the-install-button-installs-at-once.md)).
+- **Not yet on Windows:** the reboot verb.
 
 #### Windows Update (`winupdate`)
 
-Windows selbst aktualisiert der Agent über die COM-Schnittstelle des Windows Update Agent (`Microsoft.Update.Session`),
-in PowerShell wie winget (melden und per Knopf einspielen;
+The agent updates Windows itself through the COM interface of the Windows Update Agent (`Microsoft.Update.Session`),
+in PowerShell like winget (report and install by button;
 [ADR-0086](../docs/adr/0086-windows-update-source.md)):
 
-- **Check:** Suche `IsInstalled=0 and IsHidden=0 and Type='Software'`, also ohne Treiber. Jedes Update ist ein Paket.
-  Der Name ist die KB-Nummer (`KB<nummer>`), ohne KB die Update-ID. `to` trägt den Titel, denn Windows-Updates haben
-  keine Version. `security` heisst: Klassifizierung „Security Updates“.
-- **Nicht gezählt,** je als Anzahl in einem Fakt:
-  - Funktionsupdates (Klassifizierung „Upgrades“, `windows_update_feature_upgrade`). Eine neue Windows-Version ist
-    kein Update.
-  - Definitionsupdates (Klassifizierung „Definition Updates“, `windows_update_definitions`). Defender holt seine
-    Signaturen mehrmals am Tag selbst; gezählt stünde fast immer eines an, und der Host wäre nie aktuell.
-  - optionale Updates (`BrowseOnly`, z. B. Vorschau-Updates, `windows_update_optional`). Windows installiert sie
-    nicht selbst; sie stünden sonst wochenlang an und lösten `stale` aus.
-  - installierte Updates, die auf den Neustart warten (`RebootRequired`, `windows_update_awaiting_reboot`).
+- **Check:** Search `IsInstalled=0 and IsHidden=0 and Type='Software'`, so without drivers. Each update is a package.
+  The name is the KB number (`KB<number>`), without a KB the update id. `to` carries the title, because Windows
+  updates have no version. `security` means: classification "Security Updates".
+- **Not counted,** each as a count in a fact:
+  - Feature updates (classification "Upgrades", `windows_update_feature_upgrade`). A new Windows version is not an
+    update.
+  - Definition updates (classification "Definition Updates", `windows_update_definitions`). Defender fetches its
+    signatures several times a day by itself; counted, one would almost always be pending, and the host would never be
+    current.
+  - Optional updates (`BrowseOnly`, e.g. preview updates, `windows_update_optional`). Windows does not install them by
+    itself; they would otherwise be pending for weeks and trigger `stale`.
+  - Installed updates that wait for the reboot (`RebootRequired`, `windows_update_awaiting_reboot`).
 
-  Klassifizierungen erkennt der Agent an ihren festen IDs, nicht an den Namen, die Windows übersetzen kann.
-- **Fakten:** `install_context` wie bei winget, `windows_update_search` (`ok`, `failed`, `no_answer`), bei `failed`
-  das HRESULT als `windows_update_hresult`, dazu `windows_update_agent` (Version). Eine gescheiterte Suche ist
-  `check_failed` mit `failed_windows_update`; antwortet PowerShell gar nicht, `failed_package_manager`.
-- **Einspielen nur per Knopf:** `install.auto: hub` lehnt der Agent unter Windows ab (`check-config` wie beim Start).
-  Der Agent verbindet beide Quellen zu einem Lauf:
-  - `security`: nur Windows Update, nur Klassifizierung „Security Updates“ (winget stuft nicht ein);
-  - `all`: erst alle gezählten Windows-Updates, dann winget;
-  - `app:<id>`: nur winget.
+  The agent recognizes classifications by their fixed ids, not by the names, which Windows may translate.
+- **Facts:** `install_context` as for winget, `windows_update_search` (`ok`, `failed`, `no_answer`), on `failed`
+  the HRESULT as `windows_update_hresult`, plus `windows_update_agent` (version). A failed search is
+  `check_failed` with `failed_windows_update`; if PowerShell does not answer at all, `failed_package_manager`.
+- **Install by button only:** The agent rejects `install.auto: hub` on Windows (`check-config` as at start). The agent
+  joins both sources into one run:
+  - `security`: Windows Update only, only classification "Security Updates" (winget does not classify);
+  - `all`: first all counted Windows updates, then winget;
+  - `app:<id>`: winget only.
 
-  Bei `all` laufen beide Teile, gleich wie der erste endet, mit einem Laufjournal. Ergebnis ist der erste Code, der
-  nicht `ok` ist, mit Paketen und Auszügen beider Teile; `ok_reboot_required`, wenn einer einen Neustart braucht.
-- **Lauf von Windows Update:**
-  1. Vorprüfungen: ohne Adminrechte und nicht als LocalSystem `rejected_unsupported`. Windows Installer beschäftigt
-     (Mutex wie bei winget) oder `IUpdateInstaller.IsBusy` → `rejected_busy`. Unter 2 GiB frei →
+  With `all`, both parts run with one run journal, regardless of how the first ends. The result is the first code that
+  is not `ok`, with packages and excerpts of both parts; `ok_reboot_required` if either needs a reboot.
+- **Windows Update run:**
+  1. Prechecks: without admin rights and not as LocalSystem `rejected_unsupported`. Windows Installer busy
+     (mutex as for winget) or `IUpdateInstaller.IsBusy` → `rejected_busy`. Under 2 GiB free →
      `precheck_disk_space`.
-  2. Neue Suche, daraus der Plan im Umfang. Steht nichts an: `ok` ohne Plan.
-  3. Laufjournal. Dann je Update Download (`IUpdateDownloader`) und Installation (`IUpdateInstaller`), eines nach dem
-     anderen. Je Update eine JSON-Zeile mit `OperationResultCode`, `HResult` und `RebootRequired`.
-  4. Nachprüfung mit einer neuen Suche. Steht ein Update des Plans noch an und wartet nicht auf den Neustart:
+  2. New search, from it the plan within the scope. If nothing is pending: `ok` without a plan.
+  3. Run journal. Then per update download (`IUpdateDownloader`) and installation (`IUpdateInstaller`), one after the
+     other. One JSON line per update with `OperationResultCode`, `HResult` and `RebootRequired`.
+  4. Verification with a new search. If an update of the plan is still pending and is not waiting for the reboot:
      `failed_verification`.
 
-  Fortschritt wie bei apt (10.2): Vorprüfung bis 5, Download bis 35, Installation bis 95, Nachprüfung bis 100.
+  Progress as for apt (10.2): precheck up to 5, download up to 35, installation up to 95, verification up to 100.
 
   | Windows Update | Code |
   |---|---|
-  | 2 (erfolgreich), 3 (erfolgreich mit Fehlern) | `ok` (mit `RebootRequired` → `ok_reboot_required`) |
-  | 4 (fehlgeschlagen), 5 (abgebrochen), jeder andere Code | `failed_windows_update`, HRESULT im Auszug |
-  | Ausnahme eines COM-Aufrufs | `failed_windows_update`, HRESULT im Auszug |
-  | nicht mehr angeboten (inzwischen installiert) | `ok` |
-- **Lizenzbedingungen:** Der Agent nimmt sie für die Updates seines Plans an (`AcceptEula`), wie ein Klick auf
-  „Installieren“ in den Einstellungen. Der Knopf in HA ist die Zustimmung. Jede Annahme steht im Laufprotokoll.
-- **Neustart** bleibt von Hand. `reboot_required` kommt weiter aus der Registry (oben).
-- **Die automatischen Updates von Windows** laufen weiter. Installieren sie ein Update vor dem Lauf, zählt es als
-  erledigt. Hält Windows gerade den Installer, endet der Lauf mit `rejected_busy`.
+  | 2 (succeeded), 3 (succeeded with errors) | `ok` (with `RebootRequired` → `ok_reboot_required`) |
+  | 4 (failed), 5 (aborted), any other code | `failed_windows_update`, HRESULT in the excerpt |
+  | exception from a COM call | `failed_windows_update`, HRESULT in the excerpt |
+  | no longer offered (installed in the meantime) | `ok` |
+- **License terms:** The agent accepts them for the updates of its plan (`AcceptEula`), like a click on
+  "Install" in the settings. The button in HA is the consent. Every acceptance is in the run log.
+- **Reboot** stays manual. `reboot_required` keeps coming from the registry (above).
+- **The automatic updates of Windows** keep running. If they install an update before the run, it counts as done. If
+  Windows is holding the installer at that moment, the run ends with `rejected_busy`.
 
-### 11.2 Pakete von pip, pipx und npm: Bestand und Funde
+### 11.2 Packages from pip, pipx and npm: inventory and findings
 
-**Anlass:** apt und winget sehen nicht, was Python- und Node.js-Paketmanager installiert haben. Gerade
-dort kommen Lieferkettenangriffe an, meist als bösartige neue Version eines beliebten Pakets: `chalk` 5.6.1 und `debug`
-4.4.2 im September 2025, `axios` 0.30.4 und 1.14.1 im April 2026. Vördr meldet deshalb jedes installierte Paket mit bekannter
-Schwachstelle und jedes, das als Schadsoftware bekannt ist, als Problem in HA.
+**Reason:** apt and winget do not see what Python and Node.js package managers have installed. Supply chain attacks
+arrive precisely there, mostly as a malicious new version of a popular package: `chalk` 5.6.1 and `debug`
+4.4.2 in September 2025, `axios` 0.30.4 and 1.14.1 in April 2026. Vördr therefore reports every installed package with
+a known vulnerability and every one known as malware as a problem in HA.
 
-Begründungen der Entscheidungen: [ADR-0064](../docs/adr/0064-osv-data-local-at-the-hub.md) (OSV-Daten lokal),
-[ADR-0065](../docs/adr/0065-scope-of-package-locations.md) (Umfang),
-[ADR-0066](../docs/adr/0066-inventory-from-metadata.md) (Bestand aus Metadaten),
-[ADR-0067](../docs/adr/0067-hub-announces-features.md) (Merkmale der Leitstelle),
-[ADR-0079](../docs/adr/0079-detect-packages-in-msix-app-containers.md) (Container von MSIX-Apps).
+Rationale for the decisions: [ADR-0064](../docs/adr/0064-osv-data-local-at-the-hub.md) (OSV data local),
+[ADR-0065](../docs/adr/0065-scope-of-package-locations.md) (scope),
+[ADR-0066](../docs/adr/0066-inventory-from-metadata.md) (inventory from metadata),
+[ADR-0067](../docs/adr/0067-hub-announces-features.md) (features of the hub),
+[ADR-0079](../docs/adr/0079-detect-packages-in-msix-app-containers.md) (containers of MSIX apps).
 
-Die Teile:
+The parts:
 
-| Teil | Inhalt |
+| Part | Content |
 |---|---|
-| 11.2 | Bestand, OSV-Daten an der Leitstelle, Abgleich, Problem in HA |
-| 11.3 | veraltete Pakete („neuere Version verfügbar“) |
-| 11.4 | Aktualisieren per Knopf, mit Schutz gegen bösartige neue Versionen |
-| 11.5 | Container-Images melden (neu gebaut, neuerer Tag), Neubauten per Knopf (ADR-0113, ADR-0119) |
+| 11.2 | inventory, OSV data at the hub, matching, problem in HA |
+| 11.3 | outdated packages ("newer version available") |
+| 11.4 | updating by button, with protection against malicious new versions |
+| 11.5 | reporting container images (rebuilt, newer tag), rebuilds by button (ADR-0113, ADR-0119) |
 
-**Bestand (Agent).** Ein *Ort* (`location`) ist ein Platz, an dem ein Paketmanager installiert hat. Er hat eine Art,
-ein Ökosystem (`PyPI` oder `npm`, wie OSV sie schreibt) und eine Kennung nach den Regeln der App-Kennungen:
+**Inventory (agent).** A *location* (`location`) is a place where a package manager has installed. It has a kind, an
+ecosystem (`PyPI` or `npm`, as OSV writes them) and an id following the rules of the app ids:
 
-| Art | Was | Gelesen aus |
+| Kind | What | Read from |
 |---|---|---|
-| `npm-global` | `npm install -g` | `package.json` jedes Pakets unter `node_modules`, auch verschachtelt |
-| `npm-dir` | ein Ordner mit `package.json` und `node_modules`: Node-REDs Benutzerordner, ein Projekt | wie oben; direkt ist, was `package.json` verlangt |
-| `pip-site` | `site-packages` eines Interpreters (pip systemweit oder `--user`) | `*.dist-info/METADATA`, `*.egg-info` |
-| `venv` | eine virtuelle Umgebung (`pyvenv.cfg`), auch die Apps von pipx | wie oben |
+| `npm-global` | `npm install -g` | `package.json` of each package under `node_modules`, also nested |
+| `npm-dir` | a folder with `package.json` and `node_modules`: Node-RED's user folder, a project | as above; direct is what `package.json` requires |
+| `pip-site` | `site-packages` of an interpreter (pip system-wide or `--user`) | `*.dist-info/METADATA`, `*.egg-info` |
+| `venv` | a virtual environment (`pyvenv.cfg`), also the apps of pipx | as above |
 
-- **Kein Paketmanager läuft, niemand draussen wird gefragt.** Der Agent liest nur die Metadaten, die pip und npm
-  hinterlassen. Das geht als root und als LocalSystem gleich, auch in fremden Benutzerprofilen, und kostet wenig
-  (knapp 3000 Pakete unter Windows: etwa 3 s).
-- **Bekannte Orte** (`packages.detect`, Standard an):
+- **No package manager runs, nobody outside is asked.** The agent reads only the metadata that pip and npm leave
+  behind. This works the same as root and as LocalSystem, also in other users' profiles, and costs little
+  (just under 3000 packages on Windows: about 3 s).
+- **Known locations** (`packages.detect`, default on):
   - Linux: `/usr/lib/node_modules`, `/usr/local/lib/node_modules`, `/usr/local/lib/python3*/{dist,site}-packages`,
-    `~/.local/lib/python3*/site-packages` von root und `/home/*`, pipx (`~/.local/share/pipx/venvs/*`,
+    `~/.local/lib/python3*/site-packages` of root and `/home/*`, pipx (`~/.local/share/pipx/venvs/*`,
     `/opt/pipx/venvs/*`), Node-RED (`~/.node-red`).
-  - Windows: je Benutzer npm (`AppData\Roaming\npm\node_modules`), Python (`AppData\Local\Programs\Python\*`),
-    `pip --user`, pipx und `.node-red`; dazu `%ProgramFiles%\Python*`. Die Kennung trägt den Benutzer
+  - Windows: per user npm (`AppData\Roaming\npm\node_modules`), Python (`AppData\Local\Programs\Python\*`),
+    `pip --user`, pipx and `.node-red`; plus `%ProgramFiles%\Python*`. The id carries the user
     (`npm-global-bob`).
-  - Windows, **Container von MSIX-Apps** ([ADR-0079](../docs/adr/0079-detect-packages-in-msix-app-containers.md)):
-    Was ein Prozess einer MSIX-App (z. B. der PowerShell aus dem Store) nach `AppData` schreibt, liegt unter
-    `AppData\Local\Packages\<Paket>\LocalCache`. Der Dienst sieht es am üblichen Pfad nicht. Deshalb liest er dort
-    `Roaming\npm\node_modules` und `Roaming\Python\*\site-packages` jeder App sowie das `pip --user` der Python aus dem
-    Store (`local-packages\Python*\site-packages`). Die Kennung trägt App und Benutzer
-    (`powershell-pip-user-python312-bob`, `store-pip-user-python312-bob`). Ein Lauf des Agenten *in* einer solchen App
-    (`vordr-agent packages` aus der Shell einer MSIX-App) sähe diese Pakete doppelt; Prüfläufe deshalb aus einer
-    gewöhnlichen PowerShell starten.
-  - Leere Ordner sind kein Ort; das leere `/usr/local/lib/python3.11/dist-packages` hat jeder Debian-Host.
-  - **Bewusst nicht:** `/usr/lib/python3/dist-packages`. Den Ordner verwaltet apt. Debian portiert Korrekturen zurück,
-    ohne die Upstream-Version zu ändern, und OSVs PyPI-Bereiche kennen das nicht: Es gäbe falsche Funde. apt meldet
-    diese Pakete schon (Quelle `apt`). Ebenso der npm, den das Node.js-Paket unter `%ProgramFiles%\nodejs` mitbringt
-    (Quelle `winget`).
-- **Weitere Orte** stehen in `agent.yaml`, `packages.locations`, je mit `id` und absolutem `path`. Der Pfad darf `*`
-  enthalten, dann ist jeder Treffer ein Ort mit der Kennung `<id>-<was der Stern traf>`: `/opt/*/venv` mit der `id`
-  `services` ergibt für `/opt/router/venv` den Ort `services-router`, `D:\projekte\*` mit `projekte` für ein Projekt
-  `D:\projekte\webapp` den Ort `projekte-webapp`. Ein Treffer darf die Umgebung selbst sein oder ein Projekt, das sie
-  in `.venv` oder `venv` hat; hat ein Projekt Python und npm, entstehen zwei Orte (`-py`, `-npm`).
-- **Je Paket:** Name, Version, `direct` (für sich installiert: oberste Ebene von `npm -g`, in `package.json` verlangt,
-  bei Python keine andere Verteilung der Umgebung verlangt es, Extras nicht gezählt) und `via` (bei verschachtelten
-  npm-Paketen das oberste Paket, mit dem es kam; das zu aktualisieren hilft).
-- **Was ein Paket festhält** (`holds`, [ADR-0129](../docs/adr/0129-findings-say-where-their-fix-is.md)), höchstens
-  zwei je Paket:
-  - der engste Bereich unter allem, was am Ort davon abhängt: bei npm `dependencies` und `optionalDependencies` der
-    installierten Pakete, je für die Kopie, auf die Node.js die Abhängigkeit auflöst (das nächste `node_modules/<name>`
-    vom Abhängigen aufwärts); bei Python `Requires-Dist` ohne Umgebungsmarker und ohne Extra. Bei einer Umgebung in
-    einem Projektordner (`.venv`, `venv`) auch die Dateien des Projekts: die Version in `uv.lock`, `poetry.lock`,
-    `pdm.lock` oder `Pipfile.lock`, die Angabe in `requirements*.txt` (ohne Optionen, Verweise und Marker). Form
-    `{by: "<name>@<version>" oder "<datei>", range}`;
-  - bei npm das äusserste Paket mit `bundleDependencies` über ihm: Es kam in dessen Tarball, `{by, bundled: true}`.
-  - Ein Bereich ohne Obergrenze hält nichts fest und fällt weg, ebenso einer, den der Agent nicht lesen kann (Tag,
-    URL, git, Alias). Das `package.json` eines npm-Ordners selbst zählt nicht: Ein Update schreibt es neu.
-- **Was nicht passt, bleibt am Host.** Namen und Versionen werden später Argumente von pip und npm (11.4). Nur, was ein
-  Register annehmen würde, geht hinaus. Der Rest zählt als `skipped`, etwa ein `package.json` mit
+  - Windows, **containers of MSIX apps** ([ADR-0079](../docs/adr/0079-detect-packages-in-msix-app-containers.md)):
+    What a process of an MSIX app (e.g. PowerShell from the Store) writes to `AppData` lies under
+    `AppData\Local\Packages\<package>\LocalCache`. The service does not see it at the usual path. It therefore reads
+    `Roaming\npm\node_modules` and `Roaming\Python\*\site-packages` of each app there, as well as the `pip --user` of
+    the Python from the Store (`local-packages\Python*\site-packages`). The id carries app and user
+    (`powershell-pip-user-python312-bob`, `store-pip-user-python312-bob`). A run of the agent *inside* such an app
+    (`vordr-agent packages` from the shell of an MSIX app) would see these packages twice; so start test runs from an
+    ordinary PowerShell.
+  - Empty folders are not a location; every Debian host has the empty `/usr/local/lib/python3.11/dist-packages`.
+  - **Deliberately not:** `/usr/lib/python3/dist-packages`. apt manages that folder. Debian backports fixes
+    without changing the upstream version, and OSV's PyPI ranges do not know this: There would be false findings. apt
+    already reports these packages (source `apt`). The same goes for the npm that the Node.js package brings under
+    `%ProgramFiles%\nodejs` (source `winget`).
+- **More locations** go in `agent.yaml`, `packages.locations`, each with `id` and absolute `path`. The path may contain
+  `*`, then each match is a location with the id `<id>-<what the star matched>`: `/opt/*/venv` with the `id`
+  `services` gives the location `services-router` for `/opt/router/venv`, `D:\projekte\*` with `projekte` gives the
+  location `projekte-webapp` for a project `D:\projekte\webapp`. A match may be the environment itself or a project that
+  has it in `.venv` or `venv`; if a project has Python and npm, two locations result (`-py`, `-npm`).
+- **Per package:** name, version, `direct` (installed on its own: top level of `npm -g`, required in `package.json`,
+  for Python no other distribution of the environment requires it, extras not counted) and `via` (for nested
+  npm packages the top package it came with; updating that one helps).
+- **What a package holds** (`holds`, [ADR-0129](../docs/adr/0129-findings-say-where-their-fix-is.md)), at most
+  two per package:
+  - the narrowest range among everything at the location that depends on it: for npm `dependencies` and
+    `optionalDependencies` of the installed packages, each for the copy that Node.js resolves the dependency to (the
+    nearest `node_modules/<name>` from the dependent upward); for Python `Requires-Dist` without environment marker and
+    without extra. For an environment in a project folder (`.venv`, `venv`) also the project's files: the version in
+    `uv.lock`, `poetry.lock`, `pdm.lock` or `Pipfile.lock`, the entry in `requirements*.txt` (without options,
+    references and markers). Form `{by: "<name>@<version>" or "<file>", range}`;
+  - for npm the outermost package with `bundleDependencies` above it: It came in that package's tarball,
+    `{by, bundled: true}`.
+  - A range without an upper bound holds nothing and is dropped, as is one the agent cannot read (tag, URL, git,
+    alias). The `package.json` of an npm folder itself does not count: An update rewrites it.
+- **What does not fit stays on the host.** Names and versions later become arguments of pip and npm (11.4). Only what a
+  registry would accept goes out. The rest counts as `skipped`, such as a `package.json` with
   `"name": "evil; rm -rf /"`.
-- **Grenzen:** höchstens 20 000 Pakete je Ort und 3 MiB je Nachricht. Wird es mehr, halbiert der Agent den grössten
-  Ort, bis es passt, und der Ort trägt den Code `too_many_packages`. Sonst trennte die Leitstelle die Verbindung (4 MiB
-  je Nachricht). Gelinkte Pakete (`npm link`, unter Windows Junctions) liest er, steigt aber nicht hinein: Sie sind
-  jemandes Arbeitskopie.
-- **Wann:** nach jeder Prüfung (alle 6 h und auf „Jetzt prüfen“), als Nachricht `inventory`, nur an eine Leitstelle mit
-  Merkmal `inventory` (6.2). `vordr-agent packages` zeigt am Host genau, was gesendet würde.
-- **Standard an:** Der Bestand ändert nichts und fragt niemanden ausserhalb, wie `check`. `packages.inventory: false`
-  schaltet ihn ab.
+- **Limits:** at most 20,000 packages per location and 3 MiB per message. If there are more, the agent halves the
+  largest location until it fits, and the location carries the code `too_many_packages`. Otherwise the hub would drop
+  the connection (4 MiB per message). It reads linked packages (`npm link`, on Windows junctions) but does not descend
+  into them: They are somebody's working copy.
+- **When:** after every check (every 6 h and on "Check now"), as message `inventory`, only to a hub with feature
+  `inventory` (6.2). `vordr-agent packages` shows on the host exactly what would be sent.
+- **Default on:** The inventory changes nothing and asks nobody outside, like `check`. `packages.inventory: false`
+  turns it off.
 
-**OSV-Daten (Leitstelle).** Mit dem Abschnitt `osv:` in `hub.yaml` lädt die Leitstelle die ganzen Dumps von osv.dev
-(`<url>/<ökosystem>/all.zip`, öffentlicher Bucket, täglich neu) und gleicht selbst ab. **Keine Paketliste eines Hosts
-verlässt das Netz**; `api.osv.dev` bekommt keine Anfrage.
+**OSV data (hub).** With the section `osv:` in `hub.yaml`, the hub downloads the full dumps from osv.dev
+(`<url>/<ecosystem>/all.zip`, public bucket, renewed daily) and does the matching itself. **No package list of a host
+leaves the network**; `api.osv.dev` gets no request.
 
-- Alle 24 h (`refresh_hours`) fragt sie mit dem ETag der letzten Antwort. Unverändert heisst `304`, eine Anfrage.
-- Neu: Die Datei landet in `<state_dir>/osv`. Daraus baut die Leitstelle einen kleinen Index (`<ökosystem>.idx`, gob,
-  gzip) und löscht die Datei wieder.
-- Scheitert es, bleiben die alten Daten. Die Sicht nennt den Code (`download_failed`, `bad_archive`, `store_failed`,
-  `implausible_dump`), neu versucht wird nach einer Stunde. Daten älter als `stale_hours` (Standard 72) heissen
-  `stale`, noch keine heisst `missing`. HA zeigt das am Sensor „Schwachstellendaten“.
-- **Unglaubwürdige Dumps** ([ADR-0085](../docs/adr/0085-keep-osv-data-when-a-dump-is-implausible.md)) ersetzen die
-  Daten nicht: ein leerer Dump oder einer mit weniger als 90 % der Einträge oder der Schadsoftware-Einträge der Daten in
-  Gebrauch (`implausible_dump`, beide Zahlen im Log). Sonst würde ein kaputter Dump die Leitstelle für jeden Plan
-  bürgen lassen. Die alten Daten melden weiter und werden nach 72 h `stale`; dann bürgt die Leitstelle für nichts mehr.
-  Eine gewollte grosse Bereinigung bei OSV übernimmt man, indem man `<ökosystem>.idx` löscht und die Leitstelle neu
-  startet.
-- Ohne `osv:` bewahrt die Leitstelle Bestände auf, gleicht aber nichts ab. Die Zahlen sind dann unbekannt, nicht null.
-- Die Echtheit der Dumps sichert nur TLS zum Bucket; OSV signiert sie nicht.
+- Every 24 h (`refresh_hours`) it asks with the ETag of the last response. Unchanged means `304`, one request.
+- New: The file lands in `<state_dir>/osv`. From it the hub builds a small index (`<ecosystem>.idx`, gob,
+  gzip) and deletes the file again.
+- If it fails, the old data stays. The view names the code (`download_failed`, `bad_archive`, `store_failed`,
+  `implausible_dump`), a retry follows after an hour. Data older than `stale_hours` (default 72) is called
+  `stale`, none yet is called `missing`. HA shows this on the sensor "Vulnerability data".
+- **Implausible dumps** ([ADR-0085](../docs/adr/0085-keep-osv-data-when-a-dump-is-implausible.md)) do not replace the
+  data: an empty dump or one with less than 90% of the entries or of the malware entries of the data in
+  use (`implausible_dump`, both numbers in the log). Otherwise a broken dump would let the hub vouch for every plan.
+  The old data keeps reporting and becomes `stale` after 72 h; then the hub vouches for nothing anymore.
+  A deliberate large cleanup at OSV is adopted by deleting `<ecosystem>.idx` and restarting the hub.
+- Without `osv:` the hub keeps inventories but matches nothing. The numbers are then unknown, not zero.
+- Only TLS to the bucket secures the authenticity of the dumps; OSV does not sign them.
 
-Grössenordnung (Dumps von Ende Oktober 2026):
+Order of magnitude (dumps from the end of October 2026):
 
 | | PyPI | npm |
 |---|---|---|
-| `all.zip` | 37,5 MB | 219,6 MB |
-| entpackt | 81 MB | 389 MB |
-| Einträge (ohne zurückgezogene) | 26 124 | 230 207 |
-| davon Schadsoftware (`MAL-`) | 11 984 | 222 580 |
-| Paketnamen | 13 580 | 225 895 |
-| Index auf der Platte | 1,0 MB | 4,6 MB |
-| Laden + Index bauen | rund 1 s | rund 5 s |
+| `all.zip` | 37.5 MB | 219.6 MB |
+| unpacked | 81 MB | 389 MB |
+| entries (without withdrawn) | 26,124 | 230,207 |
+| of which malware (`MAL-`) | 11,984 | 222,580 |
+| package names | 13,580 | 225,895 |
+| index on disk | 1.0 MB | 4.6 MB |
+| load + build index | about 1 s | about 5 s |
 
-Heap mit beiden Indizes +112 MB (die Leitstelle allein braucht rund 14 MB). Auf der Platte sind die Spitze 220 MB
-während des npm-Downloads, danach bleiben 6 MB. **Ein Container mit 512 MB RAM und wenigen GB freier Platte reicht
-dafür.**
+Heap with both indexes +112 MB (the hub alone needs about 14 MB). On disk the peak is 220 MB
+during the npm download, afterwards 6 MB remain. **A container with 512 MB RAM and a few GB of free disk is enough for
+this.**
 
-**Speicher der Leitstelle:** Ohne Grenze erreicht die Leitstelle beim Bau des npm-Index rund 370 MB RSS, danach
-bleiben rund 175 MB. Die Spitze ist Abfall des Baus, nicht der Index. Die Unit setzt deshalb
-`GOMEMLIMIT=200MiB`: Der Garbage Collector läuft früher, die Spitze bleibt nahe 200 MiB, ohne Zeitverlust. Es ist
-keine harte Grenze; die Leitstelle wird dafür nie beendet. Begründung: [ADR-0073](../docs/adr/0073-soft-memory-limit-for-the-hub.md).
+**Memory of the hub:** Without a limit, the hub reaches about 370 MB RSS while building the npm index, afterwards
+about 175 MB remain. The peak is garbage from the build, not the index. The unit therefore sets
+`GOMEMLIMIT=200MiB`: The garbage collector runs earlier, the peak stays near 200 MiB, without loss of time. It is
+not a hard limit; the hub is never killed for it. Rationale: [ADR-0073](../docs/adr/0073-soft-memory-limit-for-the-hub.md).
 
-**Abgleich.**
-- **Name:** PyPI nach PEP 503 (`Requests` ist `requests`, `zope.interface` ist `zope-interface`), npm genau.
-- **Liste:** Steht die Version in der Liste `versions` des Eintrags, ist sie betroffen. Bei PyPI gilt dabei auch
-  Gleichwertigkeit (`1.0` ist `1.0.0`).
-- **Bereiche** vom Typ `ECOSYSTEM` und `SEMVER` werten wie im OSV-Schema aus:
-  - die Ereignisse nach Version sortieren; `introduced: "0"` steht vor allem, bei gleicher Version `introduced` vor
+**Matching.**
+- **Name:** PyPI per PEP 503 (`Requests` is `requests`, `zope.interface` is `zope-interface`), npm exact.
+- **List:** If the version is in the entry's `versions` list, it is affected. For PyPI, equivalence also applies here
+  (`1.0` is `1.0.0`).
+- **Ranges** of type `ECOSYSTEM` and `SEMVER` are evaluated as in the OSV schema:
+  - sort the events by version; `introduced: "0"` comes before everything, for equal versions `introduced` before
     `fixed`;
-  - dann aufwärts: `introduced` ≤ v macht betroffen, `fixed` ≤ v macht unbetroffen, `last_affected` < v ebenso;
-  - `limit` begrenzt nach oben.
-  - `GIT`-Bereiche nennen Commits und zählen nicht.
-  - Daten werden genommen, wie sie dastehen: `dydx-v4-client` hat `introduced 1.1.5.post1`, `fixed 1.1.5`; nach der
-    Regel ist damit jede Version ab 1.1.5.post1 betroffen.
-- **Reihenfolge der Versionen je Ökosystem:**
-  - PyPI nach PEP 440: Epoche zuerst, Release ohne Endnullen (`1.0` = `1.0.0`),
-    `.dev` < `a` < `b` < `rc` (= `c`, `pre`) < Release < `.post` (= `-1`, `rev`, `r`), lokale Kennung zuletzt.
-  - npm nach SemVer 2.0: Vorabversion vor ihrem Release; numerische Teile als Zahl (jeder Länge) und vor
-    alphanumerischen; Build-Metadaten zählen nicht.
-- **Was nicht parst, entscheidet nichts.** Ist eine Version (installiert oder im Eintrag) in der Ordnung ihres
-  Ökosystems nicht lesbar, ist der Eintrag weder Treffer noch Entwarnung: Er zählt als `undecided` und erscheint in
-  HA. Die Liste `versions` bleibt dabei gültig.
-- **Schadsoftware** ist ein Eintrag mit `MAL-` als Kennung oder Alias. Zurückgezogene Einträge (`withdrawn`, z. B. ein
-  falscher Schadsoftware-Verdacht) zählen nicht.
-- **Ergebnis je Host** (`packages` in der Host-Sicht):
-  - Orte mit Paketzahl und Code;
-  - `malicious` (Pakete mit Schadsoftware-Eintrag) und `vulnerable` (mit anderen Einträgen; Schadsoftware nicht
-    doppelt gezählt). Beide `null`, wenn für ein Ökosystem des Hosts Daten fehlen;
-  - höchstens 50 Funde, Schadsoftware zuerst, dann nach Bewertung der Quelle (GHSA: CRITICAL … LOW), mit Kennungen,
-    Aliasen (CVE, GHSA), `via` und `fixed_in`;
-  - `fixed_in` ist die kleinste Version, die alle Einträge des Pakets behebt; leer, wenn einer keine Behebung nennt.
-    Bei Schadsoftware bleibt es immer leer: Das Paket gehört entfernt, nicht aktualisiert.
-  - **Wo die Behebung liegt** (`reach`, ADR-0129), je verwundbarem Fund. Ein Halt (`holds`) hält das Paket unter
-    `fixed_in`, wenn er ein Bündel ist oder sein Bereich keine Version ab `fixed_in` zulässt; `held_by` nennt ihn.
-    | `reach` | Bedeutung | Problem |
+  - then upward: `introduced` ≤ v makes it affected, `fixed` ≤ v makes it unaffected, `last_affected` < v likewise;
+  - `limit` bounds from above.
+  - `GIT` ranges name commits and do not count.
+  - Data is taken as it stands: `dydx-v4-client` has `introduced 1.1.5.post1`, `fixed 1.1.5`; by the
+    rule every version from 1.1.5.post1 on is affected.
+- **Order of versions per ecosystem:**
+  - PyPI per PEP 440: epoch first, release without trailing zeros (`1.0` = `1.0.0`),
+    `.dev` < `a` < `b` < `rc` (= `c`, `pre`) < release < `.post` (= `-1`, `rev`, `r`), local identifier last.
+  - npm per SemVer 2.0: prerelease before its release; numeric parts as a number (of any length) and before
+    alphanumeric ones; build metadata does not count.
+- **What does not parse decides nothing.** If a version (installed or in the entry) is not readable in the ordering of
+  its ecosystem, the entry is neither a hit nor an all-clear: It counts as `undecided` and appears in HA. The
+  `versions` list stays valid in that case.
+- **Malware** is an entry with `MAL-` as id or alias. Withdrawn entries (`withdrawn`, e.g. a false malware
+  suspicion) do not count.
+- **Result per host** (`packages` in the host view):
+  - locations with package count and code;
+  - `malicious` (packages with a malware entry) and `vulnerable` (with other entries; malware not counted twice). Both
+    `null` if data is missing for an ecosystem of the host;
+  - at most 50 findings, malware first, then by the source's rating (GHSA: CRITICAL … LOW), with ids, aliases (CVE,
+    GHSA), `via` and `fixed_in`;
+  - `fixed_in` is the smallest version that fixes all entries of the package; empty if one names no fix. For malware
+    it always stays empty: The package should be removed, not updated.
+  - **Where the fix lies** (`reach`, ADR-0129), per vulnerable finding. A hold (`holds`) keeps the package below
+    `fixed_in` if it is a bundle or its range allows no version from `fixed_in` on; `held_by` names it.
+    | `reach` | Meaning | Problem |
     |---|---|---|
-    | `update` | ein direktes Paket, dessen Kandidat oder Korrektur (ADR-0111) `fixed_in` erreicht, an einem Ort, den HA aktualisieren darf | ja |
-    | `update_via` | gehalten, aber ein direktes Paket, das es hält oder mit dem es kam, hat ein Update bereit (es bringt die Behebung vielleicht mit) | ja |
-    | `refresh` | nichts hält es; die Abhängigkeiten des Orts lassen sich auffrischen (ADR-0104) | ja |
-    | `by_hand` | nichts am Host hält es, aber Vördr aktualisiert dort nicht oder darf nicht | ja |
-    | `held` | ein Halt hält es unter `fixed_in`, und nichts darüber hat ein Update bereit | nein |
-    | `no_fix` | kein Release behebt alle Einträge | nein |
-    | `too_new` | die Behebung ist erschienen, aber jünger als das Mindestalter | nein |
-  - `waiting`: wie viele verwundbare Pakete warten (`held`, `no_fix`, `too_new`); gesetzt mit `vulnerable`.
-- **Problem:** `malicious_package` steht vor allen anderen Gründen, es ist das Dringendste. `vulnerable_package` steht
-  hinten und zählt nur Funde, bei denen jetzt jemand etwas tun kann (`vulnerable` > `waiting`, ADR-0129). Reparaturtext
-  und Ereignis `vordr_problem` nennen diese Pakete (bis fünf, `{packages}`). Kommt hinter demselben Grund ein weiteres
-  Paket dazu, meldet HA erneut. Wartende Funde stehen am Sensor, mit `reach` und `held_by`.
-- Das Ereignisprotokoll der Leitstelle hält vom Bestand nur Zahlen fest, keine Paketlisten.
+    | `update` | a direct package whose candidate or fix (ADR-0111) reaches `fixed_in`, at a location HA may update | yes |
+    | `update_via` | held, but a direct package that holds it or that it came with has an update ready (it may bring the fix along) | yes |
+    | `refresh` | nothing holds it; the dependencies of the location can be refreshed (ADR-0104) | yes |
+    | `by_hand` | nothing on the host holds it, but Vördr does not update there or may not | yes |
+    | `held` | a hold keeps it below `fixed_in`, and nothing above it has an update ready | no |
+    | `no_fix` | no release fixes all entries | no |
+    | `too_new` | the fix has appeared, but is younger than the minimum age | no |
+  - `waiting`: how many vulnerable packages are waiting (`held`, `no_fix`, `too_new`); set together with `vulnerable`.
+- **Problem:** `malicious_package` comes before all other reasons, it is the most urgent. `vulnerable_package` comes
+  last and counts only findings where someone can do something now (`vulnerable` > `waiting`, ADR-0129). Repair text
+  and event `vordr_problem` name these packages (up to five, `{packages}`). If another package is added behind the
+  same reason, HA reports again. Waiting findings are on the sensor, with `reach` and `held_by`.
+- The hub's event log keeps only numbers of the inventory, no package lists.
 
-**Gegenprobe des Abgleichs:**
+**Cross-check of the matching:**
 
-- Ein Bestand mit knapp 3000 Paketen ergibt eine Nachricht von rund 270 kB, weit unter der Grenze.
-- Der Abgleich ist gegen unabhängige Versionsvergleiche geprüft: `packaging` (PyPA) für PyPI, npm's eigenes `semver`
-  für npm, dazu eine getrennt geschriebene Bereichsauswertung. Über 1000 Paare aus Paket und Eintrag ergaben
-  **keine Abweichung**.
-- Die Gegenprobe ist selbst geprüft: Ein absichtlich verfälschtes Ergebnis meldet sie als Abweichung.
+- An inventory of just under 3000 packages gives a message of about 270 kB, far below the limit.
+- The matching is checked against independent version comparisons: `packaging` (PyPA) for PyPI, npm's own `semver`
+  for npm, plus a separately written range evaluation. Over 1000 pairs of package and entry gave
+  **no deviation**.
+- The cross-check is itself checked: A deliberately falsified result is reported by it as a deviation.
 
-**In HA:** Sensoren „Schädliche Pakete“ und „Verwundbare Pakete“ je Host, sobald der Agent einen Bestand schickt. Ältere
-Agenten bekommen sie nicht, vorhandene bleiben. Dazu der Diagnosesensor „Schwachstellendaten“ an der Leitstelle.
+**In HA:** Sensors "Malicious packages" and "Vulnerable packages" per host, as soon as the agent sends an inventory.
+Older agents do not get them, existing ones stay. Plus the diagnostic sensor "Vulnerability data" at the hub.
 
-### 11.3 Veraltete Pakete
+### 11.3 Outdated packages
 
-Begründung des Mindestalters: [ADR-0068](../docs/adr/0068-minimum-age-for-target-versions.md).
+Reason for the minimum age: [ADR-0068](../docs/adr/0068-minimum-age-for-target-versions.md).
 
-Für jedes direkte Paket (11.2) fragt der Agent das Register, welche Releases es gibt und wann sie erschienen sind. Das
-tut er selbst; `packages.outdated: false` schaltet es ab (unten). Hinaus gehen nur Name und Version, wie bei pip und
-npm. Die Paketliste geht sonst nirgends hin.
+For every direct package (11.2) the agent asks the registry which releases exist and when they were published. It does
+this itself; `packages.outdated: false` turns it off (below). Only the name and version leave the host, as with pip and
+npm. The package list goes nowhere else.
 
-- **Register:** PyPI über `https://pypi.org/pypi/<name>/json`, npm über das volle Dokument
-  `https://registry.npmjs.org/<name>` (nur dort steht `time`, die Veröffentlichungszeit je Version). Spiegel gehen über
+- **Registry:** PyPI through `https://pypi.org/pypi/<name>/json`, npm through the full document
+  `https://registry.npmjs.org/<name>` (only there is `time`, the publication time of each version). Mirrors go through
   `packages.registries`.
-- **Gelesen Schlüssel für Schlüssel:** Das npm-Dokument enthält das `package.json` jeder Version, bei `npm` selbst
-  Dutzende MB. Als Ganzes eingelesen braucht der Agent dafür rund 90 MB, gestreamt (es liegt immer nur ein Wert im
-  Speicher) rund 14 MB. Das zählt auf Hosts mit wenig RAM.
-- **Zwei Versionen je Paket:**
-  - `latest`: das neueste Release, das ein Update erreichen kann. Stabil, nicht zurückgezogen (PyPI: alle Dateien
-    `yanked`; npm: `deprecated`, ausser leer gesetzt). Bei npm nicht über dem Tag `latest`, denn eine höhere Version
-    ohne den Tag gehört zu einer anderen Linie. Neuer als das installierte.
-  - `candidate`: das neueste solche Release, das seit mindestens `packages.min_age_days` (Standard 7, 1–90,
-    abschalten geht nicht) öffentlich ist. **Nur ein Kandidat wird je installiert (11.4).** Ist `latest` jünger,
-    nennt `latest_at` den Zeitpunkt; HA kann sagen, ab wann es Kandidat wird.
-  - Das Alter eines PyPI-Release zählt ab seiner **neuesten** Datei: Zu einem alten Release kann später ein Wheel
-    hochgeladen werden, und genau das wäre ein Angriffsweg.
-  - `major`: der Sprung zu `latest` ändert die Hauptversion (wie bei winget, 11.1).
-  - `security_candidate` (seit Agent 0.14.0,
-    [ADR-0111](../docs/adr/0111-shorter-minimum-age-for-security-fixes.md)): das neueste solche Release, das seit
-    `packages.min_age_days_security` (Standard 2, 1 bis `min_age_days`) öffentlich ist, nur wenn es neuer ist als
-    `candidate`. Ob es ein Fund behebt, weiss nur die Leitstelle.
-- **Wie oft:** höchstens alle `packages.outdated_hours` (Standard 24), höchstens 500 Namen je Lauf, je Name eine
-  Anfrage, auch wenn er an mehreren Orten liegt (PyPI-Namen normalisiert). Dazwischen nimmt der Agent die letzten
-  Antworten. Ein Paket, dessen Version sich inzwischen geändert hat, wartet auf den nächsten Lauf und behält keine alte
-  Antwort.
-  - Die letzten Antworten liegen auch im Zustandsordner (`outdated-packages.json`, für die Images
-    `outdated-images.json`). Ein Neustart (Selbst-Update, Reboot) fragt deshalb nicht vorzeitig wieder.
-  - Es ist nur ein Cache: Fehlt die Datei, ist sie unlesbar, stammt sie von anderen Einstellungen (Mindestalter,
-    Registries) oder trägt sie eine Zeit nach jetzt (die Uhr lief zurück), fragt der Agent wie ohne sie.
-- **Zustand statt Fehlertext:**
-  - Ein Register, das nicht antwortet oder mit Fehler antwortet, zählt am Ort als `outdated_failed`.
-  - Kennt das Register das Paket nicht (HTTP 404: aus einer Datei, einem Git-URL, einem privaten Index installiert),
-    ist das kein Fehler, sondern `not_in_registry`.
-- `packages.outdated: false` schaltet die Abfragen ab. Dann ist `outdated` unbekannt, nicht null.
-- **Leitstelle:**
-  - zählt `outdated` und listet bis zu 100 Pakete in `updates`; zuerst die, die ein Update jetzt nehmen kann, dann die,
-    die warten;
-  - prüft jeden Kandidaten gegen die OSV-Daten: `candidate_flagged` nennt die Einträge, die auf den Kandidaten selbst
-    zutreffen. Ein Update dorthin lehnt der Agent ab (11.4). Beispiel: `axios` 1.14.1 war Schadsoftware, ein frisches
-    Release genau der Art, die das Mindestalter fernhält;
-  - setzt `fix` auf den `security_candidate`, wenn die installierte Version einen OSV-Eintrag hat und der
-    Sicherheitskandidat keinen (ADR-0111). Ein solches Paket zählt als bereit; HA nennt es „Sicherheitskorrektur,
-    kürzere Frist“.
-- **Veraltet ist kein Problem:** Der Problemsensor bleibt aus. HA zeigt es am Sensor `sensor.vordr_<id>_outdated_packages`
-  „Veraltete Pakete“ mit dem Attribut `updates`.
+- **Read key by key:** The npm document contains the `package.json` of every version, tens of MB for `npm` itself. Read
+  as a whole, the agent needs about 90 MB for it; streamed (only one value is in memory at a time) about 14 MB. That
+  matters on hosts with little RAM.
+- **Two versions per package:**
+  - `latest`: the newest release an update can reach. Stable, not withdrawn (PyPI: all files `yanked`; npm:
+    `deprecated`, unless set empty). For npm not above the tag `latest`, because a higher version without the tag
+    belongs to a different line. Newer than the installed one.
+  - `candidate`: the newest such release that has been public for at least `packages.min_age_days` (default 7, 1–90,
+    cannot be turned off). **Only a candidate is ever installed (11.4).** If `latest` is younger, `latest_at` gives the
+    time; HA can say from when it becomes the candidate.
+  - The age of a PyPI release counts from its **newest** file: A wheel can be uploaded to an old release later, and
+    that would be an attack path.
+  - `major`: the jump to `latest` changes the major version (as with winget, 11.1).
+  - `security_candidate` (since agent 0.14.0,
+    [ADR-0111](../docs/adr/0111-shorter-minimum-age-for-security-fixes.md)): the newest such release that has been
+    public for at least `packages.min_age_days_security` (default 2, 1 to `min_age_days`), only if it is newer than
+    `candidate`. Only the hub knows whether it fixes a finding.
+- **How often:** at most every `packages.outdated_hours` (default 24), at most 500 names per run, one request per name,
+  even if it is at several locations (PyPI names normalized). In between, the agent uses the last answers. A package
+  whose version has changed in the meantime waits for the next run and keeps no old answer.
+  - The last answers are also in the state directory (`outdated-packages.json`, for the images
+    `outdated-images.json`). A restart (self-update, reboot) therefore does not ask again too early.
+  - It is only a cache: If the file is missing, unreadable, comes from other settings (minimum age, registries) or
+    carries a time after now (the clock ran backwards), the agent asks as if it did not exist.
+- **State instead of error text:**
+  - A registry that does not answer or answers with an error counts at the location as `outdated_failed`.
+  - If the registry does not know the package (HTTP 404: installed from a file, a Git URL, a private index), that is
+    not an error but `not_in_registry`.
+- `packages.outdated: false` turns the queries off. Then `outdated` is unknown, not zero.
+- **Hub:**
+  - counts `outdated` and lists up to 100 packages in `updates`; first those an update can take now, then those that
+    wait;
+  - checks every candidate against the OSV data: `candidate_flagged` names the entries that apply to the candidate
+    itself. The agent refuses an update to it (11.4). Example: `axios` 1.14.1 was malware, a fresh release of exactly
+    the kind the minimum age keeps away;
+  - sets `fix` to the `security_candidate` if the installed version has an OSV entry and the security candidate has
+    none (ADR-0111). Such a package counts as ready; HA calls it "security fix, shorter wait".
+- **Outdated is not a problem:** The problem sensor stays off. HA shows it on the sensor
+  `sensor.vordr_<id>_outdated_packages` "Outdated packages" with the attribute `updates`.
 
-**Was das Mindestalter bewirkt:** Bei einem guten Teil der veralteten Pakete ist `latest` jünger als 7 Tage; dann ist
-der Kandidat das Release davor (z. B. ein Release vom Vortag → Kandidat das vorige), bei manchen gibt es noch gar
-keinen. Die Host-Sicht listet höchstens 100 Pakete (`MaxUpdates`), die Zahlen sind vollständig.
+**What the minimum age does:** For a good share of the outdated packages, `latest` is younger than 7 days; then the
+candidate is the release before it (e.g. a release from the day before → the candidate is the one before that), and for
+some there is none at all. The host view lists at most 100 packages (`MaxUpdates`); the counts are complete.
 
-### 11.4 Aktualisieren per Knopf
+### 11.4 Updating by button
 
-Begründungen: [ADR-0069](../docs/adr/0069-package-updates-by-button-only.md) (nur per Knopf),
-[ADR-0070](../docs/adr/0070-hub-vets-and-signs-the-update-plan.md) (signierte Prüfung des Plans),
-[ADR-0071](../docs/adr/0071-no-code-during-install.md) (kein Code beim Installieren),
-[ADR-0068](../docs/adr/0068-minimum-age-for-target-versions.md) (Mindestalter).
+Reasons: [ADR-0069](../docs/adr/0069-package-updates-by-button-only.md) (by button only),
+[ADR-0070](../docs/adr/0070-hub-vets-and-signs-the-update-plan.md) (signed vetting of the plan),
+[ADR-0071](../docs/adr/0071-no-code-during-install.md) (no code during install),
+[ADR-0068](../docs/adr/0068-minimum-age-for-target-versions.md) (minimum age).
 
-pip- und npm-Pakete lassen sich per Knopf aktualisieren, je Paket oder je Ort, ausgelöst in HA. Lieferkettenangriffe
-kommen meist als bösartige neue Version, des Pakets selbst oder einer Abhängigkeit. Darum ist jeder Schritt eine Schranke,
-und die Schranken stehen im Agenten (die Leitstelle kann nur anfragen):
+pip and npm packages can be updated by button, per package or per location, triggered in HA. Supply chain attacks
+usually arrive as a malicious new version, of the package itself or of a dependency. So every step is a safeguard, and
+the safeguards sit in the agent (the hub can only ask):
 
-| Schutz | Wie |
+| Protection | How |
 |---|---|
-| **Nur erlaubte Orte** | `packages.update` in `agent.yaml` nennt die Orte (Kennungen, `*` erlaubt). Standard: keiner. Nur `venv` (auch pipx) und npm (`npm-global`, `npm-dir`); pip ausserhalb einer Umgebung bleibt beim System oder beim Benutzer. Das Wartungsfenster (`install.window`) gilt wie für apt, samt der Ausnahme mit Grund (6.4). |
-| **Kein automatisches Update** | Es gibt keinen Weg dazu: `install.auto` kennt nur `security` und `all`; die Leitstelle startet Paket-Updates nie selbst. |
-| **Mindestalter** | Jedes Ziel ist der Kandidat (11.3), am Lauf neu vom Register erfragt. Die **Abhängigkeiten** auch: npm löst mit `--before <jetzt − min_age_days>` auf, also nur Releases, die damals schon öffentlich waren. pip kennt das nicht verlässlich; der Agent prüft jede Version des Plans selbst am Register (neueste Datei, nicht zurückgezogen). Zu jung → `precheck_version_too_new`. **Ausnahme Sicherheitskorrektur** ([ADR-0111](../docs/adr/0111-shorter-minimum-age-for-security-fixes.md)): Pakete, die die Leitstelle im signierten Auftrag als `security_fix` nennt (direkte Pakete mit `fix`, beim Auffrischen die Abhängigkeiten mit Fund), nimmt der Agent mit `min_age_days_security`. Alles andere im Plan bleibt bei `min_age_days`: npm löst dann mit `--before` der kurzen Frist auf, und der Agent prüft jeden neuen Eintrag am Register. Ein Auftrag für einen ganzen Ort mit Korrekturen und anderen Paketen läuft in zwei Teilen: zuerst die Korrekturen allein mit der kurzen Frist, dann der Rest mit `min_age_days`. Beim Auffrischen gilt die kurze Frist nur für das Release, das an die Stelle einer Kopie mit Fund tritt (gleicher Pfad im Lock). |
-| **Ganzer Plan vor jeder Änderung** | pip: `install --dry-run --report`; npm: `install --package-lock-only` in einem leeren Ordner (global) oder in einer Kopie von `package.json` und Lock (Projekt, Node-RED). Der Plan ist alles, was danach installiert wäre und vorher nicht war (Name und Version, nicht der Pfad: npm verschiebt Pakete im Baum). Global gibt es keine alte Lock-Datei; „vorher“ ist dort, was der Ort installiert hat ([ADR-0105](../docs/adr/0105-global-npm-plan-leaves-out-what-is-installed.md), seit Agent 0.12.1). |
-| **Nur aus der Registry** | Jeder Eintrag des Plans hat in der Lock-Datei des Plans keine `resolved`-URL (im Paket seines Elternteils gebündelt) oder eine auf der Registry: gleiches Schema, gleicher Host, Pfad darunter. Ein anderer Host, git oder eine Datei → `precheck_not_from_registry`, vor der Prüfung durch die Leitstelle und vor jeder Änderung. Dafür ruft der Agent npm mit `--allow-remote=all` auf: npm 12 hält manche Registry-Tarballs für entfernte und lehnte sonst etwa ein globales Node-RED ab ([ADR-0128](../docs/adr/0128-check-npm-tarball-origins-and-let-npm-12-fetch-them.md)); npm 11 übergeht die Option. |
-| **Nie eine Version, die OSV kennt** | Der Agent schickt den Plan (`vet`, nur an eine Leitstelle mit Merkmal `vet`). Die Leitstelle prüft jeden Eintrag gegen ihre OSV-Daten und antwortet mit einer **signierten Aussage** (Kontext `vordr/vet/v1`, gebunden an Auftrag und Host, höchstens 5 min alt). Der Agent nimmt nur eine Aussage an, die jeden Eintrag des Plans nennt und keinen sonst. Ein markierter Eintrag → `precheck_version_flagged`. Keine oder veraltete Daten, keine Antwort → `precheck_vetting_unavailable`. Die Leitstelle antwortet nur für einen laufenden Paket-Auftrag dieses Hosts. Eine Version, die OSVs Ordnung nicht lesen kann, gilt nicht als sauber. |
-| **Genau der geprüfte Plan** | pip: `install --no-deps` mit allen Versionen des Plans gepinnt; nichts wird neu aufgelöst. npm: dasselbe `--before`, also dieselbe Auflösung. |
-| **Kein Code beim Installieren** | npm mit `--ignore-scripts`, pip nur Wheels (`--only-binary=:all:`), es sei denn `packages.allow_scripts` bzw. `packages.allow_sdist` nennen den Ort. Install-Skripte sind der übliche Weg bösartiger npm-Pakete. |
-| **Nachprüfen** | Den Ort neu lesen: jedes Ziel in seiner Version, sonst `failed_verification`. pip zusätzlich `pip check`. Danach die `health:`-Prüfungen wie bei apt. |
-| **Als Besitzer** | Unter Linux laufen pip und npm als Besitzer des Orts (uid/gid, `HOME`), damit z. B. ein Node-RED-Benutzer seine Dateien behält. Unter Windows läuft der Dienst als LocalSystem; was er in ein Benutzerprofil schreibt, erbt dessen Rechte. |
-| **Namen nie als Option** | Ein Name beginnt mit Buchstabe oder Ziffer (PEP 508, npm), sonst kommt er weder in den Bestand noch in einen Auftrag. Sonst wäre `--index-url=…` ein „Paketname“. |
+| **Only allowed locations** | `packages.update` in `agent.yaml` names the locations (identifiers, `*` allowed). Default: none. Only `venv` (also pipx) and npm (`npm-global`, `npm-dir`); pip outside an environment stays with the system or the user. The maintenance window (`install.window`) applies as for apt, including the exception with a reason (6.4). |
+| **No automatic update** | There is no way to it: `install.auto` knows only `security` and `all`; the hub never starts package updates itself. |
+| **Minimum age** | Every target is the candidate (11.3), asked from the registry anew at the run. The **dependencies** too: npm resolves with `--before <now − min_age_days>`, so only releases that were already public then. pip has no reliable equivalent; the agent checks every version of the plan itself at the registry (newest file, not withdrawn). Too young → `precheck_version_too_new`. **Exception security fix** ([ADR-0111](../docs/adr/0111-shorter-minimum-age-for-security-fixes.md)): Packages the hub names as `security_fix` in the signed job (direct packages with `fix`, when refreshing the dependencies with a finding) the agent takes with `min_age_days_security`. Everything else in the plan stays at `min_age_days`: npm then resolves with the `--before` of the short period, and the agent checks every new entry at the registry. A job for a whole location with fixes and other packages runs in two parts: first the fixes alone with the short period, then the rest with `min_age_days`. When refreshing, the short period applies only to the release that replaces a copy with a finding (same path in the lock). |
+| **Whole plan before any change** | pip: `install --dry-run --report`; npm: `install --package-lock-only` in an empty folder (global) or in a copy of `package.json` and lock (project, Node-RED). The plan is everything that would be installed afterwards and was not before (name and version, not the path: npm moves packages in the tree). Globally there is no old lock file; "before" there is what the location has installed ([ADR-0105](../docs/adr/0105-global-npm-plan-leaves-out-what-is-installed.md), since agent 0.12.1). |
+| **Only from the registry** | Every entry of the plan has in the plan's lock file either no `resolved` URL (bundled in the package of its parent) or one on the registry: same scheme, same host, path below it. Another host, git or a file → `precheck_not_from_registry`, before the hub's vetting and before any change. For this the agent calls npm with `--allow-remote=all`: npm 12 considers some registry tarballs remote and would otherwise reject, for example, a global Node-RED ([ADR-0128](../docs/adr/0128-check-npm-tarball-origins-and-let-npm-12-fetch-them.md)); npm 11 ignores the option. |
+| **Never a version OSV knows** | The agent sends the plan (`vet`, only to a hub with the feature `vet`). The hub checks every entry against its OSV data and answers with a **signed statement** (context `vordr/vet/v1`, bound to the job and host, at most 5 min old). The agent accepts only a statement that names every entry of the plan and no other. A flagged entry → `precheck_version_flagged`. No or stale data, no answer → `precheck_vetting_unavailable`. The hub answers only for a running package job of this host. A version that OSV's ordering cannot read does not count as clean. |
+| **Exactly the vetted plan** | pip: `install --no-deps` with all versions of the plan pinned; nothing is resolved anew. npm: the same `--before`, so the same resolution. |
+| **No code during install** | npm with `--ignore-scripts`, pip wheels only (`--only-binary=:all:`), unless `packages.allow_scripts` or `packages.allow_sdist` name the location. Install scripts are the usual way of malicious npm packages. |
+| **Verify afterwards** | Read the location again: every target in its version, otherwise `failed_verification`. pip additionally `pip check`. Then the `health:` checks as with apt. |
+| **As the owner** | On Linux, pip and npm run as the owner of the location (uid/gid, `HOME`), so that, for example, a Node-RED user keeps their files. On Windows the service runs as LocalSystem; what it writes into a user profile inherits that profile's permissions. |
+| **Names never as an option** | A name begins with a letter or digit (PEP 508, npm), otherwise it enters neither the inventory nor a job. Otherwise `--index-url=…` would be a "package name". |
 
-- **Auftrag:** `install` mit Umfang `pkg:<ort>` (alle Kandidaten des Orts) oder `pkg:<ort>/<name>`. Ort und Name stammen
-  aus dem Bestand des Agenten. Die Leitstelle signiert nur, was der Host als aktualisierbar gemeldet hat (`update` am
-  Ort) und, bei einem Namen, wo der Kandidat sauber ist. Die Version wählt der Agent, nie die Leitstelle.
-- **Ältere Agenten** verstehen `pkg:` nicht; ihnen schickt die Leitstelle nichts, weil sie keinen Ort mit `update`
-  melden.
-- **Ablauf im Agenten:** Vorprüfung (5 %), Plan, Prüfung durch die Leitstelle, dann Laufjournal und Installation (50 %),
-  Nachprüfung, `health:` (97 %). Bis zur Installation ändert sich nichts.
+- **Job:** `install` with scope `pkg:<location>` (all candidates of the location) or `pkg:<location>/<name>`. Location
+  and name come from the agent's inventory. The hub signs only what the host has reported as updatable (`update` at
+  the location) and, for a name, where the candidate is clean. The agent chooses the version, never the hub.
+- **Older agents** do not understand `pkg:`; the hub sends them nothing, because they report no location with
+  `update`.
+- **Flow in the agent:** precheck (5 %), plan, vetting by the hub, then run journal and installation (50 %),
+  verification, `health:` (97 %). Nothing changes until the installation.
 - **HA:**
-  - je aktualisierbarem Ort eine Update-Entität `update.vordr_<id>_packages_<ort>` („Pakete <ort>“): installiert
-    „<n> Pakete“, neueste z. B. „3 veraltet, 1 bereit“; ohne bereiten Kandidaten (alle zu neu oder markiert) ist sie `off`
-    ([ADR-0106](../docs/adr/0106-update-entity-on-only-when-vordr-would-install.md));
-  - die Zusammenfassung zeigt zuerst, was ein Update jetzt nimmt, dann „zu neu“ und „von OSV markiert“;
-  - Installieren aktualisiert den Ort, der Dienst `vordr.update_package` (Ziel: diese Entität, Feld `package`) ein
-    Paket; mit dem Feld `reason` auch ausserhalb des Fensters (6.4).
-- **Trockenlauf** (`vordr-agent packages --plan <ort>[/<name>]` = alles bis vor die Prüfung, ändert nichts). Was er
-  typisch zeigt:
-  - Ein globales npm-Paket, dessen neuere Releases alle jünger als das Mindestalter sind: `precheck_version_too_new`.
-  - Eine ganze Python-Umgebung mit einer Abhängigkeit, die es nur als Quellpaket gibt: „nur Wheels“ blockiert damit den
-    ganzen Ort. Dann je Paket aktualisieren oder `allow_sdist` setzen.
-  - Eine Linux-venv auf einem Windows-Laufwerk: Der Windows-Agent findet keinen Interpreter und meldet das, statt zu
-    raten.
-- **Nicht gebaut:** pip ausserhalb von Umgebungen (`pip-site`), `npm link`-Pakete, Rückbau eines Updates (`npm`/pip
-  haben keinen; der vorige Stand ist im Laufprotokoll und im Backup).
+  - one update entity per updatable location, `update.vordr_<id>_packages_<location>` ("Packages <location>"):
+    installed "<n> packages", latest e.g. "3 outdated, 1 ready"; without a ready candidate (all too new or flagged) it
+    is `off` ([ADR-0106](../docs/adr/0106-update-entity-on-only-when-vordr-would-install.md));
+  - the summary shows first what an update takes now, then "too new" and "flagged by OSV";
+  - Install updates the location, the service `vordr.update_package` (target: this entity, field `package`) one
+    package; with the field `reason` also outside the window (6.4).
+- **Dry run** (`vordr-agent packages --plan <location>[/<name>]` = everything up to the vetting, changes nothing). What
+  it typically shows:
+  - A global npm package whose newer releases are all younger than the minimum age: `precheck_version_too_new`.
+  - A whole Python environment with a dependency that exists only as a source package: "wheels only" thereby blocks
+    the whole location. Then update per package or set `allow_sdist`.
+  - A Linux venv on a Windows drive: The Windows agent finds no interpreter and reports that instead of guessing.
+- **Not built:** pip outside environments (`pip-site`), `npm link` packages, rolling back an update (`npm`/pip have no
+  such thing; the previous state is in the run log and in the backup).
 
-**Abhängigkeiten mit Fund auffrischen** ([ADR-0104](../docs/adr/0104-refresh-indirect-dependencies-within-their-ranges.md),
-Schritt 1 seit Agent 0.12.0, Integration 0.19.0):
+**Refreshing dependencies with a finding** ([ADR-0104](../docs/adr/0104-refresh-indirect-dependencies-within-their-ranges.md),
+stage 1 since agent 0.12.0, integration 0.19.0):
 
-- Die Kandidaten oben gelten für Pakete, die ein Ort um ihrer selbst willen hat. Ihre Abhängigkeiten bewegen sich nur
-  mit ihnen, und gerade dort liegen die meisten Funde. Der Dienst `vordr.refresh_dependencies` (Ziel: die Update-Entität
-  des Orts, Feld `reason` für ausserhalb des Fensters) hebt sie innerhalb der Bereiche, die ihre Abnehmer erlauben.
-- **Wo:** bisher nur npm-Ordner mit Lock-Datei (Projekt, Node-RED-Benutzerordner). Der Agent meldet das je Ort im
-  Bestand (`deps`), die Leitstelle zeigt es als `capabilities.dependency_refresh` und nimmt den Befehl
-  `refresh_deps:<ort>` nur dafür an. Auftrag: `install` mit Umfang `deps:<ort>`. Globales npm und pip-Umgebungen folgen.
-- **Ablauf im Agenten**, mit denselben Schranken wie ein Update:
-  1. Welche: Der Agent bietet der Leitstelle alle Abhängigkeiten an, die dort installiert sind (`vet`), die signierte
-     Antwort markiert die mit Fund.
-  2. Plan: `npm update <namen> --package-lock-only` mit demselben `--before` in einer Kopie von `package.json` und Lock.
-     Der Plan ist, was die neue Lock-Datei hat und die alte nicht. Jeder Eintrag muss aus der Registry kommen, sonst
-     `precheck_not_from_registry` (ADR-0128, wie beim Update).
-  3. Prüfung durch die Leitstelle: Ist die geplante Version einer genannten Abhängigkeit weiter markiert, bleibt sie
-     draussen, und der Plan entsteht noch einmal ohne sie. Markiert die Leitstelle etwas, das das Update nur mitbringt,
-     endet der Lauf vor jeder Änderung mit `precheck_version_flagged`.
-  4. Laufjournal, dann `npm update <namen>` am Ort, mit demselben `--before` und ohne Install-Skripte (ausser
-     `allow_scripts` nennt den Ort): npm löst gleich auf.
-  5. Nachprüfen: Jeder Eintrag des Plans ist installiert, sonst `failed_verification`.
-- **Was bleibt, wird genannt:** Eine Abhängigkeit, die keine erlaubte Version hebt, steht im Ergebnis des Laufs mit den
-  Paketen, die sie festhalten („needs a new release of …“); ebenso eine, deren neueste erlaubte Version selbst einen
-  Fund hat. Der Lauf ist dann trotzdem `ok`.
-- **Trockenlauf:** `vordr-agent packages --plan-deps <ort>:<name>[,<name>…]` plant für die genannten Abhängigkeiten,
-  ohne Leitstelle und ohne etwas zu ändern; die Lock-Datei bleibt unverändert. Eine Abhängigkeit, die innerhalb ihrer
-  Bereiche nicht steigen kann, steht dort mit dem Abnehmer, der sie festhält.
+- The candidates above apply to packages a location has for their own sake. Their dependencies move only with them,
+  and that is where most findings are. The service `vordr.refresh_dependencies` (target: the location's update entity,
+  field `reason` for outside the window) raises them within the ranges their dependents allow.
+- **Where:** so far only npm folders with a lock file (project, Node-RED user folder). The agent reports this per
+  location in the inventory (`deps`), the hub shows it as `capabilities.dependency_refresh` and accepts the command
+  `refresh_deps:<location>` only for that. Job: `install` with scope `deps:<location>`. Global npm and pip
+  environments follow.
+- **Flow in the agent**, with the same safeguards as an update:
+  1. Which: The agent offers the hub all dependencies installed there (`vet`); the signed answer flags those with a
+     finding.
+  2. Plan: `npm update <names> --package-lock-only` with the same `--before` in a copy of `package.json` and lock. The
+     plan is what the new lock file has and the old one does not. Every entry must come from the registry, otherwise
+     `precheck_not_from_registry` (ADR-0128, as with the update).
+  3. Vetting by the hub: If the planned version of a named dependency is still flagged, it stays out, and the plan is
+     made again without it. If the hub flags something the update only brings along, the run ends before any change
+     with `precheck_version_flagged`.
+  4. Run journal, then `npm update <names>` at the location, with the same `--before` and without install scripts
+     (unless `allow_scripts` names the location): npm resolves the same.
+  5. Verify afterwards: Every entry of the plan is installed, otherwise `failed_verification`.
+- **What remains is named:** A dependency that no allowed version raises appears in the run's result with the packages
+  that hold it back ("needs a new release of …"); likewise one whose newest allowed version has a finding itself. The
+  run is `ok` all the same.
+- **Dry run:** `vordr-agent packages --plan-deps <location>:<name>[,<name>…]` plans for the named dependencies, without
+  a hub and without changing anything; the lock file stays unchanged. A dependency that cannot rise within its ranges
+  appears there with the dependent that holds it.
 
-### 11.5 Container-Images: veraltete und verwundbare melden, Neubauten per Knopf
+### 11.5 Container images: report outdated and vulnerable ones, rebuilds by button
 
-Eigene Quelle statt updates2mqtt, zuerst nur melden
-([ADR-0081](../docs/adr/0081-container-images-own-source.md)). Gebaut sind: welche Images veraltet sind
-([ADR-0113](../docs/adr/0113-report-outdated-container-images.md)), welche bekannten Schwachstellen in ihnen stecken
-([ADR-0120](../docs/adr/0120-known-vulnerabilities-inside-container-images.md), unten „Pakete in Images“) und das
-Aktualisieren von Compose-Diensten auf den Neubau ihres Tags per Knopf
-([ADR-0119](../docs/adr/0119-update-container-images-by-button.md), unten „Per Knopf aktualisieren“). Ohne einen
-`image:`-Eintrag in `install.allowed_scopes` meldet Vördr nur und zieht, startet oder ändert keinen Container.
+Own source instead of updates2mqtt, report only at first
+([ADR-0081](../docs/adr/0081-container-images-own-source.md)). Built are: which images are outdated
+([ADR-0113](../docs/adr/0113-report-outdated-container-images.md)), which known vulnerabilities are inside them
+([ADR-0120](../docs/adr/0120-known-vulnerabilities-inside-container-images.md), below "Packages in images"), and
+updating Compose services to the rebuild of their tag by button
+([ADR-0119](../docs/adr/0119-update-container-images-by-button.md), below "Updating by button"). Without an `image:`
+entry in `install.allowed_scopes`, Vördr only reports and pulls, starts or changes no container.
 
-- **Einschalten je Host:** `packages.containers: true` in agent.yaml, Standard aus (neuer Netzverkehr vom Host).
-  Nur unter Linux und nur mit `packages.inventory` an; die Images sind Teil des Bestands. `check-config` lehnt sonst ab.
-- **Bestand (Agent, Paket `internal/images`):** die laufenden Container über die Engine-API am lokalen Socket
-  (`/var/run/docker.sock`; eine Engine mit derselben API, etwa Podmans kompatibler Socket, passt an dieser Stelle),
-  nur `GET`, kein CLI:
-  - `GET /containers/json`, je Container `GET /containers/<id>/json` (Referenz, mit der er angelegt wurde,
-    `Config.Image`) und je Image `GET /images/<id>/json` (`RepoDigests`, `RepoTags`, `Created`, Plattform,
+- **Turning on per host:** `packages.containers: true` in agent.yaml, default off (new network traffic from the host).
+  Only on Linux and only with `packages.inventory` on; the images are part of the inventory. Otherwise `check-config`
+  refuses.
+- **Inventory (agent, package `internal/images`):** the running containers through the engine API on the local socket
+  (`/var/run/docker.sock`; an engine with the same API, such as Podman's compatible socket, fits here), `GET` only, no
+  CLI:
+  - `GET /containers/json`, per container `GET /containers/<id>/json` (the reference it was created with,
+    `Config.Image`) and per image `GET /images/<id>/json` (`RepoDigests`, `RepoTags`, `Created`, platform,
     `Config.Labels`).
-  - Ein Eintrag je Image und Tag, mit den Namen der Container. `name` ist das Repository samt Registry
-    (`docker.io/library/nginx`), `version` der Tag, `digest` der Repo-Digest, mit dem es gezogen wurde.
-  - Festgelegter Digest (`app@sha256:…`): verglichen wird unter dem Tag, den das Image auf dem Host für
-    dasselbe Repository trägt (`RepoTags`; bei mehreren zuerst einer mit Versionsform, sonst der alphabetisch erste;
-    [ADR-0117](../docs/adr/0117-compare-pinned-images-under-their-tag.md)). Ohne solchen Tag ist `version` der Digest,
-    und das Image wird nur aufgeführt. Zwei Referenzen auf dasselbe Image unter demselben Tag sind ein Eintrag.
-  - Lokal gebaut: gemeldet, nie verglichen, keine Registry wird gefragt. Lokal heisst ohne Repo-Digest (klassischer
-    Image-Speicher) oder von Compose gebaut (Label `com.docker.compose.project` in der Image-Konfiguration): Der
-    containerd-Image-Speicher gibt auch lokalen Builds einen Repo-Digest
-    ([ADR-0115](../docs/adr/0115-recognize-images-compose-built-on-the-host.md)). Ein Container, der aus einer Image-ID
-    angelegt wurde, hat keine Referenz und zählt als `skipped`.
-  - Zustand statt Fehlertext: `no_engine` (kein Socket), `engine_unreachable` (Socket da, Engine antwortet nicht).
-    Ein Container, der zwischen Liste und Abfrage verschwindet (404), fehlt nur selbst.
-- **Ort im Bestand:** `containers`, Art `container`, Ökosystem `oci`. Der Agent schickt ihn nur einer Leitstelle, die
-  das Merkmal `containers` ankündigt ([ADR-0067](../docs/adr/0067-hub-announces-features.md)): Eine ältere Leitstelle
-  zählte die Images sonst zu den pip/npm-Paketen und hielte die Funde für unbekannt.
-- **Registry, anonym:** höchstens alle `outdated_hours`, nur mit `outdated`, über die Distribution-API und HTTPS.
-  - Eigener Zeitplan: Ein Check, der die Engine nicht lesen konnte oder dessen Leitstelle noch keine Images annahm,
-    vergleicht nichts und hält den nächsten Vergleich nicht auf. Der Ort sagt, wann verglichen wurde (`compared_at`);
-    bis dahin sind `outdated` und `ready` an der Leitstelle unbekannt.
-  - Antwortet die Registry mit 401 und `WWW-Authenticate: Bearer`, holt der Agent beim genannten Realm (nur `https`)
-    ein Token für Lesezugriff, ohne Zugangsdaten. Ein 401 auf ein Token einer früheren Anfrage holt einmal ein frisches
-    (die von Docker Hub laufen nach fünf Minuten ab). Erst 401/403 mit frischem Token oder 404 heisst
-    `not_in_registry` (privat oder weg). 429, 5xx und Netzfehler zählen als `outdated_failed`.
-  - Docker Hub (`docker.io`) antwortet unter `registry-1.docker.io`.
-- **Downloads, die als Pull zählen:** `HEAD` zählt bei Docker Hub nicht, ein Manifest-Download schon, auf dieselbe
-  anonyme Grenze wie die Pulls des Hosts selbst, oft geteilt mit allen Hosts hinter derselben öffentlichen Adresse.
-  - Konfiguration und Bauzeit je Digest und Plattform behält der Agent in `<state_dir>/image-cache.json` (bis 4096,
-    die am längsten ungenutzten fallen weg). Ein Digest ändert seinen Inhalt nie: Weder spätere Läufe noch ein
-    neu gestarteter Agent laden dieselben Manifeste noch einmal.
-  - Höchstens 20 Manifest-Downloads je Registry und Lauf; der Rest zählt als `outdated_failed` und kommt im nächsten
-    Lauf dran.
-- **Neu gebaut:** `HEAD` auf das Manifest des Tags. Weicht der Digest vom Repo-Digest ab, liest der Agent das Image
-  für seine Plattform: Index → Manifest der Plattform → Konfiguration (`created`).
-  - Neu gebaut ist es, wenn das eine andere Konfiguration ist als die laufende, unabhängig von der Bauzeit:
-    reproduzierbare Builds (distroless, ko, Bazel, Nix) behalten eine feste. Ein Index ändert sich auch, wenn nur eine
-    andere Plattform oder eine Attestierung dazukommt; das ist kein Neubau.
-  - Die laufende Konfiguration: beim klassischen Image-Speicher der Engine die Image-ID. Beim containerd-Speicher ist
-    die ID der gezogene Digest; dann liest der Agent die Konfiguration dahinter aus der Registry. Hat die Registry
-    diesen Digest nicht mehr, gilt der Tag als neu gebaut.
-  - `rebuilt_candidate`: mindestens `min_age_days` alt.
-  - Ein Container mit festem Digest bleibt auf seinem Build. Unter seinem Tag verglichen heisst `rebuilt` dann: Der
-    Tag ist seit dem festgelegten Build weitergezogen, die Festlegung ist überholt (ADR-0117).
-  - Antwortet `HEAD` auf den laufenden Tag mit 404 (Aufbewahrungsregel hat ihn gelöscht), liest der Agent trotzdem
-    die Tag-Liste; erst wenn auch die verschlossen ist oder der Tag keine Form hat, zählt das Image als
-    `not_in_registry`.
-- **Neuerer Tag derselben Form:** optionales `v`, Zahlen mit Punkten, gleiche Anzahl Zahlen, gleiche Endung (`-`, `_`
-  oder `+` und der Rest): `2.4.1-gpu` vergleicht nur mit `x.y.z-gpu`, `16` mit `17`.
-  - Eine Zahl mit sechs oder mehr Ziffern ist ein Datum oder eine Build-Nummer (`20250108`), keine Version, und
-    vergleicht nur mit einer ebensolchen: `alpine:3` findet das Datums-Tag `20250108` nicht neuer.
-  - Tags ohne Zahl (`latest`, `stable`) haben keine Form, ein laufender Vorabversions-Tag (`rc`, `beta` …) auch nicht:
-    nur „neu gebaut“.
-  - Die Tag-Liste kommt seitenweise (`Link: …; rel="next"`, nur auf demselben Host), höchstens 60 Seiten zu 1000 und
-    je 1 MiB, behalten werden nur gültige Tags, höchstens 60000; eine längere gilt als nicht beantwortet, die neuesten
-    Tags könnten auf einer ungelesenen Seite stehen. Für weitere Images desselben Repositorys hält ein Lauf höchstens
-    120000 Tags. Die Grenze von 60 Seiten:
+  - One entry per image and tag, with the names of the containers. `name` is the repository including the registry
+    (`docker.io/library/nginx`), `version` the tag, `digest` the repo digest it was pulled with.
+  - Pinned digest (`app@sha256:…`): the comparison uses the tag the image carries on the host for the same repository
+    (`RepoTags`; if there are several, first one with a version form, otherwise the alphabetically first;
+    [ADR-0117](../docs/adr/0117-compare-pinned-images-under-their-tag.md)). Without such a tag, `version` is the
+    digest, and the image is only listed. Two references to the same image under the same tag are one entry.
+  - Built locally: reported, never compared, no registry is asked. Local means without a repo digest (classic image
+    store) or built by Compose (label `com.docker.compose.project` in the image configuration): The containerd image
+    store gives local builds a repo digest too
+    ([ADR-0115](../docs/adr/0115-recognize-images-compose-built-on-the-host.md)). A container created from an image ID
+    has no reference and counts as `skipped`.
+  - State instead of error text: `no_engine` (no socket), `engine_unreachable` (socket there, engine does not answer).
+    A container that disappears between the list and the query (404) is missing by itself only.
+- **Location in the inventory:** `containers`, kind `container`, ecosystem `oci`. The agent sends it only to a hub that
+  announces the feature `containers` ([ADR-0067](../docs/adr/0067-hub-announces-features.md)): An older hub would
+  otherwise count the images among the pip/npm packages and take the findings as unknown.
+- **Registry, anonymous:** at most every `outdated_hours`, only with `outdated`, through the distribution API and HTTPS.
+  - Own schedule: A check that could not read the engine, or whose hub did not accept images yet, compares nothing and
+    does not hold up the next comparison. The location says when it was compared (`compared_at`); until then
+    `outdated` and `ready` are unknown at the hub.
+  - If the registry answers with 401 and `WWW-Authenticate: Bearer`, the agent fetches a read token at the named realm
+    (`https` only), without credentials. A 401 on a token from an earlier request fetches a fresh one once (those from
+    Docker Hub expire after five minutes). Only 401/403 with a fresh token or 404 means `not_in_registry` (private or
+    gone). 429, 5xx and network errors count as `outdated_failed`.
+  - Docker Hub (`docker.io`) answers at `registry-1.docker.io`.
+- **Downloads that count as a pull:** `HEAD` does not count at Docker Hub, a manifest download does, against the same
+  anonymous limit as the host's own pulls, often shared with all hosts behind the same public address.
+  - The agent keeps configuration and build time per digest and platform in `<state_dir>/image-cache.json` (up to
+    4096, the longest unused drop out). A digest never changes its content: Neither later runs nor a restarted agent
+    download the same manifests again.
+  - At most 20 manifest downloads per registry and run; the rest counts as `outdated_failed` and is taken in the next
+    run.
+- **Rebuilt:** `HEAD` on the manifest of the tag. If the digest differs from the repo digest, the agent reads the image
+  for its platform: index → manifest of the platform → configuration (`created`).
+  - It is rebuilt if that is a different configuration than the running one, regardless of the build time:
+    reproducible builds (distroless, ko, Bazel, Nix) keep a fixed one. An index also changes when only another platform
+    or an attestation is added; that is not a rebuild.
+  - The running configuration: with the engine's classic image store, the image ID. With the containerd store the ID is
+    the pulled digest; then the agent reads the configuration behind it from the registry. If the registry no longer
+    has that digest, the tag counts as rebuilt.
+  - `rebuilt_candidate`: at least `min_age_days` old.
+  - A container with a pinned digest stays on its build. Compared under its tag, `rebuilt` then means: The tag has
+    moved on since the pinned build, the pin is outdated (ADR-0117).
+  - If `HEAD` on the running tag answers 404 (a retention rule deleted it), the agent reads the tag list anyway; only
+    if that is closed too, or the tag has no form, does the image count as `not_in_registry`.
+- **Newer tag of the same form:** optional `v`, numbers with dots, same count of numbers, same suffix (`-`, `_` or `+`
+  and the rest): `2.4.1-gpu` compares only with `x.y.z-gpu`, `16` with `17`.
+  - A number with six or more digits is a date or a build number (`20250108`), not a version, and compares only with
+    one of the same kind: `alpine:3` does not find the date tag `20250108` newer.
+  - Tags without a number (`latest`, `stable`) have no form, and neither does a running prerelease tag (`rc`, `beta` …):
+    only "rebuilt".
+  - The tag list comes page by page (`Link: …; rel="next"`, only on the same host), at most 60 pages of 1000 and 1 MiB
+    each; only valid tags are kept, at most 60000; a longer one counts as unanswered, the newest tags might be on an
+    unread page. For further images of the same repository a run holds at most 120000 tags. The limit of 60 pages:
     [ADR-0121](../docs/adr/0121-read-tag-lists-of-up-to-60000-tags.md).
-  - Von den neueren Tags, neueste zuerst, liest der Agent höchstens 5 bis zum ersten, der alt genug ist: `latest` der
-    neueste, `candidate` der neueste mit mindestens `min_age_days`, `latest_at` dessen Bauzeit, solange er jünger ist.
-    `major`: Die erste Zahl ändert sich. Ein Tag ohne Image für die Plattform des Hosts zählt nicht.
-  - Der kleinere Schritt daneben
-    ([ADR-0131](../docs/adr/0131-name-the-newest-tag-of-the-running-major-version.md)): Ist `candidate` eine neue
-    Hauptversion, oder `latest` eine und kein Tag alt genug, liest der Agent auch die neueren Tags mit der laufenden
-    ersten Zahl, neueste zuerst, wieder höchstens 5: `same_major` ist der erste davon mit mindestens `min_age_days`
-    (ein Image auf 3.5: `candidate` 4.2, `same_major` 3.9). Liegt `candidate` schon in der laufenden Hauptversion,
-    entfällt der zweite Gang. Eine Frage ohne Antwort zählt darin wie jede andere (`compare_failed`).
-- **Alter:** `created` der Konfiguration. Vor 2013 (reproduzierbare Builds schreiben 1970) ist das Alter unbekannt:
-  gemeldet (neu gebaut oder neuerer Tag), nie Kandidat.
-- **Schranken:** höchstens 300 Anfragen je Lauf, Tokens eingerechnet; was danach offen ist, zählt als
-  `outdated_failed`.
-- **Warum keine Antwort** ([ADR-0126](../docs/adr/0126-say-why-an-image-comparison-got-no-answer.md)): Jedes Image,
-  das als `outdated_failed` zählt, trägt im Bestand den Grund (`compare_failed`), aus der Antwort selbst, nie aus
-  einem Fehlertext: `rate_limited` (429), `request_budget` (die 300 Anfragen), `manifest_share` (die 20
-  Manifest-Downloads der Registry), `tag_list_too_long` (mehr Seiten, Tags oder Bytes als oben), sonst `no_answer`
-  (Netz, 5xx, unlesbare Antwort, Zeit um). Es zählt der erste Grund des Images. Die Leitstelle zeigt sie als
-  `compare_failed` (Image, Tag, Container, Grund; höchstens 100), HA als Attribut der Entität „Container-Images“,
-  nicht im Recorder. Ein Agent davor meldet nur die Zahl.
-- **Leitstelle:** bewahrt den Ort wie jeden Bestand, ohne OSV-Abgleich, und zeigt ihn getrennt von den Paketen in der
-  Host-Sicht als `containers` (`images`, `local`, `outdated`, `ready`, `compared_at`, `updates` mit höchstens 100
-  Images, die mit Kandidat zuerst). Solange die Images nie verglichen wurden (`compared_at` fehlt), sind `outdated` und
-  `ready` unbekannt, nicht null. Veraltete Images sind kein Problem des Hosts. Ein Image nur mit `same_major` (die neue
-  Hauptversion noch zu neu) zählt als `ready`: Es gibt etwas, das alt genug ist (ADR-0131).
-- **Home Assistant:** eine Update-Entität je Host „Container-Images“ (`update.vordr_<id>_containers`). An, solange
-  ein Image einen Kandidaten hat. Ohne erlaubte Dienste ohne Installieren, und die Zusammenfassung beginnt mit „Nur
-  gemeldet, Vördr aktualisiert keine Images“; mit erlaubten Diensten siehe „Per Knopf aktualisieren“. Neben einer
-  neuen Hauptversion nennt sie den kleineren Schritt: „app 2.2.0 → 3.1.0 (neue Hauptversion, oder 2.4.0 in
-  derselben Hauptversion)“. Die Liste steht im Attribut `updates` (mit `same_major`), nicht im Recorder
+  - Of the newer tags, newest first, the agent reads at most 5 up to the first one that is old enough: `latest` the
+    newest, `candidate` the newest with at least `min_age_days`, `latest_at` its build time while it is younger.
+    `major`: The first number changes. A tag without an image for the host's platform does not count.
+  - The smaller step beside it
+    ([ADR-0131](../docs/adr/0131-name-the-newest-tag-of-the-running-major-version.md)): If `candidate` is a new major
+    version, or `latest` is one and no tag is old enough, the agent also reads the newer tags with the running first
+    number, newest first, again at most 5: `same_major` is the first of them with at least `min_age_days` (an image on
+    3.5: `candidate` 4.2, `same_major` 3.9). If `candidate` is already in the running major version, the second pass
+    does not apply. A question without an answer counts in it like any other (`compare_failed`).
+- **Age:** `created` of the configuration. Before 2013 (reproducible builds write 1970) the age is unknown: reported
+  (rebuilt or newer tag), never a candidate.
+- **Limits:** at most 300 requests per run, tokens included; what is still open after that counts as `outdated_failed`.
+- **Why no answer** ([ADR-0126](../docs/adr/0126-say-why-an-image-comparison-got-no-answer.md)): Every image that counts
+  as `outdated_failed` carries the reason in the inventory (`compare_failed`), taken from the answer itself, never from
+  an error text: `rate_limited` (429), `request_budget` (the 300 requests), `manifest_share` (the registry's 20
+  manifest downloads), `tag_list_too_long` (more pages, tags or bytes than above), otherwise `no_answer` (network,
+  5xx, unreadable answer, time ran out). The first reason of the image counts. The hub shows them as `compare_failed`
+  (image, tag, container, reason; at most 100), HA as an attribute of the entity "Container images", not in the
+  recorder. An agent before that reports only the number.
+- **Hub:** keeps the location like any inventory, without OSV matching, and shows it separately from the packages in the
+  host view as `containers` (`images`, `local`, `outdated`, `ready`, `compared_at`, `updates` with at most 100 images,
+  those with a candidate first). As long as the images have never been compared (`compared_at` is missing), `outdated`
+  and `ready` are unknown, not zero. Outdated images are not a problem of the host. An image with only `same_major` (the
+  new major version still too new) counts as `ready`: There is something that is old enough (ADR-0131).
+- **Home Assistant:** one update entity per host "Container images" (`update.vordr_<id>_containers`). On as long as an
+  image has a candidate. Without allowed services it cannot install, and the summary begins with "Reported only,
+  Vördr does not update images"; with allowed services see "Updating by button". Beside a new major version it names
+  the smaller step: "app 2.2.0 → 3.1.0 (new major version, or 2.4.0 in the same major version)". The list is in the
+  attribute `updates` (with `same_major`), not in the recorder
   ([ADR-0101](../docs/adr/0101-package-lists-stay-out-of-the-recorder.md)).
-- Zu den veralteten pip/npm-Paketen (11.3): Liegt ein Paket an zwei Orten, etwa älter per `pip --user` und neuer im
-  Interpreter, zeigt `pip list --outdated` nur das erste, Vördr beide Orte.
+- On the outdated pip/npm packages (11.3): If a package is at two locations, say older under `pip --user` and newer in
+  the interpreter, `pip list --outdated` shows only the first, Vördr both locations.
 
-**Pakete in Images** ([ADR-0120](../docs/adr/0120-known-vulnerabilities-inside-container-images.md)):
+**Packages in images** ([ADR-0120](../docs/adr/0120-known-vulnerabilities-inside-container-images.md)):
 
-- **Einschalten:** `Debian` und/oder `Alpine` in `osv.ecosystems` der Leitstelle. Dann kündigt sie das Merkmal
-  `image_contents` an, und nur dann lesen Agenten die Pakete in ihren Images.
-- **Agent:** je Image einen seiner Container, über `GET /containers/{id}/archive` der Engine, kein `exec`, kein Pull:
-  - `/etc/os-release` (dem Link einmal folgend, sonst `/usr/lib/os-release`): Distribution und Release;
-  - `/var/lib/dpkg/status`, bei distroless `/var/lib/dpkg/status.d/`, sonst `/lib/apk/db/installed`: die installierten
-    Pakete mit Quellpaket (dpkg `Source`, apk `origin`).
-  - Mit jedem Vergleich (`outdated_hours`), ohne `outdated` im selben Takt ohne Vergleich; dazwischen nur für ein
-    Image, zu dem der Agent noch nichts hat, und das einmal. Die Antworten bleiben mit dem Vergleich im Zustandsordner.
-  - Schranken: os-release 64 KB, Paketdatenbank 16 MB, 5000 Pakete je Image (`too_many_packages`). Passt die
-    Inventur nicht in eine Nachricht, fallen zuerst die Pakete des Images mit den meisten weg (Code
-    `too_many_packages` ohne Pakete, das Image bleibt); gekürzt wird nach Grösse, nicht nach Anzahl.
-  - Zustand statt Fehlertext: `no_package_db` (distroless ohne Datenbank, scratch), `unreadable`, `unknown_release`.
-- **Leitstelle:**
-  - Sie lädt den Dump einer Distribution nur, solange ein Image eines ihrer Releases läuft, und baut nur für diese
-    Releases einen Index (`Debian:13`, `Alpine:v3.23`).
-  - Vorher prüft sie den Platz, Dump plus 256 MB (`no_space`).
-  - Die Indexe bleiben auf der Platte. Für einen Abgleich lädt sie einen, gleicht jedes Image dieses Releases ab,
-    behält die Ergebnisse und verwirft ihn wieder, einen nach dem anderen. Ein Debian-Release braucht im Speicher
-    rund 60 MB, ausserhalb des Speichers unter 1 MB.
-  - Jedes Release hat seinen eigenen Stand: Ein Index gilt nur für den Dump (ETag) und die Indexversion, aus denen er
-    gebaut ist; sonst holt sie den Dump sofort. Ein Release ohne Einträge im Dump ist ein Zustand (`no_entries`), kein
-    Fehler. Ein unglaubwürdig geschrumpftes behält seinen alten Index (`implausible_dump`), die anderen nehmen den
-    neuen Dump. Ein unlesbarer Index wird vergessen und neu gebaut. Auch das Bauen wartet auf die Abgleichsperre.
-  - Abgleich nach Quellpaket und Quellversion, wie Debian und Alpine ihre Meldungen schreiben. Gezählt wird je CVE:
-    einmal, auch wenn Debian ihn als DEBIAN-CVE und als DSA veröffentlicht; eine DSA für mehrere CVEs zählt jeden.
-    „unimportant“ zählt für dieses Paket nicht, gleich welche Meldung den CVE nennt.
-  - Die Quellpakete des Kernels zählen nicht
-    ([ADR-0122](../docs/adr/0122-kernel-advisories-in-images-do-not-count.md)): Debian `linux` und die
-    versionierten `linux-<version>` (`linux-6.12`), Alpine `linux-lts` und `linux-grsec`. Ein Container läuft auf dem
-    Kernel des Hosts; das Image trägt höchstens dessen Header (`linux-libc-dev`). Ihre Meldungen stehen je Image als
-    `kernel`, ausser ein anderes Paket des Images hat denselben CVE, dann zählt er dort. Pakete, die nur `linux` im
-    Namen tragen (`util-linux`, `linux-pam`, `linux-base`), zählen wie alle.
-  - Je Image `fixable` (ein neueres Paket behebt es) und `unfixed` (noch keine Korrektur), mit den IDs; ein Image
-    ohne Abgleich mit Grund (`not_read`, `unsupported_distribution`, `unsupported_release`, `no_data`,
-    `too_many_packages`). Ein Image nur mit Meldungen des Kernels steht mit `kernel` in der Liste und zählt weder als
-    `fixable` noch als `unfixed`.
-  - Ob ein neueres Image bereitsteht
-    ([ADR-0130](../docs/adr/0130-image-entity-needs-attention-only-with-a-newer-image.md)): je Image `newer`, wenn es
-    einen Kandidaten hat (Neubau oder neuerer Tag, alt genug). `fixable_newer` zählt die Images mit `fixable` und
-    Kandidat; nil, solange `fixable` nil ist oder die Images nie mit ihren Registries verglichen wurden. Images mit
-    `fixable` und Kandidat stehen zuerst. Ein behobenes Paket der Distribution heisst noch nicht, dass ein neueres Image
-    da ist: Das kommt erst, wenn der Herausgeber neu baut.
-  - In der Datenübersicht (`osv`) erscheinen nur Releases, die ein Image braucht.
-- **Home Assistant:** dieselbe Entität „Container-Images“.
-  - Schwachstellen allein schalten sie nicht an, auch behebbare nicht: an nur mit einem Kandidaten (ADR-0130, wie
-    ADR-0106 für die anderen Update-Entitäten). Mit Kandidat nennt `latest_version` dazu, für wie viele Images mit
-    behebbaren Meldungen ein neueres Image bereitsteht („1 durch neueres Image behebbar“).
-  - Die Zusammenfassung sagt je Image, ob ein neueres Image bereit ist: „2 behebbar, neueres Image bereit“ oder „2 in
-    der Distribution behoben, noch kein neueres Image“; Meldungen ohne Korrektur wie bisher. Eine Leitstelle vor
-    ADR-0130 sendet kein `fixable_newer`; dann bleiben die Zahlen ohne diesen Zusatz.
-  - Die Liste steht im Attribut `vulnerable`, nicht im Recorder, je Image mit `kernel`, wo es Meldungen des Kernels
-    gibt, und `newer`; die Zusammenfassung nennt die Meldungen des Kernels nicht.
-  - Kein Problem des Hosts.
-- **Ubuntu** ist noch nicht dabei: OSV schreibt seine Releases anders (`Ubuntu:24.04:LTS`), und sein Dump ist zehnmal
-  so gross wie Debians. Ubuntu-Images zeigen `unsupported_distribution`.
+- **Turning on:** `Debian` and/or `Alpine` in `osv.ecosystems` of the hub. Then it announces the feature
+  `image_contents`, and only then do agents read the packages in their images.
+- **Agent:** per image one of its containers, through `GET /containers/{id}/archive` of the engine, no `exec`, no pull:
+  - `/etc/os-release` (following the link once, otherwise `/usr/lib/os-release`): distribution and release;
+  - `/var/lib/dpkg/status`, for distroless `/var/lib/dpkg/status.d/`, otherwise `/lib/apk/db/installed`: the installed
+    packages with source package (dpkg `Source`, apk `origin`).
+  - With every comparison (`outdated_hours`); without `outdated` in the same cycle without a comparison; in between
+    only for an image the agent has nothing on yet, and once. The answers stay with the comparison in the state
+    directory.
+  - Limits: os-release 64 KB, package database 16 MB, 5000 packages per image (`too_many_packages`). If the inventory
+    does not fit in one message, the packages of the image with the most are dropped first (code `too_many_packages`
+    without packages, the image stays); trimming is by size, not by count.
+  - State instead of error text: `no_package_db` (distroless without a database, scratch), `unreadable`,
+    `unknown_release`.
+- **Hub:**
+  - It loads the dump of a distribution only while an image of one of its releases is running, and builds an index only
+    for those releases (`Debian:13`, `Alpine:v3.23`).
+  - Beforehand it checks the space, dump plus 256 MB (`no_space`).
+  - The indexes stay on disk. For a match it loads one, matches every image of this release, keeps the results and
+    discards it again, one after the other. A Debian release needs about 60 MB in memory, outside of memory under 1 MB.
+  - Every release has its own status: An index is valid only for the dump (ETag) and the index version it was built
+    from; otherwise it fetches the dump at once. A release without entries in the dump is a state (`no_entries`), not an
+    error. One that has shrunk implausibly keeps its old index (`implausible_dump`); the others take the new dump. An
+    unreadable index is forgotten and rebuilt. Building also waits for the match lock.
+  - Matching by source package and source version, as Debian and Alpine write their advisories. Counted per CVE: once,
+    even if Debian publishes it as a DEBIAN-CVE and as a DSA; a DSA for several CVEs counts each. "unimportant" does not
+    count for this package, whichever advisory names the CVE.
+  - The kernel's source packages do not count
+    ([ADR-0122](../docs/adr/0122-kernel-advisories-in-images-do-not-count.md)): Debian `linux` and the versioned
+    `linux-<version>` (`linux-6.12`), Alpine `linux-lts` and `linux-grsec`. A container runs on the host's kernel; the
+    image carries at most its headers (`linux-libc-dev`). Their advisories appear per image as `kernel`, unless another
+    package of the image has the same CVE, then it counts there. Packages that merely have `linux` in the name
+    (`util-linux`, `linux-pam`, `linux-base`) count like all others.
+  - Per image `fixable` (a newer package fixes it) and `unfixed` (no fix yet), with the IDs; an image without a match
+    with a reason (`not_read`, `unsupported_distribution`, `unsupported_release`, `no_data`, `too_many_packages`). An
+    image with only kernel advisories is in the list with `kernel` and counts neither as `fixable` nor as `unfixed`.
+  - Whether a newer image is available
+    ([ADR-0130](../docs/adr/0130-image-entity-needs-attention-only-with-a-newer-image.md)): per image `newer` if it
+    has a candidate (rebuild or newer tag, old enough). `fixable_newer` counts the images with `fixable` and a
+    candidate; nil as long as `fixable` is nil or the images were never compared with their registries. Images with
+    `fixable` and a candidate come first. A fixed package in the distribution does not yet mean a newer image is
+    there: That comes only when the publisher rebuilds.
+  - In the data overview (`osv`) only releases an image needs appear.
+- **Home Assistant:** the same entity "Container images".
+  - Vulnerabilities alone do not turn it on, fixable ones neither: on only with a candidate (ADR-0130, as ADR-0106 for
+    the other update entities). With a candidate, `latest_version` also says for how many images with fixable advisories
+    a newer image is available ("1 fixable by newer image").
+  - The summary says per image whether a newer image is ready: "2 fixable, newer image ready" or "2 fixed in the
+    distribution, no newer image yet"; advisories without a fix as before. A hub from before ADR-0130 sends no
+    `fixable_newer`; then the numbers stay without this addition.
+  - The list is in the attribute `vulnerable`, not in the recorder, per image with `kernel` where there are kernel
+    advisories, and `newer`; the summary does not name the kernel advisories.
+  - Not a problem of the host.
+- **Ubuntu** is not included yet: OSV writes its releases differently (`Ubuntu:24.04:LTS`), and its dump is ten times
+  as large as Debian's. Ubuntu images show `unsupported_distribution`.
 
-**Per Knopf aktualisieren** ([ADR-0119](../docs/adr/0119-update-container-images-by-button.md)):
+**Updating by button** ([ADR-0119](../docs/adr/0119-update-container-images-by-button.md)):
 
-- **Erlauben je Dienst:** `image:<projekt>/<dienst>` in `install.allowed_scopes`, `*` für einen beliebigen Teil
-  (`image:web/*`). Standard: keiner. Braucht `packages.containers` und `packages.outdated`; `default_scope`
-  bleibt für die Systempakete und ist nie ein `image:`-Eintrag. `check-config` lehnt sonst ab und nennt die Dienste.
-- **Was geht:** nur der Neubau des Tags, den die Compose-Datei nennt, und nur ab `min_age_days`, und nur das Image,
-  nie die Konfiguration. Handarbeit bleiben:
-  - ein neuerer Tag (1.2 → 1.3) und ein gepinnter Digest: beides braucht eine geänderte Compose-Datei;
-  - ein Dienst mit mehr als einem Container (Compose skalierte ihn auf seine Datei);
-  - ein Tag, den noch ein anderer Container nutzt (er würde mitwandern). Ausgenommen ist ein gestoppter Container
-    desselben Compose-Projekts (`exited`, `created`, `dead`), etwa ein einmaliger Helfer, der vor dem Dienst Rechte
-    setzt: Er behält sein Image und nimmt das neue erst, wenn Compose ihn mit dem Projekt neu erstellt
-    ([ADR-0123](../docs/adr/0123-stopped-containers-of-the-project-do-not-share-the-tag.md)). Der Lauf startet ihn
-    nicht neu (`--no-deps`); einen Dienst, dessen Helfer vor jeder neuen Version laufen muss (Datenbank-Migration),
-    nicht erlauben;
-  - ein Container ohne Compose-Labels oder von `docker compose run`, ein auf dem Host gebautes Image, ein Projekt,
-    dessen Ordner oder Dateien fehlen oder nicht absolut sind;
-  - ein Dienst, dessen Compose-Dateien oder Variablen sich seit seinem Start geändert haben (anderer
-    Konfigurations-Hash): ihn einmal von Hand hochfahren.
-- **Bestand:** Der Agent liest die laufenden Container und meldet je Image die Dienste, die er aktualisieren darf und
-  kann (`updatable`, ohne die Hash-Prüfung, die erst der Lauf macht); die Leitstelle bietet nur diese an
-  (`capabilities.image_updates`), zeigt sie je Image (`services`) und zählt, was der Knopf nähme (`installable`: ein
-  Neubau, alt genug, eines solchen Dienstes).
-- **Aufträge:** `image:<projekt>/<dienst>` für einen Dienst, `images` für jeden erlaubten (der Agent wählt). Der
-  Auftrag nennt nur Namen, kein Image, keinen Tag, kein Argument. `min_interval_h` hält sie nicht auf (wie pip/npm),
-  ein Lauf mit Änderung zählt aber als Installationslauf. Die Sicherung vor dem Lauf (ADR-0030, ADR-0096) gilt wie für
-  jedes `install`.
-- **Lauf je Dienst,** jede Prüfung vor der ersten Änderung:
-  1. Compose ist da und mindestens 2.22 (`up --pull`), sonst `rejected_unsupported`. Compose spricht immer mit der
-     Engine des Agenten (`DOCKER_HOST`), gleich welcher Docker-Kontext für root gilt.
-  2. Der Dienst lässt sich bewegen (siehe oben), sonst `rejected_scope_not_allowed` mit Grund.
-  3. `docker compose … config --hash <dienst>` gibt den Hash aus dem Label des Containers, sonst
+- **Allowing per service:** `image:<project>/<service>` in `install.allowed_scopes`, `*` for any part (`image:web/*`).
+  Default: none. Needs `packages.containers` and `packages.outdated`; `default_scope` stays for the system packages and
+  is never an `image:` entry. Otherwise `check-config` refuses and names the services.
+- **What works:** only the rebuild of the tag the Compose file names, and only from `min_age_days`, and only the image,
+  never the configuration. Manual work remains for:
+  - a newer tag (1.2 → 1.3) and a pinned digest: both need a changed Compose file;
+  - a service with more than one container (Compose scaled it beyond its file);
+  - a tag that another container still uses (it would move along). Excepted is a stopped container of the same Compose
+    project (`exited`, `created`, `dead`), such as a one-off helper that sets permissions before the service: It keeps
+    its image and takes the new one only when Compose recreates it with the project
+    ([ADR-0123](../docs/adr/0123-stopped-containers-of-the-project-do-not-share-the-tag.md)). The run does not restart
+    it (`--no-deps`); do not allow a service whose helper must run before every new version (database migration);
+  - a container without Compose labels or from `docker compose run`, an image built on the host, a project whose folder
+    or files are missing or not absolute;
+  - a service whose Compose files or variables have changed since it started (different configuration hash): bring it
+    up once by hand.
+- **Inventory:** The agent reads the running containers and reports per image the services it may and can update
+  (`updatable`, without the hash check, which only the run does); the hub offers only these
+  (`capabilities.image_updates`), shows them per image (`services`) and counts what the button would take
+  (`installable`: a rebuild, old enough, of such a service).
+- **Jobs:** `image:<project>/<service>` for one service, `images` for every allowed one (the agent chooses). The job
+  names only names, no image, no tag, no argument. `min_interval_h` does not hold them up (as with pip/npm), but a run
+  with a change counts as an install run. The backup before the run (ADR-0030, ADR-0096) applies as for any `install`.
+- **Run per service,** every check before the first change:
+  1. Compose is there and at least 2.22 (`up --pull`), otherwise `rejected_unsupported`. Compose always talks to the
+     agent's engine (`DOCKER_HOST`), whichever Docker context applies for root.
+  2. The service can be moved (see above), otherwise `rejected_scope_not_allowed` with a reason.
+  3. `docker compose … config --hash <service>` gives the hash from the container's label, otherwise
      `rejected_scope_not_allowed`.
-  4. Die Registry jetzt fragen, worauf der Tag zeigt (nicht die Antwort der letzten Inventur; ihr Cache wird nur
-     gelesen): kein Neubau → `ok` ohne Änderung; jünger als `min_age_days` → `precheck_version_too_new`; keine Antwort
-     → `precheck_repo_unreachable`.
-  5. Platz: das Vierfache des Downloads plus 256 MB im Datenordner der Engine (und bei containerd-Image-Store in
-     dessen Ordner, wo es ihn gibt); zu wenig oder nicht lesbar → `precheck_disk_space`.
-  6. Den Neubau über die Engine-API **nach Digest** für die geprüfte Plattform ziehen. Scheitert das, ist nichts
-     geändert (`failed_package_manager`).
-  7. Lauf-Journal schreiben. Ab hier läuft der Dienst zu Ende oder zurück, mit eigenem Zeitrahmen (30 min), auch
-     wenn `install.timeout_min` abläuft oder der Agent stoppt.
-  8. Das laufende Image als `<repo>:vordr-previous.<projekt>.<dienst>` behalten, den Tag der Compose-Datei auf den
-     Neubau legen und `docker compose --project-name … --project-directory … --file … up --detach --no-deps --no-build
-     --pull never <dienst>` mit den Dateien aus den Labels.
-  9. Gesund: Der Container läuft mit dem neuen Image, mit Healthcheck `healthy`, und dann 30 s ohne Neustart, binnen
-     3 min; dann `health` aus agent.yaml. Ein Container, der nach Sekunden stirbt und neu gestartet wird, kommt nie
-     dahin.
-  10. Sonst zurück: Das alte Image bekommt den Tag wieder, Compose erzeugt den Dienst erneut, das Behalten-Tag geht
-      zurück (an den Rückweg des Laufs davor, falls es ihn gab), das neue Image wird entfernt; `failed_health` (bei
-      gescheitertem Compose `failed_package_manager`) mit „rolled back“ im Detail.
-  11. Gelingt es, entfernt der Agent das Image des Laufs davor, wenn es kein Name und kein Container mehr hält: eine
-      Generation bleibt als Rückweg.
-- `images` arbeitet die Dienste nacheinander ab. Nicht bewegbare, zu neue und ohne Antwort bleiben liegen und stehen
-  mit Grund im Detail; ein Fehler nach einer Änderung wird zurückgenommen und beendet den Lauf. Ist nichts geschehen,
-  sagt der Code warum (`precheck_disk_space`, `precheck_repo_unreachable`).
-- **Home Assistant:** „Container-Images“ installiert (`install_images`), wenn der Host Dienste erlaubt und die
-  Leitstelle etwas zählt, das der Knopf nähme (`installable`), mit Fortschritt; die Zusammenfassung beginnt dann mit
-  „Neu gebaute Images der freigegebenen Dienste nimmt der Installieren-Knopf, neuere Tags bleiben Handarbeit“. An
-  bleibt die Entität auch für Handarbeit. Die Aktion `vordr.update_image` (Feld `service`: `<projekt>/<dienst>`)
-  aktualisiert einen Dienst, mit `reason` auch ausserhalb des Fensters, ebenso `vordr.install_outside_window` für alle.
+  4. Ask the registry now what the tag points to (not the answer of the last inventory; its cache is only read): no
+     rebuild → `ok` without a change; younger than `min_age_days` → `precheck_version_too_new`; no answer →
+     `precheck_repo_unreachable`.
+  5. Space: four times the download plus 256 MB in the engine's data folder (and with the containerd image store in its
+     folder, where there is one); too little or not readable → `precheck_disk_space`.
+  6. Pull the rebuild through the engine API **by digest** for the vetted platform. If that fails, nothing is changed
+     (`failed_package_manager`).
+  7. Write the run journal. From here the service runs to the end or back, with its own time frame (30 min), even if
+     `install.timeout_min` runs out or the agent stops.
+  8. Keep the running image as `<repo>:vordr-previous.<project>.<service>`, point the Compose file's tag at the
+     rebuild and run `docker compose --project-name … --project-directory … --file … up --detach --no-deps --no-build
+     --pull never <service>` with the files from the labels.
+  9. Healthy: The container runs with the new image, with a healthcheck `healthy`, and then 30 s without a restart,
+     within 3 min; then `health` from agent.yaml. A container that dies after seconds and is restarted never gets
+     there.
+  10. Otherwise back: The old image gets the tag again, Compose recreates the service, the keep tag goes back (to the
+      way back of the run before, if there was one), the new image is removed; `failed_health` (with failed Compose
+      `failed_package_manager`) with "rolled back" in the detail.
+  11. If it succeeds, the agent removes the image of the run before, if no name and no container holds it any more: one
+      generation stays as the way back.
+- `images` works through the services one after the other. Those that cannot be moved, are too new or have no answer
+  stay as they are and appear with a reason in the detail; an error after a change is rolled back and ends the run. If
+  nothing happened, the code says why (`precheck_disk_space`, `precheck_repo_unreachable`).
+- **Home Assistant:** "Container images" installs (`install_images`) when the host allows services and the hub counts
+  something the button would take (`installable`), with progress; the summary then begins with "The Install button
+  takes rebuilt images of the approved services, newer tags remain manual work". The entity also stays on for manual
+  work. The action `vordr.update_image` (field `service`: `<project>/<service>`) updates one service, with `reason`
+  also outside the window, likewise `vordr.install_outside_window` for all.
 
-## 12. Leitstelle
+## 12. Hub
 
-- Go, eine Binary, systemd-Dienst. Zustand in Dateien wie im Vorbild-Projekt: Register (`registry.json`), Ereignisprotokoll
-  (`events.jsonl`, nur anhängend), Einstellungen und Ringe (`hub.yaml`). Keine Datenbank
-  ([ADR-0011](../docs/adr/0011-state-in-files.md); Ort: [ADR-0054](../docs/adr/0054-hub-in-own-container.md)).
-- Schnittstellen: Tunnel-Endpunkt (WebSocket über TLS, Zertifikat wird bei Erneuerung ohne Neustart nachgeladen),
-  Home-Assistant-Endpunkt `/v1/ha` auf demselben Port ([ha-integration.md](ha-integration.md)), Download der
-  Agent-Binaries (HTTPS, Einmal-Token). Keine Weboberfläche.
-- Verwaltung nur lokal über einen Unix-Socket (`admin_socket`, Modus 0600 in einem 0700-Ordner): `vordr-hub list |
-  approve <node> --fingerprint <fp> | reject <node> | forget <node> | check <node> | backup <node> | events`, für
-  Home-Assistant-Clients (eigenes Register `clients.json`) `clients | approve-client <name> --fingerprint <fp> |
-  reject-client <name> | forget-client <name> | client-role <name> --role <rolle>`. Ohne Socket: `key`, `check-config`,
-  `version`. Noch nicht gebaut: ein Befehl für die Ringe (`rings`)
+- Go, one binary, systemd service. State lives in files as in the earlier agent: registry (`registry.json`), event log
+  (`events.jsonl`, append-only), settings and rings (`hub.yaml`). No database
+  ([ADR-0011](../docs/adr/0011-state-in-files.md); location: [ADR-0054](../docs/adr/0054-hub-in-own-container.md)).
+- Interfaces: tunnel endpoint (WebSocket over TLS, the certificate is reloaded on renewal without a restart), Home
+  Assistant endpoint `/v1/ha` on the same port ([ha-integration.md](ha-integration.md)), download of the agent binaries
+  (HTTPS, one-time token). No web interface.
+- Administration only locally through a Unix socket (`admin_socket`, mode 0600 in a 0700 folder): `vordr-hub list |
+  approve <node> --fingerprint <fp> | reject <node> | forget <node> | check <node> | backup <node> | events`, for
+  Home Assistant clients (own registry `clients.json`) `clients | approve-client <name> --fingerprint <fp> |
+  reject-client <name> | forget-client <name> | client-role <name> --role <role>`. Without the socket: `key`,
+  `check-config`, `version`. Not built yet: a command for the rings (`rings`)
   ([ADR-0010](../docs/adr/0010-administration-only-local.md)).
-- **Beenden** (SIGTERM): Die Leitstelle nimmt nichts Neues mehr an, schliesst die Verbindungen der Agents und
-  Home-Assistant-Clients und wartet bis zu 10 s, bis fertig ist, was sie angestossen haben (eine Meldung, die gerade
-  gespeichert wird, das Ergebnis eines Jobs). Das Warten auf Job-Ergebnisse endet dabei mit `hub_stopping`, ohne
-  etwas einzutragen: der Lauf bleibt offen, der nächste Hello des Agents klärt ihn
+- **Stopping** (SIGTERM): The hub accepts nothing new, closes the connections of the agents and Home Assistant clients
+  and waits up to 10 s until what it started is done (a report that is being saved, the result of a job). Waiting for
+  job results ends with `hub_stopping` and records nothing: the run stays open, and the agent's next hello settles it
   ([ADR-0142](../docs/adr/0142-the-hub-waits-for-its-sessions-work-when-it-stops.md)).
-- **Backup-Prüfung ansehen** (`vordr-hub backup <node>`): was die Prüfung vor einem Install jetzt entschiede (10.2);
-  fragt den Backup-Server, schickt nichts.
-- **Ereignisprotokoll lesen** (`vordr-hub events [<node>] [--event <name>] [--since <wann>] [--limit <n>]`):
-  - Die Leitstelle liest `events.jsonl` selbst und gibt die passenden Zeilen über den Socket zurück. Wer lesen darf,
-    entscheidet der Socket, nicht die Dateirechte des Zustandsordners.
-  - Gezeigt werden die neuesten passenden Zeilen, standardmässig 50, höchstens 5000, älteste oben.
-  - `--since` nimmt eine Dauer zurück (`90m`, `24h`, `7d`), ein Datum (Mitternacht Ortszeit) oder eine Zeit nach
-    RFC 3339.
-  - Gelesen wird ohne die Schreibsperre: Die Leitstelle schreibt weiter. Eine Zeile, die gerade entsteht, ist dann
-    unvollständig und wird als unlesbar gezählt und genannt, nicht übersprungen ohne Wort.
-- **Rollen der HA-Clients** ([ADR-0039](../docs/adr/0039-ha-client-roles.md)):
-  - `observe`: nur Sichten.
-  - `operate`: Prüfen, Installieren, Agent-Update. Das ist der Standard.
-  - `admin`: zusätzlich Neustart.
+- **Viewing the backup check** (`vordr-hub backup <node>`): what the check before an install would decide now (10.2);
+  it asks the backup server and sends nothing.
+- **Reading the event log** (`vordr-hub events [<node>] [--event <name>] [--since <when>] [--limit <n>]`):
+  - The hub reads `events.jsonl` itself and returns the matching lines through the socket. The socket decides who may
+    read, not the file permissions of the state folder.
+  - The newest matching lines are shown, 50 by default, at most 5000, oldest on top.
+  - `--since` takes a duration back (`90m`, `24h`, `7d`), a date (midnight local time) or an RFC 3339 time.
+  - Reading happens without the write lock: the hub keeps writing. A line that is being written at that moment is
+    incomplete and is counted and named as unreadable, not skipped silently.
+- **Roles of the HA clients** ([ADR-0039](../docs/adr/0039-ha-client-roles.md)):
+  - `observe`: views only.
+  - `operate`: check, install, agent update. This is the default.
+  - `admin`: additionally reboot.
 
-  Die Richtlinie des Hosts hat ohnehin das letzte Wort. Die Rolle begrenzt, was ein übernommenes Home Assistant
-  die Leitstelle signieren lassen kann. Eine Ablehnung heisst `role_forbids`, HA zeigt dafür einen eigenen Text.
-- **Warteschlange je Host** ([ADR-0043](../docs/adr/0043-queue-per-host.md),
+  The host's policy has the last word anyway. The role limits what a compromised Home Assistant can make the hub
+  sign. A refusal is called `role_forbids`, and HA shows its own text for it.
+- **Queue per host** ([ADR-0043](../docs/adr/0043-queue-per-host.md),
   [ADR-0044](../docs/adr/0044-same-command-joins-running-run.md)):
-  Ein Agent führt einen Auftrag nach dem anderen aus. „Alle aktualisieren“
-  in HA drückt aber mehrere Knöpfe eines Hosts in derselben Sekunde; ohne Warteschlange liefe etwa das Agent-Update,
-  und das Installieren endete mit `rejected_busy`.
-  - Kommt ein HA-Befehl, während auf dem Host noch ein Lauf geht, wartet er, statt gesendet zu werden.
-  - Ein Befehl, der schon wartet, wartet nicht doppelt; höchstens 3 warten (sonst `queue_full`).
-  - Ein Befehl gleich dem laufenden (Verb und Umfang) wartet gar nicht. Die Antwort ist `ok` mit der `job_id` des
-    laufenden Laufs, das Ereignisprotokoll vermerkt `command_already_running`. Sonst wartete etwa ein zweiter Tipp
-    auf „Jetzt neu starten“ und endete nach dem ersten Neustart mit `rejected_rate_limited`.
-  - Nach dem Ende des Laufs startet die Leitstelle nach 30 s den nächsten. Ein Agent, der eben neu gestartet hat,
-    prüft zuerst.
-  - Die Host-Sicht zeigt die Warteschlange (`queued`), HA am Sensor „Letzter Lauf“.
-  - Ein Lauf, der älter ist als sein Auftrag dauern darf, hält die Warteschlange nicht auf.
-  - Dieselbe Sicht „beschäftigt“ gilt für das automatische Installieren und die Agent-Verteilung: ein Lauf ohne
-    Ergebnis, höchstens so lange, wie sein Auftrag dauern darf, oder ein Hypervisor, der gerade einen Gast sichert.
-    Ohne diese Frist hielte ein Lauf, dessen Ergebnis verloren ging, den Host für immer von beiden fern.
-  - Ein Ergebnis, auf das niemand mehr wartet, schliesst den Lauf ab und startet den nächsten wartenden Befehl. Das
-    kommt vor, wenn die Leitstelle während des Laufs neu startete oder der Tunnel abriss und der Lauf weiterging.
-  - Meldet ein wartender Befehl beim Start `already_in_state` (der Agent hat die Release schon), kommt der nächste
-    dran.
-  - Die Backup-Prüfung vor dem Installieren gilt zum Zeitpunkt des Befehls.
-  Ergebnisse als feste Codes (`ok`, `unknown_node`, `fingerprint_mismatch`, `not_connected`, `not_approved`,
-  `verb_unsupported_by_agent`, `timeout`, …). `vordr-hub key` zeigt den öffentlichen Hub-Schlüssel für
-  `agent.yaml`.
-- Browser-Verbindungen (mit `Origin`-Kopfzeile) werden abgewiesen. Höchstens `max_pending` Hosts warten auf Freigabe;
-  ein bekannter Host mit anderem Schlüssel wird abgewiesen, bis er mit `forget` entfernt ist.
-- Prüft HA-Befehle gegen die gemeldete Richtlinie des Hosts, bevor er signiert.
-- Meldet Problemfälle: Host stumm (`offline`), `stale`, wartende Freigaben, gescheiterte Agent-Updates.
+  An agent executes one job after another. But "update all" in HA presses several buttons of one host in the same
+  second; without a queue, the agent update would run, for example, and the install would end with `rejected_busy`.
+  - When an HA command arrives while a run is still going on the host, it waits instead of being sent.
+  - A command that is already waiting does not wait twice; at most 3 wait (otherwise `queue_full`).
+  - A command equal to the running one (verb and scope) does not wait at all. The answer is `ok` with the `job_id` of
+    the running run, and the event log records `command_already_running`. Otherwise a second tap on "Reboot now" would
+    wait and end with `rejected_rate_limited` after the first reboot.
+  - After the run ends, the hub starts the next one after 30 s. An agent that has just restarted checks first.
+  - The host view shows the queue (`queued`), HA shows it on the "Last run" sensor.
+  - A run that is older than its job may last does not hold up the queue.
+  - The same "busy" view applies to automatic installing and agent distribution: a run without a result, at most as
+    long as its job may last, or a hypervisor that is currently backing up a guest. Without this limit, a run whose
+    result got lost would keep the host away from both forever.
+  - A result that nobody waits for any more closes the run and starts the next waiting command. This happens when the
+    hub restarted during the run or the tunnel dropped and the run went on.
+  - If a waiting command reports `already_in_state` at its start (the agent already has the release), the next one is
+    up.
+  - The backup check before installing applies at the time of the command.
+  Results are fixed codes (`ok`, `unknown_node`, `fingerprint_mismatch`, `not_connected`, `not_approved`,
+  `verb_unsupported_by_agent`, `timeout`, …). `vordr-hub key` shows the public hub key for `agent.yaml`.
+- Browser connections (with an `Origin` header) are rejected. At most `max_pending` hosts wait for approval; a known
+  host with a different key is rejected until it is removed with `forget`.
+- Checks HA commands against the host's reported policy before it signs.
+- Reports problem cases: host silent (`offline`), `stale`, waiting approvals, failed agent updates.
 
-## 13. Plattformen und Bau
+## 13. Platforms and build
 
-- Go 1.27, `CGO_ENABLED=0`, `-trimpath -ldflags "-s -w"`: statische Binaries ohne Laufzeitumgebung.
-- Ziele des Agenten: `linux/amd64`, `linux/arm64`, `linux/arm` (GOARM=7), `windows/amd64`. Hub: `linux/amd64`.
-- Grössenordnung bei der Wahl der Sprache: Ein Kern mit TLS, WebSocket, Ed25519 und JSON ergab 6,2–7,0 MB je Ziel
-  (gzip 2,6–2,9 MB) und 12 MB RSS nach einer TLS-Verbindung.
-- Rust wäre kleiner (geschätzt 1,5–3 MB und 2–5 MB RSS, nicht gemessen). Das lohnt sich erst auf Geräten mit sehr
-  wenig Speicher, und die bekommen hier keinen Agenten (Nicht-Ziele in Abschnitt 1). Go erlaubt dagegen, die erprobten
-  Teile des Vorbild-Projekts zu übernehmen (Abschnitt 14; [ADR-0003](../docs/adr/0003-go.md)).
-- Windows-Binaries bleiben ohne Authenticode-Signatur; ihre Echtheit sichert das Betreiber-Manifest
+- Go 1.27, `CGO_ENABLED=0`, `-trimpath -ldflags "-s -w"`: static binaries without a runtime.
+- Agent targets: `linux/amd64`, `linux/arm64`, `linux/arm` (GOARM=7), `windows/amd64`. Hub: `linux/amd64`.
+- Order of magnitude when choosing the language: a core with TLS, WebSocket, Ed25519 and JSON came to 6.2–7.0 MB per
+  target (gzip 2.6–2.9 MB) and 12 MB RSS after one TLS connection.
+- Rust would be smaller (estimated 1.5–3 MB and 2–5 MB RSS, not measured). That only pays off on devices with very
+  little memory, and those get no agent here (non-goals in section 1). Go, on the other hand, allows taking over the
+  proven parts of the earlier agent (section 14; [ADR-0003](../docs/adr/0003-go.md)).
+- Windows binaries stay without an Authenticode signature; the operator manifest secures their authenticity
   ([ADR-0084](../docs/adr/0084-windows-self-update-without-code-signing.md)).
 
-## 14. Übernahme aus dem Vorbild-Projekt
+## 14. What is taken over from the earlier agent
 
-Kopiert und angepasst, ohne gemeinsame Bibliothek, damit beide Projekte unabhängig releasen
-([ADR-0012](../docs/adr/0012-copy-parts-of-the-earlier-agent.md)). Ein gemeinsames Modul
-lohnt sich erst, wenn beide parallel weiterwachsen.
+Copied and adapted, without a shared library, so that both projects can release independently
+([ADR-0012](../docs/adr/0012-copy-parts-of-the-earlier-agent.md)). A shared module only pays off once both keep growing
+in parallel.
 
-| Vorbild-Projekt (`agent/`) | Vördr | Anpassung |
+| The earlier agent (`agent/`) | Vördr | Adaptation |
 |---|---|---|
-| `identity.go` | Agent-Identität | Ed25519, DPAPI unter Windows, unverändert |
-| `tunnel.go` | Tunnel-Client | Challenge/`hello`, Backoff; statt Proxy-Datenströmen signierte Aufträge und Meldungen |
-| `updater.go` | Selbst-Update | Fehlerarten von Anfang an englisch |
-| `service_windows.go`, `install_windows.go`, `setup_windows.go` | Windows-Dienst, Einrichtung mit `install-service` (11.1) | Dienst unter LocalSystem (Windows Update verlangt es); keine Einrichtung per Doppelklick |
-| `mqtt.go` (`syncDiscovery`) | nur das Muster | Tri-State beim Anlegen und Löschen von Entitäten (8.4); der MQTT-Code selbst ist entfernt ([ADR-0026](../docs/adr/0026-remove-mqtt.md)) |
-| `sign.ps1` | – | nicht übernommen: Windows-Binaries bleiben ohne Authenticode-Signatur ([ADR-0084](../docs/adr/0084-windows-self-update-without-code-signing.md)) |
+| `identity.go` | agent identity | Ed25519, DPAPI on Windows, unchanged |
+| `tunnel.go` | tunnel client | challenge/`hello`, backoff; signed jobs and reports instead of proxy data streams |
+| `updater.go` | self-update | error kinds in English from the start |
+| `service_windows.go`, `install_windows.go`, `setup_windows.go` | Windows service, setup with `install-service` (11.1) | service under LocalSystem (Windows Update requires it); no setup by double click |
+| `mqtt.go` (`syncDiscovery`) | the pattern only | tri-state when creating and deleting entities (8.4); the MQTT code itself is removed ([ADR-0026](../docs/adr/0026-remove-mqtt.md)) |
+| `sign.ps1` | – | not taken over: Windows binaries stay without an Authenticode signature ([ADR-0084](../docs/adr/0084-windows-self-update-without-code-signing.md)) |
 
-Von der Server-Seite des Vorbild-Projekts übernimmt der Hub nur Muster (Register mit Freigabe, Rollout mit
-Kanarienvogel, Ereignisprotokoll), keinen Code.
+From the server side of the earlier agent, the hub takes over only patterns (registry with approval, rollout with a
+canary, event log), no code.
 
-## 15. Ausbaustufen
+## 15. Stages
 
-| Stufe | Inhalt | Stand |
+| Stage | Content | Status |
 |---|---|---|
-| 1 | Agent mit Quelle `apt` und Verb `check`; Hub mit Anmeldung, Freigabe und HA-Entitäten | gebaut |
-| 2 | `install` und `reboot` mit Richtlinie, Laufjournal und den Codes aus 7.3 | gebaut (10.2) |
-| 3 | Selbst-Update, Ringe, `install.auto: hub` | gebaut (10.3, 10.4); `install.auto: local` noch nicht |
-| 4 | Quellen `winget` und `winupdate` | gebaut (11.1); Neustart unter Windows noch nicht |
-| 5 | Apps, HA-Blueprint inklusive „hängt“ für Integrationen | Apps per Knopf gebaut (8.1); Update-Entität je App und Blueprint noch nicht (8.5) |
-| 6 | pip, pipx, npm: Bestand und OSV-Funde, veraltete Pakete, Aktualisieren per Knopf; Container-Images | gebaut (11.2–11.5) |
+| 1 | Agent with source `apt` and verb `check`; hub with login, approval and HA entities | built |
+| 2 | `install` and `reboot` with policy, run journal and the codes from 7.3 | built (10.2) |
+| 3 | Self-update, rings, `install.auto: hub` | built (10.3, 10.4); `install.auto: local` not built yet |
+| 4 | Sources `winget` and `winupdate` | built (11.1); reboot on Windows not built yet |
+| 5 | Apps, HA blueprint including "stuck" for integrations | apps by button built (8.1); update entity per app and blueprint not built yet (8.5) |
+| 6 | pip, pipx, npm: inventory and OSV findings, outdated packages, update by button; container images | built (11.2–11.5) |
 
-## 16. Früher offene Fragen
+## 16. Questions that were open earlier
 
-1. `install.auto` je Host-Klasse: Wer löst aus, und welcher Umfang (nur Sicherheit oder alles)?
+1. `install.auto` per host class: who triggers, and what scope (security only or everything)?
    → [ADR-0058](../docs/adr/0058-site-decision.md),
    [ADR-0059](../docs/adr/0059-own-auto-scope.md), [ADR-0088](../docs/adr/0088-hypervisor-updates-by-button-only.md),
    [ADR-0108](../docs/adr/0108-automatic-installs-take-every-update-on-linux-guests.md)
-2. Neustart: Welche Hosts dürfen selbst neu starten? Proxmox-Hosts vermutlich nie.
-   → Ablauf: [ADR-0041](../docs/adr/0041-reboot-with-window-and-proof.md); der Hypervisor nie über Vördr
+2. Reboot: which hosts may restart themselves? Proxmox hosts probably never.
+   → Procedure: [ADR-0041](../docs/adr/0041-reboot-with-window-and-proof.md); the hypervisor never through Vördr
    ([ADR-0088](../docs/adr/0088-hypervisor-updates-by-button-only.md))
-3. Welche Hosts sind Kanarienvögel? → je Standort in `auto_install.canary` und `agent_update.canary` der `hub.yaml`;
-   Muster: [ADR-0058](../docs/adr/0058-site-decision.md)
-4. Wo läuft der Hub? → [ADR-0054](../docs/adr/0054-hub-in-own-container.md); ein MQTT-Konto braucht er nicht mehr
+3. Which hosts are canaries? → per site in `auto_install.canary` and `agent_update.canary` of `hub.yaml`;
+   pattern: [ADR-0058](../docs/adr/0058-site-decision.md)
+4. Where does the hub run? → [ADR-0054](../docs/adr/0054-hub-in-own-container.md); it no longer needs an MQTT account
    ([ADR-0026](../docs/adr/0026-remove-mqtt.md))
-5. unattended-upgrades: ablösen oder daneben laufen lassen?
+5. unattended-upgrades: replace it or let it run alongside?
    → [ADR-0080](../docs/adr/0080-security-updates-everywhere-unattended-upgrades-off.md)
-6. Docker: eigene Quelle `docker-image` oder updates2mqtt einbinden?
+6. Docker: own source `docker-image` or integrate updates2mqtt?
    → [ADR-0081](../docs/adr/0081-container-images-own-source.md)
-7. Lizenz und Veröffentlichung → [ADR-0082](../docs/adr/0082-repo-stays-private-for-now.md),
+7. License and publication → [ADR-0082](../docs/adr/0082-repo-stays-private-for-now.md),
    [ADR-0100](../docs/adr/0100-publish-as-a-new-repository-with-one-start-commit.md), MIT
-   ([ADR-0135](../docs/adr/0135-mit-license.md)), Arbeit im eigenen Repo mit geprüften Ständen auf GitHub
+   ([ADR-0135](../docs/adr/0135-mit-license.md)), work in the own repository with checked states on GitHub
    ([ADR-0140](../docs/adr/0140-work-stays-private-the-public-repository-gets-snapshots.md))
-8. Appliances ohne Agent (NAS, Firewall, Mesh-WLAN, Gateways)? → über einen Stellvertreter-Agenten in eigenem
-   Container, nicht über die Leitstelle, mit Konfigurationssicherung vor jedem Update: Entwurf
-   [stellvertreter.md](stellvertreter.md), [ADR-0089](../docs/adr/0089-appliances-through-a-proxy-agent.md),
+8. Appliances without an agent (NAS, firewall, mesh Wi-Fi, gateways)? → through a proxy agent in its own container, not
+   through the hub, with a configuration backup before every update: design
+   [proxy-agent.md](proxy-agent.md), [ADR-0089](../docs/adr/0089-appliances-through-a-proxy-agent.md),
    [ADR-0090](../docs/adr/0090-appliance-installs-need-a-fresh-config-backup.md)

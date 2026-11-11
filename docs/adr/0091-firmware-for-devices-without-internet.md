@@ -14,7 +14,7 @@ agent downloads the firmware for them, or a script grants internet access briefl
 
 Appliances are served by the proxy agent ([ADR-0089](0089-appliances-through-a-proxy-agent.md)), which already holds a
 fresh configuration backup before every install ([ADR-0090](0090-appliance-installs-need-a-fresh-config-backup.md)).
-Design: `design/stellvertreter.md` 4.6.
+Design: `design/proxy-agent.md` 4.6.
 
 ## Decision Drivers
 

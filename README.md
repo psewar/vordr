@@ -1,6 +1,6 @@
 # Vördr
 
-<img src="ha/custom_components/vordr/brand/logo.png" alt="Vördr: a shield with the Algiz rune" height="64">
+<img src="custom_components/vordr/brand/logo.png" alt="Vördr: a shield with the Algiz rune" height="64">
 
 English · [Deutsch](README.de.md)
 
@@ -30,10 +30,11 @@ an approved client and creates one device per host, with its update sources and 
 - In Home Assistant one device per host with update entities, sensors and buttons; problems as repairs and as events
   for automations.
 
-Design documents (German): [design/architecture.md](design/architecture.md),
-[design/ha-integration.md](design/ha-integration.md), [design/stellvertreter.md](design/stellvertreter.md).
-Decisions (English): [docs/adr](docs/adr/README.md). Setup (German): [deploy/README.md](deploy/README.md).
+Design documents: [design/architecture.md](design/architecture.md),
+[design/ha-integration.md](design/ha-integration.md), [design/proxy-agent.md](design/proxy-agent.md).
+Decisions: [docs/adr](docs/adr/README.md). Setup: [deploy/README.md](deploy/README.md).
 Contributing: [AGENTS.md](AGENTS.md). Vulnerabilities: [SECURITY.md](SECURITY.md).
+Every document except the ADRs and `AGENTS.md` also exists in German, as `*.de.md` beside it.
 
 ## Install
 
@@ -93,9 +94,10 @@ vordr-hub events <node> --since 24h             # events of a host in the last 2
 | `internal/runner` | start external commands; exit codes as data |
 | `internal/identity` | Ed25519 identity (Windows: DPAPI) |
 | `internal/facts` | OS, architecture, virtualisation |
-| `ha/` | Home Assistant integration `custom_components/vordr` with tests ([ha/README.md](ha/README.md)) |
+| `custom_components/vordr` | Home Assistant integration, at the root where HACS looks for it ([ha/README.md](ha/README.md)) |
+| `ha/` | the integration's tests and their pinned requirements |
 | `deploy/` | install scripts, systemd units, the forced command for pfSense ([deploy/README.md](deploy/README.md)) |
-| `design/` | design documents (German) |
+| `design/` | design documents (English, German as `*.de.md`) |
 | `docs/adr/` | architecture decisions (English) |
 | `tools/` | site-neutral check (`check_neutral.py`), export of the published tree (`export_public.py`), Windows time zone table |
 | `assets/brand/` | logo and icons |

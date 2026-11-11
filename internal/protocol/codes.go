@@ -70,7 +70,7 @@ const (
 	CodeFailedVerification         Code = "failed_verification"
 	CodeFailedHealth               Code = "failed_health" // the run went through, but a check from agent.yaml health: fails
 	CodeFailedWindowsUpdate        Code = "failed_windows_update"
-	// A proxy instance's appliance (design/stellvertreter.md, ADR-0089): the device refused the service account; the
+	// A proxy instance's appliance (design/proxy-agent.md, ADR-0089): the device refused the service account; the
 	// device's certificate does not match the pinned fingerprint or name (someone may be in between); taking or
 	// checking the configuration backup failed (ADR-0090). Over SSH (ADR-0094): the device does not offer the pinned
 	// host key.

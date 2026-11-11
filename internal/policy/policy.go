@@ -38,7 +38,7 @@ type Config struct {
 	Health []Check `yaml:"health"`
 	// Packages: packages of pip, pipx and npm (design 11.2).
 	Packages Packages `yaml:"packages"`
-	// Target: this instance speaks for an appliance instead of the host it runs on (design/stellvertreter.md,
+	// Target: this instance speaks for an appliance instead of the host it runs on (design/proxy-agent.md,
 	// ADR-0089). Without it the agent looks after its own host.
 	Target *Target `yaml:"target"`
 	// ConfigBackup: how the instance keeps the appliance's configuration (ADR-0090); only with target.
@@ -675,7 +675,7 @@ var sshHostKey = regexp.MustCompile(`^(ssh-ed25519|ecdsa-sha2-nistp(256|384|521)
 
 // validateTarget: the target and config_backup sections, and what an instance must leave out. An instance speaks for
 // an appliance: rebooting, packages, apps, local health checks and its own self-update refer to the container it
-// runs in and would mean the wrong machine (design/stellvertreter.md 4.1, 4.3).
+// runs in and would mean the wrong machine (design/proxy-agent.md 4.1, 4.3).
 func (c *Config) validateTarget() []Issue {
 	var out []Issue
 	add := func(field, format string, a ...any) { out = append(out, Issue{field, fmt.Sprintf(format, a...)}) }

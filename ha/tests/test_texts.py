@@ -16,7 +16,7 @@ from custom_components.vordr.texts import TEXT_KEYS, Texts, placeholders, proble
 
 from .conftest import FakeHub, host_view, wait_until
 
-BASE = Path(__file__).parents[1] / "custom_components" / "vordr"
+BASE = Path(__file__).parents[2] / "custom_components" / "vordr"
 LANGS = {f.stem: json.loads(f.read_text(encoding="utf-8")) for f in (BASE / "translations").glob("*.json")}
 
 

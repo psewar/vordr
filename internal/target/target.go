@@ -1,4 +1,4 @@
-// Package target lets an agent instance speak for an appliance it cannot run on (design/stellvertreter.md,
+// Package target lets an agent instance speak for an appliance it cannot run on (design/proxy-agent.md,
 // ADR-0089). A driver knows only its fixed requests: check the firmware, back up the configuration (ADR-0090) and,
 // later, install. Nothing it sends comes from the hub.
 package target

@@ -1,5 +1,7 @@
 # Security policy
 
+English · [Deutsch](SECURITY.de.md)
+
 Vördr installs updates and reboots hosts on signed orders, so flaws in signing, host approval, the agent's local
 policy or its verbs matter. Please report them privately.
 

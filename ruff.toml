@@ -1,3 +1,5 @@
+# The Home Assistant integration: custom_components/ at the root, its tests in ha/ (ADR-0144). Run from the root:
+# ruff check custom_components ha && ruff format --check custom_components ha
 line-length = 120
 target-version = "py313"
 

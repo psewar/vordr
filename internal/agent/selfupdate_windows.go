@@ -38,7 +38,7 @@ func selfUpdatePlatform() string {
 // this only when the update guard cannot be asked (AskGuardToStart, ADR-0103).
 func restartExit(string) { os.Exit(3) }
 
-// restartInstances: proxy instances run on Linux only (design/stellvertreter.md); there are none to restart here.
+// restartInstances: proxy instances run on Linux only (design/proxy-agent.md); there are none to restart here.
 func restartInstances(context.Context, runner.Runner) error { return nil }
 
 // The planned restart of the Windows service (ADR-0103). The service manager counts every end with an error code as

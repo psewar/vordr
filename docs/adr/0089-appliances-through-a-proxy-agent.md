@@ -13,7 +13,7 @@ firewalls, NAS, mesh Wi-Fi, smart-home servers and gateways, BMCs, printers, swi
 place; a firewall can have a new system release and package updates pending that nothing reports.
 
 The operator asked whether they could run as "virtual agents" directly on the hub, each with its own way to check and
-update (scripts, REST, SSH). Design: `design/stellvertreter.md`.
+update (scripts, REST, SSH). Design: `design/proxy-agent.md`.
 
 ## Decision Drivers
 

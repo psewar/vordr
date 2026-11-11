@@ -140,7 +140,7 @@ func TestSelfUpdateAndConfirm(t *testing.T) {
 	if fin := first.final(); fin.Code != protocol.CodeOK || fin.JobID != "u1" {
 		t.Fatalf("confirmation: %+v", first.sent)
 	}
-	// Confirmed: the proxy instances that share the binary are restarted onto it, once (design/stellvertreter.md 4.3).
+	// Confirmed: the proxy instances that share the binary are restarted onto it, once (design/proxy-agent.md 4.3).
 	if f.instances != 1 {
 		t.Fatalf("proxy instance restarts after the confirmation: %d", f.instances)
 	}
@@ -258,7 +258,7 @@ func TestArmGuardStartsATransientUnit(t *testing.T) {
 	}
 }
 
-// The proxy instances are restarted only where they run, without waiting for them (design/stellvertreter.md 4.3).
+// The proxy instances are restarted only where they run, without waiting for them (design/proxy-agent.md 4.3).
 func TestRestartInstancesTriesTheRunningOnes(t *testing.T) {
 	var r recordingRunner
 	if err := restartInstances(context.Background(), &r); err != nil {

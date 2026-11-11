@@ -1,0 +1,29 @@
+# The checks HACS and Home Assistant run before an integration may enter the HACS default list (ADR-0144): the HACS
+# action without ignored checks, and hassfest. Daily as well, because both checks change with HACS and Home Assistant.
+name: hacs
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  hacs:
+    name: HACS action
+    runs-on: ubuntu-latest
+    steps:
+      - uses: hacs/action@main
+        with:
+          category: integration
+
+  hassfest:
+    name: hassfest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: home-assistant/actions/hassfest@master

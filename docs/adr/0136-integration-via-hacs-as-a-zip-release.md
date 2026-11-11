@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by ADR-0144
 date: 2026-11-11
 decision-makers: kay (2026-11-11, asked to make Vördr ready for GitHub; accepted with the merge); proposed by Claude
 ---

@@ -1,261 +1,262 @@
-# Vördr – eigene Home-Assistant-Integration statt MQTT
+# Vördr – own Home Assistant integration instead of MQTT
 
-> **Stand:** Gebaut (Abschnitt 10). Home Assistant spricht nur noch über die Integration mit der Leitstelle; MQTT gibt
-> es seit Leitstelle 0.6 nicht mehr ([ADR-0026](../docs/adr/0026-remove-mqtt.md)). Einzelheiten aus dem Bau stehen in
-> den Abschnitten 5a, 6a und 6b. Ergänzt [architecture.md](architecture.md), Abschnitt 8 (HA-Entitäten). Technische
-> Namen englisch, Anzeigenamen über die Übersetzungen der Integration (de/en, folgen der Systemsprache von HA).
+English · [Deutsch](ha-integration.de.md)
 
-## 1. Anlass
+> **Status:** Built (section 10). Home Assistant talks to the hub only through the integration; MQTT no longer exists
+> since hub 0.6 ([ADR-0026](../docs/adr/0026-remove-mqtt.md)). Details from the build are in sections 5a, 6a and 6b.
+> Complements [architecture.md](architecture.md), section 8 (HA entities). Technical names are English, display names
+> come from the integration's translations (de/en, they follow the system language of HA).
 
-Leitstellen bis 0.5 meldeten an Home Assistant über MQTT-Discovery. Dabei zeigte sich
+## 1. Reason
+
+Hubs up to 0.5 reported to Home Assistant through MQTT discovery. This showed
 ([ADR-0023](../docs/adr/0023-own-ha-integration.md)):
 
-1. **Die Geräte stehen unter „MQTT“** zwischen allen anderen MQTT-Geräten statt unter einer eigenen Integration.
-   Gleichnamige Geräte anderer Integrationen liessen sich nur mit einem Präfix im Namen auseinanderhalten.
-2. **Eine MQTT-update-Entität kann „unbekannt“ nicht darstellen.** HA prüft `latest_version` als Text und verwirft
-   die ganze Nachricht bei `null`. Der Umweg ist „nicht verfügbar“. Eine eigene `UpdateEntity` kennt
-   `latest_version = None` und zeigt „unbekannt“.
-3. **Befehle über MQTT sind nicht authentifiziert.** Ohne Broker-ACL kann jedes Konto des Brokers auf
-   `vordr/host/+/cmd` schreiben. Leitstelle und Agent prüfen zwar jeden Befehl gegen Verben und Richtlinie, aber
-   sobald Vördr installiert, wäre eine Broker-ACL Pflicht – und die wirkt auf alle Konten des Brokers.
+1. **The devices are listed under "MQTT"** among all the other MQTT devices instead of under an integration of their
+   own. Devices of the same name from other integrations could only be told apart by a prefix in the name.
+2. **An MQTT update entity cannot show "unknown".** HA checks `latest_version` as text and discards the whole message
+   on `null`. The workaround is "unavailable". An own `UpdateEntity` knows `latest_version = None` and shows "unknown".
+3. **Commands over MQTT are not authenticated.** Without a broker ACL, any account of the broker can write to
+   `vordr/host/+/cmd`. Hub and agent do check every command against verbs and policy, but as soon as Vördr installs,
+   a broker ACL would be mandatory – and it affects all accounts of the broker.
 
-Kein Grund ist die Firewall: Agenten sprechen kein MQTT, ein Host braucht nur den Weg zur Leitstelle.
+The firewall is not a reason: agents do not speak MQTT, a host only needs the way to the hub.
 
-## 2. Entscheidung: Die Leitstelle bleibt ein eigener Dienst
+## 2. Decision: the hub stays its own service
 
-Begründung als ADR: [ADR-0022](../docs/adr/0022-hub-stays-own-service.md).
+Rationale as an ADR: [ADR-0022](../docs/adr/0022-hub-stays-own-service.md).
 
-| | A: Integration als Client der Leitstelle (gewählt) | B: Leitstelle als Teil von HA |
+| | A: integration as a client of the hub (chosen) | B: hub as part of HA |
 |---|---|---|
-| Signierschlüssel | bleibt in der Leitstelle; HA kann nur anfragen | läge in HA; ein übernommenes HA signiert Aufträge an alle Hosts |
-| Erreichbarkeit | Agenten erreichen nur die Leitstelle | jedes Netz bräuchte einen Weg zu HA |
-| HA-Neustart (Updates!) | trennt nur die Integration; Agenten bleiben verbunden | trennt alle Tunnel |
-| Freigabe neuer Hosts | nur an der Leitstelle, wie heute | in HA |
-| Aufwand | Endpunkt in der Leitstelle + Integration | Leitstelle in Python neu bauen |
+| Signing key | stays in the hub; HA can only ask | would sit in HA; a compromised HA signs jobs for all hosts |
+| Reachability | agents reach only the hub | every network would need a path to HA |
+| HA restart (updates!) | disconnects only the integration; agents stay connected | disconnects all tunnels |
+| Approval of new hosts | only at the hub, as today | in HA |
+| Effort | endpoint in the hub + integration | rebuild the hub in Python |
 
-## 3. Überblick
+## 3. Overview
 
 ```
-vordr-agent ──wss /v1/tunnel──▶ vordr-hub ◀──wss /v1/ha── HA-Integration "vordr" (in Home Assistant)
- (je Host)                      (Leitstelle,              Geräte "Vördr <node>", Entitäten,
-                                 signiert)                Knöpfe -> Befehle
+vordr-agent ──wss /v1/tunnel──▶ vordr-hub ◀──wss /v1/ha── HA integration "vordr" (in Home Assistant)
+ (per host)                     (hub,                     devices "Vördr <node>", entities,
+                                 signs)                   buttons -> commands
 ```
 
-Beide Endpunkte laufen auf demselben Port (8443) mit demselben Zertifikat. Die Verbindung geht von HA aus; die
-Leitstelle braucht keinen Weg zu HA. MQTT ist ganz entfallen (Abschnitt 8).
+Both endpoints run on the same port (8443) with the same certificate. The connection goes out from HA; the hub needs no
+path to HA. MQTT is gone entirely (section 8).
 
-## 4. Vertrauen und Rechte
+## 4. Trust and rights
 
-- Die Integration erzeugt beim Einrichten ein eigenes Ed25519-Schlüsselpaar (gespeichert im Config-Entry).
-- Freigegeben wird sie **nur an der Leitstelle**, wie ein Host: `vordr-hub clients` zeigt wartende Clients,
-  `vordr-hub approve-client <name> --fingerprint <fp>` gibt frei, `reject-client` / `forget-client` widerrufen.
-  Der Config-Flow zeigt Fingerprint und Befehl und wartet, bis die Freigabe da ist.
-- Ein freigegebener HA-Client darf:
-  - den Zustand aller freigegebenen Hosts und die Liste wartender Hosts (Name, Fingerprint, OS) lesen,
-  - Befehle aus der festen Liste anfragen (`check`, `install`, `install_security`, `install_app:<id>`, `reboot`,
-    `agent_update`); die Leitstelle prüft sie wie heute gegen Verben und Richtlinie des Hosts und signiert erst dann.
-- Er darf nicht: Hosts freigeben, ablehnen oder vergessen, Richtlinien ändern, selbst signieren, andere Clients sehen.
-- Mehrere HA-Clients sind möglich (z. B. ein Test-HA), jeder einzeln freigegeben und widerrufbar.
+- On setup, the integration generates its own Ed25519 key pair (stored in the config entry).
+- It is approved **only at the hub**, like a host: `vordr-hub clients` shows waiting clients,
+  `vordr-hub approve-client <name> --fingerprint <fp>` approves, `reject-client` / `forget-client` revoke.
+  The config flow shows the fingerprint and the command and waits until the approval is there.
+- An approved HA client may:
+  - read the state of all approved hosts and the list of waiting hosts (name, fingerprint, OS),
+  - request commands from the fixed list (`check`, `install`, `install_security`, `install_app:<id>`, `reboot`,
+    `agent_update`); the hub checks them against verbs and the host's policy as today and only then signs.
+- It may not: approve, reject or forget hosts, change policies, sign by itself, see other clients.
+- Several HA clients are possible (e.g. a test HA), each approved individually and revocable.
 
-Änderung am Bedrohungsmodell (architecture.md, 5): Ein übernommenes HA kann wie bisher nur erlaubte Aufträge anstossen.
-Der Weg über ein beliebiges MQTT-Konto entfällt; die Leitstelle braucht kein Konto am Broker mehr.
+Change to the threat model (architecture.md, 5): A compromised HA can, as before, only trigger allowed jobs. The path
+through any MQTT account is gone; the hub no longer needs an account at the broker.
 
-## 5. Protokoll `/v1/ha`
+## 5. Protocol `/v1/ha`
 
-JSON-Nachrichten über WebSocket, wie der Agenten-Tunnel; `protocol: 1` im Hello.
+JSON messages over WebSocket, like the agent tunnel; `protocol: 1` in the hello.
 
-| Richtung | Nachricht | Inhalt |
+| Direction | Message | Content |
 |---|---|---|
-| Hub → HA | `challenge` | Nonce |
-| HA → Hub | `hello` | `role: "ha"`, Name, öffentlicher Schlüssel, Signatur (Kontext `vordr/ha-hello/v1`), Integrationsversion, `protocol` |
-| Hub → HA | `status` | `pending_approval` / `approved` / `rejected` mit Grund; erneut bei Änderung |
-| Hub → HA | `snapshot` | Leitstelle (Version, `protocol`, wartende Hosts) und alle Hosts als `HostView`; nach jeder Freigabe und jedem Verbindungsaufbau |
-| Hub → HA | `host` / `host_removed` | ein `HostView` bei jeder Änderung / Host vergessen oder abgelehnt |
-| Hub → HA | `hub` | Leitstellen-Zustand bei Änderung (wartende Hosts) |
-| HA → Hub | `command` | `request_id`, `node`, `command`; `reason` für einen Lauf ausserhalb des Fensters (architecture.md 6.4) |
-| Hub → HA | `command_result` | `request_id`, `code` (`ok` = Auftrag signiert und gesendet, wartet auf den laufenden Lauf, oder ist dieser Lauf schon, dann mit dessen `job_id`; sonst fester Grund wie `verb_unsupported_by_agent`, `not_allowed_by_host_policy`, `not_connected`), `job_id`; das Ergebnis des Laufs kommt später im `HostView` (`last_run`) |
-| beide | `heartbeat` | alle 30 s; 90 s Stille = Verbindung tot |
+| Hub → HA | `challenge` | nonce |
+| HA → Hub | `hello` | `role: "ha"`, name, public key, signature (context `vordr/ha-hello/v1`), integration version, `protocol` |
+| Hub → HA | `status` | `pending_approval` / `approved` / `rejected` with reason; again on change |
+| Hub → HA | `snapshot` | hub (version, `protocol`, waiting hosts) and all hosts as `HostView`; after every approval and every connection setup |
+| Hub → HA | `host` / `host_removed` | one `HostView` on every change / host forgotten or rejected |
+| Hub → HA | `hub` | hub state on change (waiting hosts) |
+| HA → Hub | `command` | `request_id`, `node`, `command`; `reason` for a run outside the window (architecture.md 6.4) |
+| Hub → HA | `command_result` | `request_id`, `code` (`ok` = job signed and sent, waits for the running run, or is that run already, then with its `job_id`; otherwise a fixed reason such as `verb_unsupported_by_agent`, `not_allowed_by_host_policy`, `not_connected`), `job_id`; the result of the run comes later in the `HostView` (`last_run`) |
+| both | `heartbeat` | every 30 s; 90 s of silence = connection dead |
 
-`HostView` ist die transportneutrale Fassung des früheren MQTT-Zustands: Gerät (Name, Modell, Agent-Version),
-`online`, `problem` (Gründe, nächster Schritt), `pending`/`security`, `system` (installiert, neueste Version oder
-`null`), Neustartbedarf (`true`/`false`/`null` mit Grund, Paketen, beantworteten Signalen), `last_report`, `last_run`
-und `capabilities` (welche Knöpfe es geben darf: Verb angekündigt **und** von der Richtlinie erlaubt). Hier darf
-`null` stehen – es ist unser Protokoll, die Integration macht daraus `None`.
+`HostView` is the transport-neutral version of the former MQTT state: device (name, model, agent version), `online`,
+`problem` (reasons, next step), `pending`/`security`, `system` (installed, newest version or `null`), reboot need
+(`true`/`false`/`null` with reason, packages, answered signals), `last_report`, `last_run` and `capabilities` (which
+buttons there may be: verb announced **and** allowed by the policy). `null` may appear here – it is our protocol, and
+the integration turns it into `None`.
 
-Verträgt die Integration die `protocol`-Version der Leitstelle nicht, verbindet sie sich nicht und meldet das als
-Reparaturhinweis („Leitstelle zu alt/zu neu“) statt halb zu funktionieren.
+If the integration cannot handle the hub's `protocol` version, it does not connect and reports this as a repair issue
+("hub too old/too new") instead of working halfway.
 
-### 5a. Festgelegt im Bau von H1
+### 5a. Settled while building H1
 
-- **Typen** in `internal/wire/ha.go` (Nachrichten) und `internal/wire/view.go` (`HostView`, `HubView`). Berechnet
-  werden die Sichten an einer Stelle (`internal/hub/view.go`).
-- **Abgewiesen vor dem Register** (`status` `rejected`, Verbindung zu): Hello mit falscher Signatur, `role` ≠ `ha`,
-  Name nicht `^[a-z0-9][a-z0-9.-]{0,62}$` (`bad_hello`); andere `protocol`-Version (`protocol_mismatch`). Ein
-  Agenten-Hello auf `/v1/ha` und ein HA-Hello auf `/v1/tunnel` scheitern beide als `bad_hello`.
-- **Im Register abgewiesen:** anderer Schlüssel unter bekanntem Namen (`key_mismatch`), abgelehnter Client
-  (`rejected`), mehr als 5 wartende Clients (`too_many_pending`).
-- **Wartender Client:** bekommt nur seinen `status` und Antworten auf Heartbeats. Ein `command` von ihm wird mit
-  `client_not_approved` beantwortet. Entschieden wird bei jedem Befehl nach dem Register, wie es gerade ist (Zustand
-  und Schlüssel), nicht nach dem Stand bei der Anmeldung.
-- **Freigabe während der Verbindung:** `status` `approved`, danach `snapshot`. Ablehnen schickt `status`
-  `rejected` und trennt; Vergessen trennt.
-- **`command`:** `request_id` `^[A-Za-z0-9_-]{1,64}$`, `node` wie ein Host-Name, `command` höchstens 80 Zeichen.
-  Sonst trennt die Leitstelle (Protokollverletzung, im Ereignisprotokoll), statt zu raten. Antwortcodes:
-  `ok` (mit `job_id`), `client_not_approved`, `unknown_node`, `not_approved`, `bad_request`,
-  `verb_unsupported_by_agent`, `not_allowed_by_host_policy`, `not_connected`, `send_failed`. Mit `reason`
-  ([ADR-0087](../docs/adr/0087-runs-outside-the-window-with-a-reason.md)) zusätzlich `bad_reason` (leer, über 200 Byte,
-  Steuerzeichen) und `outside_window_unsupported` (der Agent kennt es noch nicht); `bad_request`, wenn das Verb kein
-  Fenster hat (`check`, `agent_update`). Ein ungültiger Grund trennt nicht, er ist eine Eingabe von Menschen.
-  `outside_window`: ein Install ohne Grund bei geschlossenem Fenster für einen Agenten, der keine Gründe annimmt; ohne
-  Backup und ohne Auftrag abgelehnt. Sonst gibt die Leitstelle einem Install ohne Grund ausserhalb des Fensters
-  selbst einen mit ([ADR-0109](../docs/adr/0109-the-install-button-installs-at-once.md)).
-  `rate_limited`: ein Install der Systempakete oder einer App, solange der Mindestabstand des Agenten seit seinem
-  letzten Lauf läuft; ohne Backup und ohne Auftrag abgelehnt. `HostView.next_install` sagt, ab wann es wieder geht
+- **Types** in `internal/wire/ha.go` (messages) and `internal/wire/view.go` (`HostView`, `HubView`). The views are
+  computed in one place (`internal/hub/view.go`).
+- **Rejected before the registry** (`status` `rejected`, connection closed): hello with a wrong signature, `role` ≠
+  `ha`, name not `^[a-z0-9][a-z0-9.-]{0,62}$` (`bad_hello`); a different `protocol` version (`protocol_mismatch`). An
+  agent hello on `/v1/ha` and an HA hello on `/v1/tunnel` both fail as `bad_hello`.
+- **Rejected in the registry:** a different key under a known name (`key_mismatch`), a rejected client (`rejected`),
+  more than 5 waiting clients (`too_many_pending`).
+- **Waiting client:** gets only its `status` and answers to heartbeats. A `command` from it is answered with
+  `client_not_approved`. It is decided at every command after the registry, as it is right now (state and key), not
+  by the status at login.
+- **Approval during the connection:** `status` `approved`, then `snapshot`. Rejecting sends `status` `rejected` and
+  disconnects; forgetting disconnects.
+- **`command`:** `request_id` `^[A-Za-z0-9_-]{1,64}$`, `node` like a host name, `command` at most 80 characters.
+  Otherwise the hub disconnects (protocol violation, in the event log) instead of guessing. Answer codes:
+  `ok` (with `job_id`), `client_not_approved`, `unknown_node`, `not_approved`, `bad_request`,
+  `verb_unsupported_by_agent`, `not_allowed_by_host_policy`, `not_connected`, `send_failed`. With `reason`
+  ([ADR-0087](../docs/adr/0087-runs-outside-the-window-with-a-reason.md)) additionally `bad_reason` (empty, over 200
+  bytes, control characters) and `outside_window_unsupported` (the agent does not know it yet); `bad_request` when the
+  verb has no window (`check`, `agent_update`). An invalid reason does not disconnect, it is input from people.
+  `outside_window`: an install without a reason while the window is closed, for an agent that accepts no reasons;
+  rejected without a backup and without a job. Otherwise the hub itself gives an install without a reason outside the
+  window one ([ADR-0109](../docs/adr/0109-the-install-button-installs-at-once.md)).
+  `rate_limited`: an install of the system packages or of an app while the agent's minimum interval since its last run
+  is still running; rejected without a backup and without a job. `HostView.next_install` says from when it works again
   ([ADR-0110](../docs/adr/0110-the-hub-checks-the-minimum-interval-before-the-backup.md)).
-- **Pushes:** bei jeder Änderung und spätestens alle 30 s (Offline-Frist und Alter ausstehender Updates laufen ohne
-  Ereignis ab). Gesendet wird nur, was sich gegenüber dem zuletzt Gesendeten geändert hat; ein Host, der nicht mehr
-  freigegeben ist, kommt als `host_removed`.
-- **`HostView`:** `last_report` `null` heisst „noch nie gemeldet“. Ob es Paket-Entitäten gibt, ist dann offen
-  (weder anlegen noch entfernen). Mit Meldung gibt es sie genau dann, wenn `system` gesetzt ist.
-  `capabilities` bietet genau, was `Resolve` annimmt. Einzige Ausnahme: `install_security` hat keinen eigenen
-  Knopf, wenn Sicherheit schon der Standardumfang der update-Entität ist. Ein Test prüft das für alle 96
-  Kombinationen aus Verben und Richtlinien.
+- **Pushes:** on every change and at the latest every 30 s (the offline limit and the age of pending updates expire
+  without an event). Only what changed compared with the last thing sent is sent; a host that is no longer approved
+  comes as `host_removed`.
+- **`HostView`:** `last_report` `null` means "never reported". Whether package entities exist is then open (neither
+  create nor remove). With a report, they exist exactly when `system` is set. `capabilities` offers exactly what
+  `Resolve` accepts. The only exception: `install_security` has no button of its own when security is already the
+  default scope of the update entity. A test checks this for all 96 combinations of verbs and policies.
 
-## 6. Die Integration `custom_components/vordr`
+## 6. The integration `custom_components/vordr`
 
-- **Config-Flow:** Adresse (z. B. `wss://vordr-hub.example:8443/v1/ha`), optional eigenes CA-Zertifikat (PEM),
-  Name des Clients. Erzeugt den Schlüssel, zeigt Fingerprint und Freigabe-Befehl, wartet als Fortschrittsschritt.
-  Prüft vorher selbst die Erreichbarkeit (gleiche Stufen wie `vordr-agent hub-check`) und nennt die scheiternde Stufe.
-- **Verbindung:** ein Hintergrund-Task je Config-Entry, Backoff 1–30 s, Push statt Polling
-  (`DataUpdateCoordinator` ohne Intervall, `async_set_updated_data`). Ohne Verbindung sind alle Entitäten nicht
-  verfügbar.
-- **Geräte:** Hub-Gerät „Vördr-Leitstelle“, je Host „Vördr <node>“ mit `via_device` auf das Hub-Gerät.
-- **Entitäten** (gleiche Bedeutung wie architecture.md 8.1/8.2, jetzt nativ):
+- **Config flow:** address (e.g. `wss://vordr-hub.example:8443/v1/ha`), optional own CA certificate (PEM), name of the
+  client. Generates the key, shows the fingerprint and the approval command, waits as a progress step. Checks
+  reachability beforehand itself (same stages as `vordr-agent hub-check`) and names the failing stage.
+- **Connection:** one background task per config entry, backoff 1–30 s, push instead of polling
+  (`DataUpdateCoordinator` without an interval, `async_set_updated_data`). Without a connection, all entities are
+  unavailable.
+- **Devices:** hub device "Vördr hub", per host "Vördr <node>" with `via_device` to the hub device.
+- **Entities** (same meaning as architecture.md 8.1/8.2, now native):
 
-| Entität | Plattform | Neu gegenüber MQTT |
+| Entity | Platform | New compared with MQTT |
 |---|---|---|
-| `update.vordr_<id>_system` | `UpdateEntity` | `latest_version = None` → **unbekannt**; `INSTALL` nur mit Fähigkeit; `in_progress`, Fortschritt |
+| `update.vordr_<id>_system` | `UpdateEntity` | `latest_version = None` → **unknown**; `INSTALL` only with the capability; `in_progress`, progress |
 | `sensor.vordr_<id>_pending_updates`, `_security_updates` | `SensorEntity` | – |
 | `sensor.vordr_<id>_last_report` | `SensorEntity` (timestamp) | – |
 | `sensor.vordr_<id>_last_run` | `SensorEntity` (enum) | – |
-| `binary_sensor.vordr_<id>_online`, `_problem`, `_reboot_required` | `BinarySensorEntity` | `None` → unbekannt ohne Template-Umweg. Ein PC, der angekündigt hat, dass er schläft (`power` in der Host-Sicht, Leitstelle ab 0.15.0), ist nicht online und trotzdem kein Problem; `power` zeigt die Integration noch nicht als eigenen Zustand |
-| `button.vordr_<id>_check`, `_install_security`, `_reboot` | `ButtonEntity` | Befehl authentifiziert über die eigene Verbindung |
-| `sensor.vordr_hub_*`, `binary_sensor.vordr_hub_online` | Hub-Gerät | – |
+| `binary_sensor.vordr_<id>_online`, `_problem`, `_reboot_required` | `BinarySensorEntity` | `None` → unknown without a template workaround. A PC that has announced that it sleeps (`power` in the host view, hub from 0.15.0) is not online and still not a problem; the integration does not show `power` as a state of its own yet |
+| `button.vordr_<id>_check`, `_install_security`, `_reboot` | `ButtonEntity` | command authenticated through the own connection |
+| `sensor.vordr_hub_*`, `binary_sensor.vordr_hub_online` | hub device | – |
 
-- **Entitäts-IDs bleiben** `*.vordr_<id>_<object>`, damit Dashboards, Automationen und Blueprints, die
-  `update.vordr_*` nennen (etwa ein Auto-Update-Blueprint, der sie auslassen soll,
-  [ADR-0028](../docs/adr/0028-site-decision.md)), weiter passen. Weg: die `entity_id` vor dem Hinzufügen
-  als Vorschlag setzen, per Test gegen die HA-Version belegt (6a).
-- **Reparaturhinweise** (Abschnitt 11): je Host mit Problem ein Hinweis mit Grund und nächstem Schritt; er
-  verschwindet, sobald das Problem weg ist.
-- **Diagnose-Download:** Verbindung, Versionen, Hostliste – ohne Schlüssel.
-- **Übersetzungen:** en und de für Config-Flow, Entitäten und Hinweise.
-- **Abhängigkeiten:** nur, was HA mitbringt (`aiohttp` für den WebSocket, `cryptography` für Ed25519).
+- **Entity IDs stay** `*.vordr_<id>_<object>`, so that dashboards, automations and blueprints that name
+  `update.vordr_*` (such as an auto-update blueprint that is to leave them out,
+  [ADR-0028](../docs/adr/0028-site-decision.md)) keep fitting. The way: set the `entity_id` as a
+  suggestion before adding, proven by a test against the HA version (6a).
+- **Repair issues** (section 11): one issue per host with a problem, with the reason and the next step; it disappears
+  as soon as the problem is gone.
+- **Diagnostics download:** connection, versions, host list – without keys.
+- **Translations:** en and de for the config flow, entities and issues.
+- **Dependencies:** only what HA brings (`aiohttp` for the WebSocket, `cryptography` for Ed25519).
 
-### 6a. Festgelegt im Bau von H2
+### 6a. Settled while building H2
 
-- **Entitäts-IDs** setzt die Integration ausdrücklich (`self.entity_id` vor dem Hinzufügen); HA 2026.10 übernimmt sie,
-  solange sie frei sind. Belegt im Test (`test_entity_ids_as_mqtt_had_them`).
-- **Unique IDs** `<node>:<key>` bzw. `hub:<key>`; Geräte `("vordr", "host:<node>")` unter dem Hub-Gerät
-  (`via_device_id`, seit HA 2026.10; `via_device` und `async_get_device(identifiers=…)` sind dort veraltet).
-- **Entitäten kommen und gehen mit der Sicht:** entschieden wird nur nach einem Snapshot (vollständige Sicht). Ohne
-  Meldung (`last_report` null) bleiben Paket-Entitäten offen; Knöpfe folgen `capabilities`; Entfernen geht über das
-  Entity-Register, damit auch Reste von vor einem Neustart verschwinden. Hosts, die die Leitstelle nicht mehr hat,
-  verlieren ihr Gerät.
-- **Zusätzliche Entität** `sensor.vordr_hub_connection` (Diagnose): `connecting`, `unreachable`, `pending_approval`,
-  `approved`, `rejected` – der Zustand als Fakt, nicht aus Fehlern geraten.
-- **Ereignisse für Automationen:** `vordr_problem` `{node, active, reason, reasons, check_failed_code, message}` bei
-  neuem, geändertem oder beendetem Problem (nach einem HA-Neustart einmal für jedes noch bestehende);
-  `vordr_run_finished` `{node, job_id, verb, scope, state, message}` (seit H5, siehe 6b).
-- **Reparaturhinweise** `problem_<node>` je Host-Problem, `protocol_mismatch` und `client_rejected` für die Verbindung.
-- **Neustart als Reparaturhinweis** `reboot_<node>` ab der ersten Meldung „Neustart nötig“ (nur ein klares Ja), bis der
-  Host keinen mehr braucht ([ADR-0132](../docs/adr/0132-a-needed-reboot-is-a-repair-from-the-first-report.md)):
-  - mit „Beheben“, wo die Leitstelle den Neustart anbietet (Fähigkeit `reboot`): Bestätigen, dann derselbe Befehl wie
-    der Neustart-Knopf; beim Bestätigen erneut geprüft (Verbindung, Host, Bedarf, Fähigkeit), jede Absage mit eigenem
-    Grund; sonst „von Hand neu starten“ (`reboot_required_manual`);
-  - Warnung, ab `reboot_pending` der Leitstelle Fehler; besteht das Problem nur aus `reboot_pending`, entfällt dafür
-    `problem_<node>` (Problem-Sensor und `vordr_problem` bleiben);
-  - nach einem angenommenen „Beheben“ bleibt er weg, bis der Neustart-Lauf endet, höchstens 30 Minuten.
-- **Knöpfe** heben eine Ablehnung der Leitstelle als Fehler mit Code ins UI (`command_refused`); die update-Entität
-  hat `INSTALL` nur mit der Fähigkeit `install`.
+- **Entity IDs** are set explicitly by the integration (`self.entity_id` before adding); HA 2026.10 takes them over as
+  long as they are free. Proven in the test (`test_entity_ids_as_mqtt_had_them`).
+- **Unique IDs** `<node>:<key>` or `hub:<key>`; devices `("vordr", "host:<node>")` under the hub device
+  (`via_device_id`, since HA 2026.10; `via_device` and `async_get_device(identifiers=…)` are deprecated there).
+- **Entities come and go with the view:** it is decided only after a snapshot (complete view). Without a report
+  (`last_report` null), package entities stay open; buttons follow `capabilities`; removal goes through the entity
+  registry, so that leftovers from before a restart disappear too. Hosts that the hub no longer has lose their device.
+- **Additional entity** `sensor.vordr_hub_connection` (diagnostic): `connecting`, `unreachable`, `pending_approval`,
+  `approved`, `rejected` – the state as a fact, not guessed from errors.
+- **Events for automations:** `vordr_problem` `{node, active, reason, reasons, check_failed_code, message}` on a new,
+  changed or ended problem (after an HA restart once for each one that still exists); `vordr_run_finished`
+  `{node, job_id, verb, scope, state, message}` (since H5, see 6b).
+- **Repair issues** `problem_<node>` per host problem, `protocol_mismatch` and `client_rejected` for the connection.
+- **Reboot as a repair issue** `reboot_<node>` from the first report "Reboot required" (only a clear yes) until the host
+  needs none ([ADR-0132](../docs/adr/0132-a-needed-reboot-is-a-repair-from-the-first-report.md)):
+  - with "Fix" where the hub offers the reboot (capability `reboot`): confirm, then the same command as the reboot
+    button; on confirming it is checked again (connection, host, need, capability), each refusal with its own reason;
+    otherwise "restart by hand" (`reboot_required_manual`);
+  - warning, from the hub's `reboot_pending` an error; if the problem consists only of `reboot_pending`, `problem_<node>`
+    is omitted for it (problem sensor and `vordr_problem` stay);
+  - after an accepted "Fix" it stays away until the reboot run ends, at most 30 minutes.
+- **Buttons** raise a refusal by the hub into the UI as an error with a code (`command_refused`); the update entity
+  has `INSTALL` only with the capability `install`.
 
-### 6b. Sprachen (H5, Protokoll 2)
+### 6b. Languages (H5, protocol 2)
 
-Vor H5 schickte die Leitstelle fertige deutsche Texte (`next_step`, `latest_version` „n ausstehend …“, die
-Paketliste). Ein Reparaturhinweis mischte deshalb Sprachen: Rahmen in der Profilsprache, Grund in der Systemsprache,
-nächster Schritt deutsch. Seit H5 schickt die Leitstelle nur Codes und Zahlen, und die Integration schreibt jeden Text
-aus ihren Übersetzungsdateien ([ADR-0027](../docs/adr/0027-protocol-2-codes-and-translations.md)):
+Before H5, the hub sent finished German texts (`next_step`, `latest_version` "n pending …", the package list). A repair
+issue therefore mixed languages: frame in the profile language, reason in the system language, next step in German.
+Since H5, the hub sends only codes and numbers, and the integration writes every text from its translation files
+([ADR-0027](../docs/adr/0027-protocol-2-codes-and-translations.md)):
 
-- **Protokoll 2:** `problem` ohne `next_step`; `last_run` ohne `next_step`; `system` mit `packages` (höchstens 30,
-  Reihenfolge des Berichts) statt `latest_version`/`release_summary`; `hub.limits` mit den Schwellen
-  (`offline_after_minutes`, `stale_after_days`, `reboot_pending_after_days`, `no_report_after_hours`). Eine
-  Integration mit Protokoll 1 lehnt die Leitstelle ab (Reparaturhinweis `protocol_mismatch`).
-- **Was das Frontend übersetzt** (Profilsprache): Reparaturhinweise – je Problemschlüssel ein eigener Text
-  `problem_<schlüssel>` mit den Schwellen als Platzhalter –, Zustände und die Attributwerte von `_problem`
-  (`reason`, `next_step`, `check_failed_code`; alle drei Codes).
-- **Was das Backend schreibt** (Systemsprache, wie die Namen): `latest_version` und `release_summary` der
-  update-Entität, der Gerätename der Leitstelle.
-- **Problemschlüssel:** der erste Grund; bei `check_failed` und gescheiterten Läufen der Ergebniscode, weil der
-  nächste Schritt an ihm hängt; ein unbekannter Code wird `unknown`.
-- **Ereignisse** tragen `message` in jeder mitgelieferten Sprache, damit eine Automation die Sprache ihres
-  Empfängers wählt, unabhängig von der Systemsprache.
-- `tests/test_texts.py` hält die Dateien zusammen: jede Sprache hat jeden Text, jeder Hinweistext enthält den
-  nächsten Schritt seines Schlüssels, ein Code heisst überall gleich.
+- **Protocol 2:** `problem` without `next_step`; `last_run` without `next_step`; `system` with `packages` (at most 30,
+  in the order of the report) instead of `latest_version`/`release_summary`; `hub.limits` with the thresholds
+  (`offline_after_minutes`, `stale_after_days`, `reboot_pending_after_days`, `no_report_after_hours`). The hub rejects
+  an integration with protocol 1 (repair issue `protocol_mismatch`).
+- **What the frontend translates** (profile language): repair issues – one text of its own per problem key
+  `problem_<key>` with the thresholds as placeholders –, states and the attribute values of `_problem` (`reason`,
+  `next_step`, `check_failed_code`; all three codes).
+- **What the backend writes** (system language, like the names): `latest_version` and `release_summary` of the update
+  entity, the device name of the hub.
+- **Problem key:** the first reason; for `check_failed` and failed runs the result code, because the next step depends
+  on it; an unknown code becomes `unknown`.
+- **Events** carry `message` in every supplied language, so that an automation chooses the language of its recipient,
+  independent of the system language.
+- `tests/test_texts.py` keeps the files together: every language has every text, every issue text contains the next
+  step of its key, a code is called the same everywhere.
 
-## 7. Änderungen an der Leitstelle
+## 7. Changes to the hub
 
-- Endpunkt `/v1/ha` neben `/v1/tunnel`; Client-Register `clients.json` (0600) getrennt vom Host-Register.
-- CLI: `clients`, `approve-client`, `reject-client`, `forget-client`, `client-role`; Admin-Codes wie bei den Hosts.
-- `HostView` an einer Stelle berechnet (`internal/hub/view.go`, 5a); `/v1/ha` ist der einzige Weg zu HA.
-- Befehle laufen durch dasselbe `Resolve` wie früher die MQTT-Befehle.
-- Für den Umstieg gab es bis Leitstelle 0.5 `mqtt.mode: remove`: einmal verbinden, alle eigenen retained Themen
-  löschen, trennen.
+- Endpoint `/v1/ha` next to `/v1/tunnel`; client registry `clients.json` (0600) separate from the host registry.
+- CLI: `clients`, `approve-client`, `reject-client`, `forget-client`, `client-role`; admin codes as with the hosts.
+- `HostView` computed in one place (`internal/hub/view.go`, 5a); `/v1/ha` is the only way to HA.
+- Commands go through the same `Resolve` as the MQTT commands did before.
+- For the migration, up to hub 0.5 there was `mqtt.mode: remove`: connect once, delete all own retained topics,
+  disconnect.
 
-## 8. Umstieg
+## 8. Migration
 
-Gilt nur für eine Installation, die noch eine Leitstelle bis 0.5 mit MQTT betreibt. Eine neue Installation richtet
-gleich die Integration ein (`ha/README.md`).
+Applies only to an installation that still runs a hub up to 0.5 with MQTT. A new installation sets up the integration
+right away (`ha/README.md`).
 
-1. Leitstelle mit `/v1/ha` (0.5) ausrollen; MQTT läuft weiter.
-2. Integration nach `/config/custom_components/vordr` bringen, HA neu starten.
-3. `mqtt.mode: remove`: die MQTT-Entitäten verschwinden, ihre IDs werden frei.
-4. Integration einrichten, an der Leitstelle freigeben: Geräte und Entitäten erscheinen unter denselben IDs.
-   Lücke: wenige Minuten ohne vordr-Entitäten.
-5. Leitstelle 0.6 oder neuer ohne `mqtt`-Abschnitt in `hub.yaml`; das MQTT-Konto der Leitstelle im Broker und seine
-   Passwortdatei entfernen.
-6. Gegenprobe: alle IDs vorhanden, Knopf „Jetzt prüfen“ ergibt einen Lauf.
+1. Roll out the hub with `/v1/ha` (0.5); MQTT keeps running.
+2. Put the integration into `/config/custom_components/vordr`, restart HA.
+3. `mqtt.mode: remove`: the MQTT entities disappear, their IDs become free.
+4. Set up the integration, approve it at the hub: devices and entities appear under the same IDs.
+   Gap: a few minutes without vordr entities.
+5. Hub 0.6 or newer without an `mqtt` section in `hub.yaml`; remove the hub's MQTT account at the broker and its
+   password file.
+6. Cross-check: all IDs present, the button "Check now" produces a run.
 
-## 9. Prüfen
+## 9. Testing
 
-- Leitstelle (Go): Freigabe des Clients, Client kann keine Hosts freigeben, Snapshot und Push, Befehle mit allen
-  Ablehnungsgründen, Widerruf trennt; Mutationsprobe auf die Rechteprüfung.
-- Integration (Python): `pytest-homeassistant-custom-component` unter Linux, mit der HA-Version, die
-  `ha/requirements_test.txt` festlegt. Config-Flow samt Warten auf Freigabe, alle Entitäten, `None` → unbekannt,
-  Verfügbarkeit, Knöpfe → Befehle, Entitäts-IDs, Reparaturhinweise. Ruff und Pyright.
-- Ende-zu-Ende: der Python-Test startet das echte `vordr-hub`-Binary mit Testzertifikat.
+- Hub (Go): approval of the client, client cannot approve hosts, snapshot and push, commands with all reasons for
+  refusal, revocation disconnects; mutation test on the rights check.
+- Integration (Python): `pytest-homeassistant-custom-component` under Linux, with the HA version that
+  `ha/requirements_test.txt` fixes. Config flow including waiting for approval, all entities, `None` → unknown,
+  availability, buttons → commands, entity IDs, repair issues. Ruff and Pyright.
+- End to end: the Python test starts the real `vordr-hub` binary with a test certificate.
 
-## 10. Ausbaustufen
+## 10. Stages
 
-| Stufe | Inhalt | Fertig, wenn |
+| Stage | Content | Done when |
 |---|---|---|
-| H1 (gebaut) | Leitstelle: `/v1/ha`, Client-Register und CLI, `HostView`, Tests | ein Testclient bekommt Snapshot, Pushes und Befehlsergebnisse; ein nicht freigegebener nichts |
-| H2 (gebaut) | Integration: Config-Flow mit Freigabe, Verbindung, Entitäten, de/en, Tests | alle Entitäten aus Abschnitt 6 in einem HA-Test, IDs belegt |
-| H3 (gebaut) | Reparaturhinweise, Diagnose, `mqtt.mode: remove`, Umstieg (Abschnitt 8) | die Leitstelle läuft ohne MQTT, alle IDs unverändert |
-| H5 (gebaut) | Protokoll 2: Codes statt Texte, Übersetzungen (6b) | jede Sprache hat jeden Text (`tests/test_texts.py`) |
+| H1 (built) | Hub: `/v1/ha`, client registry and CLI, `HostView`, tests | a test client gets snapshot, pushes and command results; one that is not approved gets nothing |
+| H2 (built) | Integration: config flow with approval, connection, entities, de/en, tests | all entities from section 6 in one HA test, IDs proven |
+| H3 (built) | Repair issues, diagnostics, `mqtt.mode: remove`, migration (section 8) | the hub runs without MQTT, all IDs unchanged |
+| H5 (built) | Protocol 2: codes instead of texts, translations (6b) | every language has every text (`tests/test_texts.py`) |
 
-## 11. Entscheidungen
+## 11. Decisions
 
-1. Reparaturhinweise je Host-Problem: **ja** ([ADR-0024](../docs/adr/0024-repair-issues.md)).
-2. Gerätename „Vördr <node>“ auch unter eigener Integration: **ja**, die Geräteliste ist global
+1. Repair issues per host problem: **yes** ([ADR-0024](../docs/adr/0024-repair-issues.md)).
+2. Device name "Vördr <node>" also under an own integration: **yes**, the device list is global
    ([ADR-0021](../docs/adr/0021-device-name-vordr-node.md)).
-3. Verteilung: **über HACS** als `vordr.zip` an jedem Release des öffentlichen Repos
-   ([ADR-0136](../docs/adr/0136-integration-via-hacs-as-a-zip-release.md), löst
-   [ADR-0025](../docs/adr/0025-distribution-via-deploy-tool.md) ab); von Hand nach `/config/custom_components/vordr`
-   kopieren geht weiter (`ha/README.md`).
-4. MQTT nach dem Umstieg **ganz aus dem Code entfernen** ([ADR-0026](../docs/adr/0026-remove-mqtt.md)).
+3. Distribution: **through HACS** as `vordr.zip` on every release of the public repository; the integration lives in
+   `custom_components/vordr/` at the root of the repository, because HACS checks that layout before it downloads
+   anything ([ADR-0144](../docs/adr/0144-the-integration-lives-at-the-repository-root.md), supersedes
+   [ADR-0136](../docs/adr/0136-integration-via-hacs-as-a-zip-release.md) and through it
+   [ADR-0025](../docs/adr/0025-distribution-via-deploy-tool.md)); copying it by hand to
+   `/config/custom_components/vordr` still works (`ha/README.md`).
+4. **Remove MQTT from the code entirely** after the migration ([ADR-0026](../docs/adr/0026-remove-mqtt.md)).
 
-## 12. Ergebnis des Umstiegs
+## 12. Result of the migration
 
-Nach dem Umstieg (Abschnitt 8) stehen alle Entitäts-IDs unverändert unter der Plattform `vordr`; neu ist nur
-`sensor.vordr_hub_connection`, MQTT-Geräte bleiben keine übrig. Die Anzeigenamen folgen der Systemsprache von HA; unter
-MQTT waren sie fest deutsch ([ADR-0075](../docs/adr/0075-display-names-follow-system-language.md)).
+After the migration (section 8), all entity IDs stand unchanged under the platform `vordr`; only
+`sensor.vordr_hub_connection` is new, no MQTT devices remain. The display names follow the system language of HA; under
+MQTT they were fixed German ([ADR-0075](../docs/adr/0075-display-names-follow-system-language.md)).

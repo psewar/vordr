@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// A proxy instance (design/stellvertreter.md 4.1): one appliance, TLS either pinned or by name, credentials readable
+// A proxy instance (design/proxy-agent.md 4.1): one appliance, TLS either pinned or by name, credentials readable
 // by the instance only, and nothing that would mean the container it runs in.
 func TestTargetRules(t *testing.T) {
 	dir := t.TempDir()

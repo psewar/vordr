@@ -14,7 +14,7 @@ import (
 // ConfigBackupSource is the name of the report entry that says how fresh the appliance's configuration backup is.
 const ConfigBackupSource = source.ConfigBackup
 
-// TargetChecker reports on an appliance through its driver (design/stellvertreter.md) and keeps its configuration
+// TargetChecker reports on an appliance through its driver (design/proxy-agent.md) and keeps its configuration
 // backup fresh (ADR-0090): with every check it exports again once the newest good export is older than maxAge less a
 // margin, so a daily check keeps it inside maxAge.
 func TargetChecker(d target.Driver, store target.Store, maxAge time.Duration, now func() time.Time) Checker {

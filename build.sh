@@ -12,8 +12,10 @@ command -v python3 >/dev/null || { echo "python3 missing: build.sh needs it for 
 python3 docs/adr/check_index.py
 # Site-neutral repository (ADR-0099): no host names, addresses, domains or paths of the site that runs it. The site's
 # own terms stay outside the repository (~/.config/vordr/site-terms.txt or $VORDR_SITE_TERMS).
-python3 -m unittest discover -q -s tools -p "check_neutral_test.py"
+python3 -m unittest discover -q -s tools -p "check_*_test.py"
 python3 tools/check_neutral.py
+# Every document in English and German, same outline, links that resolve (ADR-0143).
+python3 tools/check_docs.py
 
 gofmt_out=$(gofmt -l .)
 [ -z "$gofmt_out" ] || { echo "gofmt: $gofmt_out" >&2; exit 1; }

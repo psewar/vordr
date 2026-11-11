@@ -437,7 +437,7 @@ func runAgentCtx(ctx context.Context, path string, toFile bool, onClient func(*a
 		logger.Printf("new key pair created")
 	}
 	if cfg.Target != nil {
-		// A proxy instance (design/stellvertreter.md): it speaks for its appliance only. No installer, reboot, containers,
+		// A proxy instance (design/proxy-agent.md): it speaks for its appliance only. No installer, reboot, containers,
 		// packages or self-update - they would act on the container it runs in (4.3: the container's own agent updates
 		// the shared binary and restarts the instances).
 		checker, host, res := targetSetup(ctx, cfg)

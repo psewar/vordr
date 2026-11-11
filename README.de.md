@@ -1,6 +1,6 @@
 # Vördr
 
-<img src="ha/custom_components/vordr/brand/logo.png" alt="Vördr: Schild mit der Rune Algiz" height="64">
+<img src="custom_components/vordr/brand/logo.png" alt="Vördr: Schild mit der Rune Algiz" height="64">
 
 [English](README.md) · Deutsch
 
@@ -13,7 +13,7 @@ Rune des Schutzes. Quellen und Erzeugung: `assets/brand/` (`python assets/brand/
 Ein kleiner Agent (`vordr-agent`) auf jedem Rechner meldet ausstehende Updates, spielt sie auf Anfrage oder im
 Wartungsfenster ein und meldet jedes Ergebnis als festen Zustand. Eine Leitstelle (`vordr-hub`) nimmt die Agenten an,
 signiert ihre Aufträge und gibt ihren Zustand an Home Assistant weiter: Die Integration `custom_components/vordr`
-([ha/](ha/README.md)) verbindet sich als freigegebener Client mit der Leitstelle und legt ein Gerät pro Rechner an,
+([ha/](ha/README.de.md)) verbindet sich als freigegebener Client mit der Leitstelle und legt ein Gerät pro Rechner an,
 darunter die Update-Quellen und wichtigen Programme mit ihrem Stand.
 
 **Was gebaut ist:**
@@ -30,16 +30,17 @@ darunter die Update-Quellen und wichtigen Programme mit ihrem Stand.
 - In Home Assistant je Host ein Gerät mit Update-Entitäten, Sensoren und Knöpfen; Probleme als Reparaturhinweis und als
   Ereignis für Automationen.
 
-Entwürfe: [design/architecture.md](design/architecture.md), [design/ha-integration.md](design/ha-integration.md),
-[design/stellvertreter.md](design/stellvertreter.md). Entscheidungen: [docs/adr](docs/adr/README.md). Einrichten:
-[deploy/README.md](deploy/README.md). Mitarbeit: [AGENTS.md](AGENTS.md). Sicherheitslücken: [SECURITY.md](SECURITY.md).
+Entwürfe: [design/architecture.de.md](design/architecture.de.md),
+[design/ha-integration.de.md](design/ha-integration.de.md), [design/proxy-agent.de.md](design/proxy-agent.de.md).
+Entscheidungen (englisch): [docs/adr](docs/adr/README.md). Einrichten: [deploy/README.de.md](deploy/README.de.md).
+Mitarbeit (englisch): [AGENTS.md](AGENTS.md). Sicherheitslücken: [SECURITY.de.md](SECURITY.de.md).
 
 ## Installieren
 
 - **Home Assistant:** über HACS (dieses Repository als benutzerdefiniertes Repository, Typ Integration) oder von Hand;
-  siehe [ha/README.md](ha/README.md).
+  siehe [ha/README.de.md](ha/README.de.md).
 - **Leitstelle und Agenten:** `./build.sh` baut die Binaries; Einrichtung, systemd-Units und Abschottung stehen in
-  [deploy/README.md](deploy/README.md), ebenso das Signieren eigener Agent-Releases.
+  [deploy/README.de.md](deploy/README.de.md), ebenso das Signieren eigener Agent-Releases.
 
 ## Bauen und ausprobieren
 
@@ -93,9 +94,10 @@ vordr-hub events <node> --since 24h             # Ereignisse eines Hosts der let
 | `internal/runner` | externe Befehle starten; Exit-Code als Daten |
 | `internal/identity` | Ed25519-Identität (Windows: DPAPI) |
 | `internal/facts` | OS, Architektur, Virtualisierung |
-| `ha/` | Home-Assistant-Integration `custom_components/vordr` mit Tests ([ha/README.md](ha/README.md)) |
-| `deploy/` | Installationsskripte, systemd-Units, fester Befehl für pfSense ([deploy/README.md](deploy/README.md)) |
-| `design/` | Entwürfe (deutsch) |
+| `custom_components/vordr` | Home-Assistant-Integration, an der Wurzel, wo HACS sie sucht ([ha/README.de.md](ha/README.de.md)) |
+| `ha/` | Tests der Integration und ihre festen Abhängigkeiten |
+| `deploy/` | Installationsskripte, systemd-Units, fester Befehl für pfSense ([deploy/README.de.md](deploy/README.de.md)) |
+| `design/` | Entwürfe (englisch, deutsch als `*.de.md`) |
 | `docs/adr/` | Architekturentscheidungen (englisch) |
 | `tools/` | Standort-Prüfung (`check_neutral.py`), Export des veröffentlichten Stands (`export_public.py`), Erzeugung der Windows-Zeitzonentabelle |
 | `assets/brand/` | Logo und Icons |

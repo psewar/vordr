@@ -368,7 +368,7 @@ func (c *Client) reportUpdate(send func(any) error) {
 }
 
 // restartInstances: the proxy instances share this agent's binary and do not update themselves; once this agent's
-// update is confirmed, they are restarted onto it (design/stellvertreter.md 4.3, ADR-0089). Not before: a new binary
+// update is confirmed, they are restarted onto it (design/proxy-agent.md 4.3, ADR-0089). Not before: a new binary
 // that fails would take them down with it, and they would not come back with the rollback.
 func (c *Client) restartInstances() {
 	if c.Updater == nil || c.Updater.Instances == nil {

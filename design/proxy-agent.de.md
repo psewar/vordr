@@ -1,5 +1,7 @@
 # Vördr – Stellvertreter-Agent für Appliances
 
+[English](proxy-agent.md) · Deutsch
+
 > **Stand:** Gebaut sind Melden und Sichern über die Treiber `synology-dsm` und `pfsense` (4.1), die Instanz-Units
 > (4.7), die Konfigurationssicherung samt Prüfung an der Leitstelle (4.4) und der feste Befehl auf der Firewall (4.6).
 > Installieren über einen Treiber ist noch nicht gebaut; `check-config` lehnt es ab. Begründungen:
@@ -7,7 +9,7 @@
 > [ADR-0090](../docs/adr/0090-appliance-installs-need-a-fresh-config-backup.md) (Konfigurationssicherung vor jedem
 > Update), [ADR-0091](../docs/adr/0091-firmware-for-devices-without-internet.md) (Geräte ohne Internet),
 > [ADR-0092](../docs/adr/0092-mesh-keeps-its-vendor-self-update.md) (Mesh-WLAN behält sein Selbst-Update).
-> Ergänzt [architecture.md](architecture.md). Technische Namen englisch, Text deutsch. Wie die übrigen
+> Ergänzt [architecture.de.md](architecture.de.md). Technische Namen englisch, Text deutsch. Wie die übrigen
 > Design-Dokumente ohne Hostnamen und Adressen. Geräte stehen mit ihrer Klasse; ein Produkt nur, wo sein Treiber
 > gebaut ist (ADR-0099).
 
@@ -243,7 +245,7 @@ ihr Update gibt es zwei Wege, in dieser Rangfolge:
     Agent aufgenommen ist.
 - **Kein SSH-Dienst;** verwaltet wird vom Hypervisor aus (unter Proxmox VE `pct exec`).
 - **Instanzen:** je Gerät eine systemd-Instanz `vordr-agent@<gerät>` (Vorlage `deploy/systemd/vordr-agent@.service`,
-  Einrichtung in `deploy/README.md`). Knotenname = Gerätename, eigene Identität und eigener Zustand je Instanz. Die
+  Einrichtung in `deploy/README.de.md`). Knotenname = Gerätename, eigene Identität und eigener Zustand je Instanz. Die
   Instanz läuft als root ohne Capabilities, mit schreibgeschütztem System und nur ihrem State-Verzeichnis
   (`systemd-analyze security` 3,7).
   - **Aufnahme:** wie jeder Host an der Leitstelle freigeben, nach Abgleich des Fingerabdrucks im Container
@@ -285,7 +287,7 @@ nachzuweisen, nur lesend.
 ## 7. Sicherheit
 
 - **Leitstelle:** hält keine Zugangsdaten. Übernommen kann sie Prüfungen und, wo die Richtlinie einer Instanz es
-  erlaubt, ein Firmware-Update anstossen – wie bei Hosts. Das Bedrohungsmodell (architecture.md 5) bekommt eine Zeile:
+  erlaubt, ein Firmware-Update anstossen – wie bei Hosts. Das Bedrohungsmodell (architecture.de.md 5) bekommt eine Zeile:
   „den Stellvertreter übernommen → kann die Geräte bedienen, deren Zugangsdaten er hält, und ihre
   Konfigurationssicherungen lesen“.
 - **Container:** nur für diesen Zweck; kein SSH-Dienst, Verwaltung über den Hypervisor. Ausgehend nur, was die
