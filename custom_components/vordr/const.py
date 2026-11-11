@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Final
 
 DOMAIN: Final = "vordr"
-VERSION: Final = "0.33.3"  # keep in step with manifest.json
+VERSION: Final = "0.33.4"  # keep in step with manifest.json
 
 CONF_URL: Final = "url"
 CONF_NAME: Final = "name"

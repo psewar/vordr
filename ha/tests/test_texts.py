@@ -111,6 +111,21 @@ async def test_release_summary_fits(hass: HomeAssistant) -> None:
     assert texts.release_summary([both], 1) == "x 1 → 2 (security, new major version)"
 
 
+@pytest.mark.parametrize(
+    ("lang", "package", "packages", "image", "images"),
+    [("en", "package", "packages", "image", "images"), ("de", "Paket", "Pakete", "Image", "Images")],
+)
+async def test_counts_name_one_in_the_singular(
+    hass: HomeAssistant, lang: str, package: str, packages: str, image: str, images: str
+) -> None:
+    """Exactly one takes the singular text ("1 image", not "1 images"); every other count, also 0, the plural."""
+    await hass.config.async_update(language=lang)
+    texts = Texts(hass)
+    await texts.async_load()
+    assert [texts.packages_installed(n) for n in (0, 1, 2)] == [f"0 {packages}", f"1 {package}", f"2 {packages}"]
+    assert [texts.images_installed(n) for n in (0, 1, 2)] == [f"0 {images}", f"1 {image}", f"2 {images}"]
+
+
 async def test_system_language_words_the_backend(
     hass: HomeAssistant, fake_hub: FakeHub, entry: MockConfigEntry
 ) -> None:

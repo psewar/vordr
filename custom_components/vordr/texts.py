@@ -122,8 +122,14 @@ class Texts:
     def latest_version(self, pending: int, security: int) -> str:
         return self._get(self.system_language(), "common.latest_version").format(pending=pending, security=security)
 
+    def _count(self, key: str, count: int) -> str:
+        """A count with its noun: the singular `<key>_one` for exactly one, the plural `<key>` otherwise (also 0)."""
+        return self._get(self.system_language(), f"common.{key}_one" if count == 1 else f"common.{key}").format(
+            count=count
+        )
+
     def packages_installed(self, count: int) -> str:
-        return self._get(self.system_language(), "common.packages_installed").format(count=count)
+        return self._count("packages_installed", count)
 
     def packages_latest(self, outdated: int, ready: int) -> str:
         return self._get(self.system_language(), "common.packages_latest").format(outdated=outdated, ready=ready)
@@ -150,7 +156,7 @@ class Texts:
         return out or None
 
     def images_installed(self, count: int) -> str:
-        return self._get(self.system_language(), "common.images_installed").format(count=count)
+        return self._count("images_installed", count)
 
     def images_latest(self, outdated: int, ready: int) -> str:
         return self._get(self.system_language(), "common.images_latest").format(outdated=outdated, ready=ready)
