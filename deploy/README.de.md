@@ -132,7 +132,9 @@ vordr-agent identity --config /etc/vordr/targets/nas-a.yaml       # Fingerabdruc
 Im Zielmodus lehnt `check-config` alles ab, was den Container statt das Gerät meinen würde: Installieren, Neustart,
 Selbst-Update, Apps, Pakete und andere Gesundheitsprüfungen als http. Alle Instanzen teilen die Binary des Containers:
 Sie aktualisiert der gewöhnliche Agent des Containers (`vordr-agent.service` mit `agent_update`, eingerichtet mit
-`install-agent.sh`) per Selbst-Update, und nach seiner Bestätigung startet er die laufenden Instanzen neu
+`install-agent.sh`) per Selbst-Update, und nach seiner Bestätigung startet er die laufenden Instanzen neu.
+`install-agent.sh` tut dasselbe, wenn es die Binary von Hand ersetzt: Es prüft zuerst die Richtlinie jeder laufenden
+Instanz mit der neuen Binary und startet die Instanzen neu, sobald der neue Agent oben bleibt
 (Design [Stellvertreter 4.3](../design/proxy-agent.de.md#43-selbst-update-der-instanzen)).
 
 ## Agent-Releases signieren

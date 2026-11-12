@@ -153,6 +153,11 @@ packages) fetches new releases. The instances have `agent_update` off.
   instances: `systemctl try-restart --no-block vordr-agent@*.service`. Only then, because a new binary that fails would
   otherwise drag the instances down too; with the rollback they would not come back.
 - If the update rolls back, the instances stay untouched. They keep running with the binary that is back in its place.
+- A manual install with `deploy/install-agent.sh` replaces the binary as well and follows the same order:
+  - Before it changes anything, it checks the policy of each running instance with the new binary. If one fails, it
+    installs nothing.
+  - Once the new agent stays up, it restarts the running instances (`systemctl try-restart`).
+  - If an instance does not come back, the install fails and names it.
 - Without this step an instance would keep running with the replaced file until its next start, and HA would show an
   agent update for it permanently.
 

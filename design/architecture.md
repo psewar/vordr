@@ -855,7 +855,8 @@ binary next to itself, checks the hash, has the new file say `version`, swaps it
   - Agents before 0.11.0 do not report `goos`. The hub offers them the release as before, and the agent itself refuses
     with `rejected_unsupported` if its binary is missing.
 - `install-agent.sh` sets up the rollback script and unit and clears a hanging marker: A manual installation is a fresh
-  start.
+  start. It also restarts the running proxy instances onto the new binary
+  ([proxy agent 4.3](proxy-agent.md#43-self-update-of-the-instances)).
 - The swap is always done by the agent that is already running. A change to the self-update path therefore takes effect
   only with the update after it. Example: The fix for the file permissions came with 0.7.2, but 0.7.2 was still
   installed by 0.7.1 with `0700`. If a fix must take effect at once, that works only by hand (`install-agent.sh`) or

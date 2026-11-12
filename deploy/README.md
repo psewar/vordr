@@ -131,7 +131,9 @@ vordr-agent identity --config /etc/vordr/targets/nas-a.yaml       # fingerprint 
 In target mode `check-config` rejects everything that would mean the container instead of the device: install,
 reboot, self-update, apps, packages and health checks other than http. All instances share the container's binary:
 the container's ordinary agent updates it (`vordr-agent.service` with `agent_update`, set up with `install-agent.sh`)
-by self-update, and after its confirmation it restarts the running instances
+by self-update, and after its confirmation it restarts the running instances. `install-agent.sh` does the same when it
+replaces the binary by hand: it first checks each running instance's policy with the new binary, and it restarts the
+instances once the new agent stays up
 (design [proxy agent 4.3](../design/proxy-agent.md#43-self-update-of-the-instances)).
 
 ## Signing agent releases

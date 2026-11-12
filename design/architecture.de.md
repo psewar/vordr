@@ -875,7 +875,8 @@ startet neu (systemd `Restart=always` bzw. Windows-Dienst). Rollout in denselben
   - Agenten vor 0.11.0 melden `goos` nicht. Ihnen bietet die Leitstelle die Release wie bisher an, und der Agent lehnt
     selbst mit `rejected_unsupported` ab, wenn seine Binary fehlt.
 - `install-agent.sh` richtet Rücksprung-Skript und -Unit ein und räumt eine hängende Markierung weg: Eine
-  Handinstallation ist ein Neuanfang.
+  Handinstallation ist ein Neuanfang. Es startet auch die laufenden Stellvertreter-Instanzen mit der neuen Binary neu
+  ([Stellvertreter 4.3](proxy-agent.de.md#43-selbst-update-der-instanzen)).
 - Den Tausch macht immer der Agent, der schon läuft. Eine Änderung am Selbst-Update-Pfad wirkt deshalb erst beim Update
   danach. Beispiel: Die Korrektur der Dateirechte kam mit 0.7.2, installiert hat 0.7.2 aber noch 0.7.1 mit `0700`.
   Muss eine Korrektur sofort greifen, geht das nur von Hand (`install-agent.sh`) oder über ein Zwischen-Release.

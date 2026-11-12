@@ -5,6 +5,9 @@
 # identical file: changing a host's local policy is a decision, not a side effect of an update. --replace-config
 # makes it one: the old file is kept as agent.yaml.bak-<time>, the difference is shown and the reason goes to the
 # system log.
+# Proxy instances (vordr-agent@<name>, design/proxy-agent.md 4.3) run the same binary. Each running one must accept its
+# policy with the new binary before anything changes, and once the new agent stays up they are restarted onto it, as
+# the self-update does after its confirmation.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 unit="$here/systemd/vordr-agent.service"
@@ -27,6 +30,16 @@ done
 "$bin" version >/dev/null 2>&1 || fail "$bin does not run here (wrong architecture?)"
 "$bin" check-config --config "$cfg" || fail "$cfg has issues (listed above) - nothing installed"
 "$bin" hub-check --config "$cfg" || fail "the hub is not reachable from here (see above) - nothing installed"
+# The policy path of an instance is the one deploy/systemd/vordr-agent@.service starts it with.
+mapfile -t instances < <(systemctl list-units --state=running --plain --no-legend 'vordr-agent@*.service' | awk '{print $1}')
+for u in "${instances[@]}"; do
+  name=${u#vordr-agent@}
+  name=${name%.service}
+  out=$("$bin" check-config --config "/etc/vordr/targets/$name.yaml" 2>&1) || {
+    echo "$out" >&2
+    fail "proxy instance $name: /etc/vordr/targets/$name.yaml has issues with the new binary (above) - nothing installed"
+  }
+done
 if [ -f /etc/vordr/agent.yaml ] && ! cmp -s "$cfg" /etc/vordr/agent.yaml; then
   [ -n "$reason" ] || fail "/etc/vordr/agent.yaml exists and differs from $cfg - compare them and decide yourself, \
 or replace it with --replace-config \"<reason>\"; nothing installed"
@@ -54,6 +67,18 @@ sleep 5
 if ! systemctl is-active --quiet vordr-agent.service; then
   journalctl -u vordr-agent.service -n 30 --no-pager || true
   fail "the service did not stay up (journal above)"
+fi
+# The running instances still run the replaced binary; only now that the new one stays up do they follow it.
+if [ ${#instances[@]} -gt 0 ]; then
+  systemctl try-restart "${instances[@]}"
+  sleep 5
+  for u in "${instances[@]}"; do
+    if ! systemctl is-active --quiet "$u"; then
+      journalctl -u "$u" -n 30 --no-pager || true
+      fail "proxy instance $u did not come back with the new binary (journal above)"
+    fi
+  done
+  echo "install-agent: proxy instances restarted onto the new binary: ${instances[*]}"
 fi
 ident=$(/usr/local/bin/vordr-agent identity --config /etc/vordr/agent.yaml)
 node=$(awk '$1 == "node" {print $2}' <<<"$ident")

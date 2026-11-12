@@ -158,6 +158,11 @@ holt neue Releases. Die Instanzen haben `agent_update` aus.
   die scheitert, sonst auch die Instanzen mitnähme; mit dem Rücksprung kämen sie nicht zurück.
 - Springt das Update zurück, bleiben die Instanzen unberührt. Sie laufen weiter mit der Binary, die wieder an ihrem
   Platz liegt.
+- Eine Handinstallation mit `deploy/install-agent.sh` ersetzt die Binary ebenfalls und hält dieselbe Reihenfolge ein:
+  - Bevor sie etwas ändert, prüft sie die Richtlinie jeder laufenden Instanz mit der neuen Binary. Scheitert eine,
+    installiert sie nichts.
+  - Sobald der neue Agent oben bleibt, startet sie die laufenden Instanzen neu (`systemctl try-restart`).
+  - Kommt eine Instanz nicht zurück, scheitert die Installation und nennt sie.
 - Ohne diesen Schritt liefe eine Instanz bis zu ihrem nächsten Start mit der ersetzten Datei weiter, und HA zeigte für
   sie dauerhaft ein Agent-Update an.
 
