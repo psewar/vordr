@@ -224,7 +224,7 @@ func TestPfsenseBackup(t *testing.T) {
 	f := newSSHFake(t)
 	data, ext, res := f.driver().Backup(context.Background())
 	want, _ := os.ReadFile(os.Getenv("FAKE_BACKUP"))
-	if !res.OK() || ext != "xml" || string(data) != string(want) {
+	if !res.OK() || ext != ".xml" || string(data) != string(want) {
 		t.Fatalf("backup: %+v ext %q, %d bytes", res, ext, len(data))
 	}
 	for name, content := range map[string]string{

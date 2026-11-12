@@ -59,7 +59,7 @@ type Driver interface {
 	Name() string
 	Check(ctx context.Context) (Status, Result)
 	// Backup exports the configuration and checks its form (not empty, the format's header); it returns the export and
-	// the file extension to store it under.
+	// the file extension to store it under, with its dot (".dss"). Store.Save refuses one without.
 	Backup(ctx context.Context) ([]byte, string, Result)
 }
 

@@ -272,3 +272,24 @@ func TestStore(t *testing.T) {
 		t.Fatalf("kept: %v", exports)
 	}
 }
+
+// A driver names its extension with the dot; without it the file would be "<driver>-<time>xml". Save refuses such an
+// extension before it writes anything, and a refused save is no backup.
+func TestStoreRefusesAnExtensionWithoutItsDot(t *testing.T) {
+	s := Store{Dir: filepath.Join(t.TempDir(), "config-backups"), Keep: 2}
+	for _, ext := range []string{"xml", "", ".", ".x.y", "./x", `.a\b`} {
+		if _, err := s.Save("pfsense", []byte("<pfsense/>"), ext, time.Unix(1700000000, 0)); err == nil {
+			t.Errorf("extension %q accepted", ext)
+		}
+	}
+	if entries, _ := os.ReadDir(s.Dir); len(entries) != 0 {
+		t.Fatalf("refused saves left files: %v", entries)
+	}
+	if _, ok := s.Last(); ok {
+		t.Fatal("a refused save counts as a backup")
+	}
+	if saved, err := s.Save("pfsense", []byte("<pfsense/>"), ".xml", time.Unix(1700000000, 0)); err != nil ||
+		saved.File != "pfsense-20231114T221320Z.xml" {
+		t.Fatalf("accepted extension: %+v %v", saved, err)
+	}
+}

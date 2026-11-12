@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -31,8 +32,12 @@ type Saved struct {
 
 const lastFile = "last.json"
 
-// Save stores an export that passed its driver's form check, then drops the oldest beyond Keep.
+// Save stores an export that passed its driver's form check, then drops the oldest beyond Keep. It refuses an
+// extension without its dot before it writes anything: the file would be named "<driver>-<time>xml".
 func (s Store) Save(driver string, data []byte, ext string, now time.Time) (Saved, error) {
+	if !validExt(ext) {
+		return Saved{}, fmt.Errorf("file extension %q: a driver names it with its dot, such as \".xml\"", ext)
+	}
 	if err := os.MkdirAll(s.Dir, 0o700); err != nil {
 		return Saved{}, err
 	}
@@ -81,6 +86,11 @@ func (s Store) prune(driver, ext string) error {
 		names = names[1:]
 	}
 	return nil
+}
+
+// validExt: a dot, then a name without further dots or path separators (".dss", ".xml").
+func validExt(ext string) bool {
+	return len(ext) > 1 && ext[0] == '.' && !strings.ContainsAny(ext[1:], `./\`)
 }
 
 // writeAtomic writes through a temporary file, so a crash leaves the old file or the new one, never half of one.

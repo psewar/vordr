@@ -93,7 +93,7 @@ func (p *pfsense) Backup(ctx context.Context) ([]byte, string, Result) {
 	if len(out) < 1024 || !bytes.HasPrefix(bytes.TrimSpace(out), []byte("<?xml")) || !bytes.Contains(out, []byte("<pfsense>")) {
 		return nil, "", Result{protocol.CodeFailedConfigBackup, fmt.Sprintf("the export is no pfSense config.xml (%d bytes)", len(out))}
 	}
-	return out, "xml", Result{}
+	return out, ".xml", Result{}
 }
 
 // call runs one call of the forced command. Before ssh it proves the way and the device, so that ssh's own failure
