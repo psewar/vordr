@@ -336,7 +336,8 @@
           "host_gone": "Die Leitstelle kennt {node} nicht mehr.",
           "no_longer_needed": "{node} braucht keinen Neustart mehr.",
           "reboot_not_offered": "{node} erlaubt keinen Neustart über Vördr mehr. Bitte von Hand neu starten.",
-          "command_refused": "Die Leitstelle hat den Neustart von {node} abgelehnt (Code {code})."
+          "command_refused": "Die Leitstelle hat den Neustart von {node} abgelehnt (Code {code}).",
+          "command_refused_role_forbids": "Die Leitstelle hat den Neustart von {node} abgelehnt: Dieses Home Assistant darf ihn nicht auslösen - seine Rolle an der Leitstelle erlaubt es nicht (vordr-hub client-role)."
         }
       }
     },
@@ -358,7 +359,15 @@
           "host_gone": "Die Leitstelle kennt {node} nicht mehr.",
           "no_longer_needed": "{node} hat keinen gescheiterten Install mehr.",
           "install_not_offered": "{node} erlaubt keine Installs über Vördr mehr. Installiere von Hand.",
-          "command_refused": "Die Leitstelle hat den Install auf {node} abgelehnt (Code {code})."
+          "command_refused": "Die Leitstelle hat den Install auf {node} abgelehnt (Code {code}).",
+          "command_refused_role_forbids": "Die Leitstelle hat den Install auf {node} abgelehnt: Dieses Home Assistant darf ihn nicht auslösen - seine Rolle an der Leitstelle erlaubt es nicht (vordr-hub client-role).",
+          "command_refused_outside_window": "Die Leitstelle hat den Install auf {node} abgelehnt: Das Fenster des Hosts ist zu, und sein Agent ist zu alt, um ausserhalb davon zu installieren. Agent aktualisieren oder das Fenster abwarten.",
+          "command_refused_rate_limited": "Die Leitstelle hat den Install auf {node} abgelehnt: Sein letzter Lauf ist weniger lang her als sein Mindestabstand (install.min_interval_h). Wieder möglich ab {next}.",
+          "command_refused_backup_stale": "Die Leitstelle hat den Install auf {node} abgelehnt: Das letzte Backup ({group}) ist {age} h alt, erlaubt sind {max} h. Erst sichern, dann erneut installieren.",
+          "command_refused_backup_missing": "Die Leitstelle hat den Install auf {node} abgelehnt: PBS hat kein Backup in {group}.",
+          "command_refused_backup_unreachable": "Die Leitstelle hat den Install auf {node} abgelehnt: Proxmox Backup Server antwortet nicht, das Backup ist nicht prüfbar.",
+          "command_refused_backup_unmapped": "Die Leitstelle hat den Install auf {node} abgelehnt: In hub.yaml ist für diesen Host keine PBS-Gruppe eingetragen (backup.guests).",
+          "command_refused_backup_host_unavailable": "Die Leitstelle hat den Install auf {node} abgelehnt: Das Backup vor der Installation macht {hypervisor}, und dessen Agent ist nicht da (offline, nicht freigegeben oder ohne guest_backup)."
         }
       }
     },

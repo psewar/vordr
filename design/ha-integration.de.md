@@ -189,8 +189,12 @@ Reparaturhinweis („Leitstelle zu alt/zu neu“) statt halb zu funktionieren.
     wieder, bleibt beides;
   - besteht das Problem nur aus dem festgehaltenen Install, entfällt dafür `problem_<node>` (Problem-Sensor und
     `vordr_problem` bleiben); ohne angebotenen Install bleibt `problem_<node>` wie bisher.
-- **Knöpfe** heben eine Ablehnung der Leitstelle als Fehler mit Code ins UI (`command_refused`); die update-Entität
-  hat `INSTALL` nur mit der Fähigkeit `install`.
+- **Knöpfe** heben eine Ablehnung der Leitstelle als Fehler ins UI; die Dialoge der Reparaturhinweise für Neustart
+  und erneutes Installieren enden mit demselben Text. Ein Code, den die Integration kennt, sagt den Grund:
+  `role_forbids`, `outside_window`, `rate_limited` mit der Uhrzeit aus `HostView.next_install`, die Backup-Prüfung mit
+  dem, was fehlt. Jeder andere nennt seinen Code (`command_refused`). Ein Dialog sagt den Grund nur für die Codes, die
+  die Leitstelle für seinen Befehl schicken kann, der Neustart nur für `role_forbids`. Die update-Entität hat `INSTALL`
+  nur mit der Fähigkeit `install`.
 
 ### 6b. Sprachen (H5, Protokoll 2)
 

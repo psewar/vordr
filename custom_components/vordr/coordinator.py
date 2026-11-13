@@ -77,6 +77,35 @@ def local_time(at: Any) -> str:
     return local.strftime("%d.%m. %H:%M")
 
 
+def refusal(node: str, host: dict[str, Any] | None, code: str) -> tuple[str, dict[str, str]]:
+    """The hub's refusal of a command for node as a text key and its placeholders, decided on the code and filled from
+    the host's state as the hub last sent it. A code the integration knows has its own text: the backup check says what
+    is missing, the minimum interval from when it works again. Any other is command_refused with the code. The buttons
+    raise it as an error (VordrCoordinator.refused), the repairs' fix dialogs abort with it."""
+    host = host or {}
+    if code in BACKUP_REFUSALS:
+        backup = host.get("backup") or {}
+        last = dt_util.parse_datetime(backup.get("last") or "")
+        age = round((dt_util.utcnow() - last).total_seconds() / 3600) if last else "?"
+        return f"command_refused_{code}", {
+            "node": node,
+            "group": str(backup.get("group") or "-"),
+            "age": str(age),
+            "max": str(backup.get("max_age_hours", "?")),
+            "hypervisor": str(backup.get("before_install") or "-"),
+        }
+    if code == "role_forbids":  # this client's role at the hub does not allow the command
+        return "command_refused_role_forbids", {"node": node}
+    if code == "outside_window_unsupported":  # the host's agent is older than ADR-0087
+        return "outside_window_unsupported", {"node": node}
+    if code == "outside_window":  # closed window, and the agent takes no reason (ADR-0109)
+        return "command_refused_outside_window", {"node": node}
+    if code == "rate_limited":  # the agent's minimum interval has not passed (ADR-0110)
+        nxt = dt_util.parse_datetime(host.get("next_install") or "")
+        return "command_refused_rate_limited", {"node": node, "next": local_time(nxt)}
+    return "command_refused", {"node": node, "code": code}
+
+
 def reboot_required(host: dict[str, Any] | None) -> bool:
     """The host reports that it needs a reboot - True only for a definite yes, never for unknown."""
     return ((host or {}).get("reboot") or {}).get("required") is True
@@ -187,53 +216,9 @@ class VordrCoordinator(DataUpdateCoordinator[VordrData]):
             raise self.refused(node, code)
 
     def refused(self, node: str, code: str) -> HomeAssistantError:
-        """The hub's refusal as an error for people. A refusal by the backup check says what is missing."""
-        if code in BACKUP_REFUSALS:
-            backup = (self.data.hosts.get(node) or {}).get("backup") or {}
-            last = dt_util.parse_datetime(backup.get("last") or "")
-            age = round((dt_util.utcnow() - last).total_seconds() / 3600) if last else "?"
-            placeholders = {
-                "node": node,
-                "group": str(backup.get("group") or "-"),
-                "age": str(age),
-                "max": str(backup.get("max_age_hours", "?")),
-                "hypervisor": str(backup.get("before_install") or "-"),
-            }
-            return HomeAssistantError(
-                translation_domain=DOMAIN,
-                translation_key=f"command_refused_{code}",
-                translation_placeholders=placeholders,
-            )
-        if code == "role_forbids":  # this client's role at the hub does not allow the command
-            return HomeAssistantError(
-                translation_domain=DOMAIN,
-                translation_key="command_refused_role_forbids",
-                translation_placeholders={"node": node},
-            )
-        if code == "outside_window_unsupported":  # the host's agent is older than ADR-0087
-            return HomeAssistantError(
-                translation_domain=DOMAIN,
-                translation_key="outside_window_unsupported",
-                translation_placeholders={"node": node},
-            )
-        if code == "outside_window":  # closed window, and the agent takes no reason (ADR-0109)
-            return HomeAssistantError(
-                translation_domain=DOMAIN,
-                translation_key="command_refused_outside_window",
-                translation_placeholders={"node": node},
-            )
-        if code == "rate_limited":  # the agent's minimum interval has not passed (ADR-0110)
-            nxt = dt_util.parse_datetime((self.data.hosts.get(node) or {}).get("next_install") or "")
-            return HomeAssistantError(
-                translation_domain=DOMAIN,
-                translation_key="command_refused_rate_limited",
-                translation_placeholders={"node": node, "next": local_time(nxt)},
-            )
-        return HomeAssistantError(
-            translation_domain=DOMAIN,
-            translation_key="command_refused",
-            translation_placeholders={"node": node, "code": code},
-        )
+        """The hub's refusal as an error for people (see refusal)."""
+        key, names = refusal(node, self.data.hosts.get(node), code)
+        return HomeAssistantError(translation_domain=DOMAIN, translation_key=key, translation_placeholders=names)
 
     # --- from the client
 

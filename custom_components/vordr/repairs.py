@@ -10,11 +10,13 @@ from homeassistant.config_entries import ConfigEntryState
 import voluptuous as vol
 
 from .coordinator import (
+    BACKUP_REFUSALS,
     VordrCoordinator,
     failed_install,
     failed_install_names,
     install_again_offered,
     reboot_required,
+    refusal,
 )
 from .texts import can_reboot
 
@@ -25,9 +27,13 @@ if TYPE_CHECKING:
 
 class _HostFlow(RepairsFlow):
     """Confirm, then ask the hub for the host's command - the same as its button. Checked again at confirmation, since
-    the repair may be older than the host's state; each case it refuses has its own reason."""
+    the repair may be older than the host's state; each case it refuses has its own reason. A refusal by the hub says
+    why, as the buttons do, for the codes the flow names in refusals; any other shows its code."""
 
     command = ""
+    # The hub's codes for which this flow's dialog has the text the buttons have (coordinator.refusal), under the same
+    # key; only those the hub can send for its command.
+    refusals: frozenset[str] = frozenset()
 
     def __init__(self, entry_id: str, node: str) -> None:
         self._entry_id = entry_id
@@ -73,7 +79,11 @@ class _HostFlow(RepairsFlow):
             return self.async_abort(reason=reason, description_placeholders=names)
         code = await coordinator.command(self._node, self.command)
         if code != "ok":
-            return self.async_abort(reason="command_refused", description_placeholders={**names, "code": code})
+            if code not in self.refusals:
+                return self.async_abort(reason="command_refused", description_placeholders={**names, "code": code})
+            # Filled from the host's state as the hub last sent it, read after its answer, as the buttons do.
+            key, shown = refusal(self._node, coordinator.data.hosts.get(self._node), code)
+            return self.async_abort(reason=key, description_placeholders=shown)
         self._asked(coordinator)
         return self.async_create_entry(data={})
 
@@ -82,6 +92,8 @@ class RebootFlow(_HostFlow):
     """The reboot a host needs (ADR-0132)."""
 
     command = "reboot"
+    # The window, the minimum interval and the backup check hold only installs; a reboot needs the admin role.
+    refusals = frozenset({"role_forbids"})
 
     def _still(self, host: dict[str, Any]) -> str:
         if not reboot_required(host):
@@ -99,6 +111,9 @@ class InstallAgainFlow(_HostFlow):
     the repair; a run that fails again keeps it."""
 
     command = "install"
+    # Sent without a reason: the hub gives it one outside the window where the agent takes it (ADR-0109), else
+    # outside_window. outside_window_unsupported comes only with a reason.
+    refusals = frozenset({"role_forbids", "outside_window", "rate_limited", *BACKUP_REFUSALS})
 
     def _shown(self, host: dict[str, Any] | None) -> dict[str, str]:
         return failed_install_names(host)

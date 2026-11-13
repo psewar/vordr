@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import re
+import string
 from typing import Any
 
 from homeassistant.core import HomeAssistant
@@ -13,6 +14,8 @@ import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.vordr.const import CODES, DOMAIN, REASONS
+from custom_components.vordr.coordinator import refusal
+from custom_components.vordr.repairs import InstallAgainFlow, RebootFlow
 from custom_components.vordr.texts import TEXT_KEYS, Texts, placeholders, problem_key
 
 from .conftest import FakeHub, host_view, wait_until
@@ -88,6 +91,22 @@ def test_problem_texts_complete_and_consistent(lang: str) -> None:
         assert attrs["reason"]["state"][code] == run_states[code] == attrs["check_failed_code"]["state"][code]
         assert data["issues"][f"problem_{code}"]["description"].startswith(run_states[code] + ".")
     assert "{pending}" in data["common"]["latest_version"] and "{security}" in data["common"]["latest_version"]
+
+
+@pytest.mark.parametrize("lang", sorted(LANGS))
+def test_repair_refusals_have_their_texts(lang: str) -> None:
+    """Each code a repair flow says why for has its text in the flow's dialog, under the key the buttons use, and the
+    text needs no placeholder the refusal does not fill; any other code shows as command_refused. No refusal text is
+    left unused."""
+    for flow, issue in ((RebootFlow, "reboot_required"), (InstallAgainFlow, "install_again")):
+        abort = LANGS[lang]["issues"][issue]["fix_flow"]["abort"]
+        used = set()
+        for code in (*flow.refusals, "some_future_code"):
+            key, names = refusal("n", None, code)
+            fields = {field for _, field, _, _ in string.Formatter().parse(abort[key]) if field}
+            assert "node" in fields and fields <= set(names), (issue, code, fields)
+            used.add(key)
+        assert used == {k for k in abort if k.startswith("command_refused")}, issue
 
 
 def test_problem_key() -> None:

@@ -185,8 +185,11 @@ If the integration cannot handle the hub's `protocol` version, it does not conne
   - a run that goes through clears the failure at the hub, and the repair goes with it; one that fails again keeps both;
   - if the problem consists only of the kept failed install, `problem_<node>` is omitted for it (problem sensor and
     `vordr_problem` stay); without the install offered, `problem_<node>` stays as before.
-- **Buttons** raise a refusal by the hub into the UI as an error with a code (`command_refused`); the update entity
-  has `INSTALL` only with the capability `install`.
+- **Buttons** raise a refusal by the hub into the UI as an error; the fix dialogs of the reboot and install-again
+  repairs end with the same text. A code the integration knows says why: `role_forbids`, `outside_window`,
+  `rate_limited` with the time from `HostView.next_install`, the backup check with what is missing. Any other names its
+  code (`command_refused`). A fix dialog says why only for the codes the hub can send for its command, the reboot only
+  for `role_forbids`. The update entity has `INSTALL` only with the capability `install`.
 
 ### 6b. Languages (H5, protocol 2)
 

@@ -1,9 +1,11 @@
 """The reboot repair (ADR-0132): from the first report, fixable where the hub offers the reboot, gone once the host no
 longer needs one; one repair for the long-pending reboot instead of two. The install-again repair (ADR-0148): a kept
-failed install is fixable where the hub offers the install, and gone with the failure."""
+failed install is fixable where the hub offers the install, and gone with the failure. Both say why the hub refused
+their command, as the buttons do."""
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Any
 
 from homeassistant.components.repairs import repairs_flow_manager
@@ -12,9 +14,11 @@ from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.setup import async_setup_component
+from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.vordr.const import DOMAIN
+from custom_components.vordr.coordinator import local_time
 
 from .conftest import FakeHub, host_view, wait_until
 
@@ -149,13 +153,20 @@ async def test_fix_reboots_and_waits_for_the_run(
 
 
 async def test_fix_refused_by_the_hub(hass: HomeAssistant, fake_hub: FakeHub, entry: MockConfigEntry) -> None:
+    """A refusal says why where the reboot dialog has the button's text for the code, any other names its code. The
+    window, the minimum interval and the backup check hold only installs: a reboot names those as a code too."""
     fake_hub.hosts["h"] = host_view("h", capabilities=CAN, reboot=NEEDED)
     await setup(hass, entry)
-    fake_hub.command_code = "role_forbids"
-    result = await confirm(hass, await start_fix(hass, "reboot_h"))
-    assert result["type"] is FlowResultType.ABORT and result["reason"] == "command_refused"
-    assert result["description_placeholders"] == {"node": "h", "code": "role_forbids"}
-    assert issue(hass, "reboot_h") is not None  # an abort leaves the repair
+    for code, reason, shown in (
+        ("role_forbids", "command_refused_role_forbids", {"node": "h"}),
+        ("queue_full", "command_refused", {"node": "h", "code": "queue_full"}),
+        ("rate_limited", "command_refused", {"node": "h", "code": "rate_limited"}),
+    ):
+        fake_hub.command_code = code
+        result = await confirm(hass, await start_fix(hass, "reboot_h"))
+        assert result["type"] is FlowResultType.ABORT and result["reason"] == reason, code
+        assert result["description_placeholders"] == shown, code
+        assert issue(hass, "reboot_h") is not None  # an abort leaves the repair
 
 
 async def test_fix_checks_again_at_confirmation(hass: HomeAssistant, fake_hub: FakeHub, entry: MockConfigEntry) -> None:
@@ -232,8 +243,7 @@ async def test_fix_installs_again_and_goes_with_the_failure(
 async def test_install_again_checks_again_at_confirmation(
     hass: HomeAssistant, fake_hub: FakeHub, entry: MockConfigEntry
 ) -> None:
-    """Each change between opening and confirming has its own reason, and no command goes out; a refusal of the hub
-    leaves the repair."""
+    """Each change between opening and confirming has its own reason, and no command goes out."""
     fake_hub.hosts["h"] = host_view("h", capabilities=INSTALLS, problem=KEPT, failed_install=FAILED)
     await setup(hass, entry)
     sent = len(fake_hub.commands)
@@ -253,10 +263,39 @@ async def test_install_again_checks_again_at_confirmation(
     assert result["type"] is FlowResultType.ABORT and result["reason"] == "no_longer_needed"
     assert len(fake_hub.commands) == sent
 
-    await fake_hub.push_host(host_view("h", capabilities=INSTALLS, problem=KEPT, failed_install=FAILED))
-    await wait_until(lambda: issue(hass, "install_again_h") is not None)
-    fake_hub.command_code = "role_forbids"
+
+async def test_install_again_refused_says_why(hass: HomeAssistant, fake_hub: FakeHub, entry: MockConfigEntry) -> None:
+    """A refusal by the hub says why, as the install button does: the minimum interval from when it works again
+    (ADR-0110), the closed window for an agent that takes no reason (ADR-0109), the backup check what is missing
+    (ADR-0096). Any other code is named as it is. Every abort leaves the repair."""
+    nxt = dt_util.utcnow().replace(microsecond=0) + timedelta(hours=18)
+    old = {"group": "vm/301", "last": "2023-11-14T22:13:20+00:00", "max_age_hours": 26, "state": "stale"}
+    view = {"capabilities": INSTALLS, "problem": KEPT, "failed_install": FAILED, "next_install": nxt.isoformat()}
+    fake_hub.hosts["h"] = host_view("h", **view, backup=old)
+    await setup(hass, entry)
+
+    fake_hub.command_code = "rate_limited"
     result = await confirm(hass, await start_fix(hass, "install_again_h"))
-    assert result["type"] is FlowResultType.ABORT and result["reason"] == "command_refused"
-    assert result["description_placeholders"] == {"node": "h", "code": "role_forbids"}
+    assert result["type"] is FlowResultType.ABORT and result["reason"] == "command_refused_rate_limited"
+    assert result["description_placeholders"] == {"node": "h", "next": local_time(nxt)}
+    assert local_time(nxt) != "?"
+    assert fake_hub.commands[-1]["command"] == "install"
+    assert issue(hass, "install_again_h") is not None
+
+    fake_hub.command_code = "outside_window"
+    result = await confirm(hass, await start_fix(hass, "install_again_h"))
+    assert result["type"] is FlowResultType.ABORT and result["reason"] == "command_refused_outside_window"
+    assert result["description_placeholders"] == {"node": "h"}
+
+    fake_hub.command_code = "backup_stale"
+    result = await confirm(hass, await start_fix(hass, "install_again_h"))
+    assert result["type"] is FlowResultType.ABORT and result["reason"] == "command_refused_backup_stale"
+    shown = result["description_placeholders"]
+    assert shown["group"] == "vm/301" and shown["max"] == "26" and int(shown["age"]) > 26
+
+    for code in ("queue_full", "outside_window_unsupported"):  # the latter comes only with a reason
+        fake_hub.command_code = code
+        result = await confirm(hass, await start_fix(hass, "install_again_h"))
+        assert result["type"] is FlowResultType.ABORT and result["reason"] == "command_refused", code
+        assert result["description_placeholders"] == {"node": "h", "code": code}
     assert issue(hass, "install_again_h") is not None
