@@ -255,6 +255,7 @@
       "vulnerable_packages": { "name": "Vulnerable packages" },
       "malicious_packages": { "name": "Malicious packages" },
       "outdated_packages": { "name": "Outdated packages" },
+      "outdated_images": { "name": "Outdated images" },
       "hub_hosts_online": { "name": "Hosts connected" },
       "hub_hosts_with_problem": { "name": "Hosts with problem" },
       "hub_pending_approvals": { "name": "Pending approvals" },

@@ -9,7 +9,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv, entity_platform
 import voluptuous as vol
 
-from .const import DOMAIN, PHASES
+from .const import DOMAIN, IMAGE_UPDATE_KEYS, PHASES
 from .coordinator import VordrCoordinator, valid_reason
 from .entity import HostEntities, VordrHostEntity, track_host_entities
 from .texts import SUMMARY_MAX
@@ -268,14 +268,16 @@ class HostPackages(VordrHostEntity, UpdateEntity):
 
 class HostContainers(VordrHostEntity, UpdateEntity):
     """The images of the host's running containers (ADR-0113): rebuilt under their tag, or with a newer tag of the
-    same form, and known vulnerabilities inside them (ADR-0120). On only while an image has a candidate: a newer image
-    at least the host's minimum age old (ADR-0130). Known vulnerabilities are listed, but alone do not turn it on - an
-    advisory fixed in the distribution waits for its publisher to rebuild the image, and nothing can be installed
-    before that. The summary says per image whether a newer image is ready.
+    same form, and known vulnerabilities inside them (ADR-0120). The summary says per image whether a newer image is
+    ready (ADR-0130).
 
     Where the host's agent.yaml allows Compose services (ADR-0119), the install button moves every allowed service
-    with a rebuild old enough to it, and vordr.update_image does it for one. A newer tag needs the Compose file
-    changed and stays manual; without allowed services the entity only reports, and the summary says so."""
+    with a rebuild old enough to it, and vordr.update_image does it for one. The entity is on only while that button
+    would take something (ADR-0150), as the other update entities (ADR-0106). A newer tag needs the Compose file
+    changed, and a service the host does not allow stays the operator's: both leave the entity off and are counted by
+    the sensor "Outdated images", as are hosts without allowed services, whose entity only reports. Known
+    vulnerabilities alone never turn it on: an advisory fixed in the distribution waits for its publisher to rebuild
+    the image."""
 
     _unrecorded_attributes = frozenset({"updates", "vulnerable", "compare_failed"})  # can be long (ADR-0101)
 
@@ -295,8 +297,9 @@ class HostContainers(VordrHostEntity, UpdateEntity):
     def latest_version(self) -> str | None:
         view = self._view()
         outdated, ready = view.get("outdated"), view.get("ready")
-        if not (isinstance(outdated, int) and isinstance(ready, int) and ready):
-            # nothing to install now - also with known vulnerabilities, until a newer image is there (ADR-0130)
+        if not (self._button() and isinstance(outdated, int) and isinstance(ready, int) and ready):
+            # nothing the button would take now (ADR-0150): what stays manual is in the sensor "Outdated images";
+            # known vulnerabilities alone neither, until a newer image is there (ADR-0130)
             return self.installed_version
         parts = [self.coordinator.texts.images_latest(outdated, ready)]
         fixable_newer = view.get("fixable_newer")  # a hub before ADR-0130 does not tell: then not named here
@@ -325,12 +328,15 @@ class HostContainers(VordrHostEntity, UpdateEntity):
         """The Compose services the host lets Home Assistant update (ADR-0119)."""
         return list((self.host.get("capabilities") or {}).get("image_updates") or [])
 
+    def _button(self) -> bool:
+        """Whether the install button would take something: a rebuild old enough of an allowed service, as the hub
+        counts it (installable). A hub before "installable" does not say; then the allowed services decide."""
+        installable = self._view().get("installable")
+        return bool(self._services()) and (not isinstance(installable, int) or installable > 0)
+
     @property
     def supported_features(self) -> UpdateEntityFeature:
-        # The button only where it would take something: a rebuild old enough of an allowed service. A hub before
-        # "installable" does not say; then the allowed services decide.
-        installable = self._view().get("installable")
-        if self._services() and (not isinstance(installable, int) or installable > 0):
+        if self._button():
             return UpdateEntityFeature.INSTALL | UpdateEntityFeature.PROGRESS
         return UpdateEntityFeature(0)  # only reported, or nothing the button would take now
 
@@ -373,20 +379,7 @@ class HostContainers(VordrHostEntity, UpdateEntity):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         view = self._view()
-        keys = (
-            "image",
-            "tag",
-            "containers",
-            "rebuilt",
-            "rebuilt_at",
-            "rebuilt_ready",
-            "latest",
-            "candidate",
-            "latest_at",
-            "major",
-            "same_major",  # the smaller step beside a new major version (ADR-0131)
-            "services",
-        )
+        keys = IMAGE_UPDATE_KEYS
         attrs: dict[str, Any] = {"updates": [{k: u[k] for k in keys if u.get(k)} for u in view.get("updates") or []]}
         for key in ("code", "local", "not_in_registry", "outdated_failed", "compared_at", "min_age_days"):
             if view.get(key):

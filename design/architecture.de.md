@@ -376,7 +376,7 @@ Name „Vördr <node>“, Kennung `("vordr", "host:<node>")`, Hersteller „Vör
 | `update.vordr_<id>_system` | update | Systempakete | siehe 8.3 | der letzte Bericht eine Paketquelle nennt |
 | `update.vordr_<id>_<app>` | update | Name der App | echte Versionen (installiert, verfügbar) | noch nicht gebaut; bis dahin ein Knopf je App (unten) |
 | `update.vordr_<id>_agent` | update | Agent | Agent-Version gegen freigegebene Version; Installieren = `agent_update` (10.4) | die Leitstelle verteilt Agent-Releases |
-| `update.vordr_<id>_containers` | update | Container-Images | veraltete und verwundbare Images, Neubauten per Knopf (11.5) | `packages.containers` am Host |
+| `update.vordr_<id>_containers` | update | Container-Images | veraltete und verwundbare Images, Neubauten per Knopf; an nur, solange der Knopf etwas nähme (11.5) | `packages.containers` am Host |
 | `update.vordr_<id>_packages_<ort>` | update | Pakete <ort> | pip/npm-Pakete eines Orts; Installieren = alle Kandidaten, Dienst `vordr.update_package` = eines, `vordr.refresh_dependencies` = Abhängigkeiten mit Fund (11.4) | der Ort steht in `packages.update` und die Leitstelle hat OSV-Daten |
 | `sensor.vordr_<id>_last_run` | sensor (enum) | Letzter Lauf | Phase oder Ergebniscode (7.3) des letzten Auftrags; Attribute `job_id`, `verb`, `scope`, `started`, `finished`, `reason`, `log_excerpt` | immer |
 | `sensor.vordr_<id>_pending_updates` | sensor | Ausstehende Updates | Anzahl; unbekannt, wenn die Prüfung scheiterte | der letzte Bericht eine Paketquelle nennt |
@@ -388,6 +388,7 @@ Name „Vördr <node>“, Kennung `("vordr", "host:<node>")`, Hersteller „Vör
 | `sensor.vordr_<id>_malicious_packages` | sensor | Schädliche Pakete | installierte pip/npm-Pakete, die OSV als Schadsoftware führt; Attribut `findings` (11.2) | der Agent schickt einen Paketbestand |
 | `sensor.vordr_<id>_vulnerable_packages` | sensor | Verwundbare Pakete | Pakete mit bekannter Schwachstelle; Attribute `findings` (je Fund auch `reach` und `held_by`, ADR-0129), `waiting`, `locations`, `packages_total`. Die Listen (`findings`, `locations`, `undecided`, bei den veralteten Paketen `updates`) stehen nur im Zustand, nicht in der Historie (ADR-0101) | wie oben |
 | `sensor.vordr_<id>_outdated_packages` | sensor | Veraltete Pakete | direkte pip/npm-Pakete mit neuerem Release; Attribut `updates` mit `latest` und `candidate` (11.3) | wie oben |
+| `sensor.vordr_<id>_outdated_images` | sensor | Veraltete Images | Images, unter ihrem Tag neu gebaut oder mit neuerem Tag, auch die, die Handarbeit bleiben; Attribute `ready`, `installable`, `updates` (nicht in der Historie), `compared_at`, `min_age_days` (11.5) | `packages.containers` am Host |
 | `button.vordr_<id>_check` | button | Jetzt prüfen | Befehl `check` | der Agent kann `check` |
 | `button.vordr_<id>_install_security` | button | Sicherheitsupdates installieren | Befehl `install_security` | der Agent kann `install`, `security` ist erlaubt und nicht schon Standardumfang |
 | `button.vordr_<id>_reboot` | button (restart) | Neu starten | Befehl `reboot` | der Agent kann `reboot` und `reboot.allowed` |
@@ -1501,12 +1502,18 @@ Aktualisieren von Compose-Diensten auf den Neubau ihres Tags per Knopf
   Images, die mit Kandidat zuerst). Solange die Images nie verglichen wurden (`compared_at` fehlt), sind `outdated` und
   `ready` unbekannt, nicht null. Veraltete Images sind kein Problem des Hosts. Ein Image nur mit `same_major` (die neue
   Hauptversion noch zu neu) zählt als `ready`: Es gibt etwas, das alt genug ist (ADR-0131).
-- **Home Assistant:** eine Update-Entität je Host „Container-Images“ (`update.vordr_<id>_containers`). An, solange
-  ein Image einen Kandidaten hat. Ohne erlaubte Dienste ohne Installieren, und die Zusammenfassung beginnt mit „Nur
-  gemeldet, Vördr aktualisiert keine Images“; mit erlaubten Diensten siehe „Per Knopf aktualisieren“. Neben einer
-  neuen Hauptversion nennt sie den kleineren Schritt: „app 2.2.0 → 3.1.0 (neue Hauptversion, oder 2.4.0 in
-  derselben Hauptversion)“. Die Liste steht im Attribut `updates` (mit `same_major`), nicht im Recorder
+- **Home Assistant:** eine Update-Entität je Host „Container-Images“ (`update.vordr_<id>_containers`). An nur, solange
+  ihr Installieren-Knopf etwas nähme
+  ([ADR-0150](../docs/adr/0150-the-image-entity-is-on-only-when-its-install-button-would-take-something.md)). Ohne
+  erlaubte Dienste ohne Installieren und aus, und die Zusammenfassung beginnt mit „Nur gemeldet, Vördr aktualisiert
+  keine Images“; mit erlaubten Diensten siehe „Per Knopf aktualisieren“. Neben einer neuen Hauptversion nennt sie den
+  kleineren Schritt: „app 2.2.0 → 3.1.0 (neue Hauptversion, oder 2.4.0 in derselben Hauptversion)“. Die Liste steht
+  im Attribut `updates` (mit `same_major`), nicht im Recorder
   ([ADR-0101](../docs/adr/0101-package-lists-stay-out-of-the-recorder.md)).
+  - Der Sensor „Veraltete Images“ (`sensor.vordr_<id>_outdated_images`) zählt jedes veraltete Image (`outdated`), auch
+    die, die Handarbeit bleiben: ein neuerer Tag, ein Dienst, den der Host nicht erlaubt, ein Host ohne erlaubte
+    Dienste. Seine Attribute `ready` und `installable` sagen, wie viele einen Kandidaten haben und wie viele der Knopf
+    nähme; `updates` listet sie, nicht im Recorder. Unbekannt, solange die Images nie verglichen wurden.
 - Zu den veralteten pip/npm-Paketen (11.3): Liegt ein Paket an zwei Orten, etwa älter per `pip --user` und neuer im
   Interpreter, zeigt `pip list --outdated` nur das erste, Vördr beide Orte.
 
@@ -1556,9 +1563,10 @@ Aktualisieren von Compose-Diensten auf den Neubau ihres Tags per Knopf
     da ist: Das kommt erst, wenn der Herausgeber neu baut.
   - In der Datenübersicht (`osv`) erscheinen nur Releases, die ein Image braucht.
 - **Home Assistant:** dieselbe Entität „Container-Images“.
-  - Schwachstellen allein schalten sie nicht an, auch behebbare nicht: an nur mit einem Kandidaten (ADR-0130, wie
-    ADR-0106 für die anderen Update-Entitäten). Mit Kandidat nennt `latest_version` dazu, für wie viele Images mit
-    behebbaren Meldungen ein neueres Image bereitsteht („1 durch neueres Image behebbar“).
+  - Schwachstellen allein schalten sie nicht an, auch behebbare nicht: an nur mit einem Kandidaten (ADR-0130), und nur
+    mit einem, den der Installieren-Knopf nähme (ADR-0150, wie ADR-0106 für die anderen Update-Entitäten). Ist sie an,
+    nennt `latest_version` dazu, für wie viele Images mit behebbaren Meldungen ein neueres Image bereitsteht („1 durch
+    neueres Image behebbar“).
   - Die Zusammenfassung sagt je Image, ob ein neueres Image bereit ist: „2 behebbar, neueres Image bereit“ oder „2 in
     der Distribution behoben, noch kein neueres Image“; Meldungen ohne Korrektur wie bisher. Eine Leitstelle vor
     ADR-0130 sendet kein `fixable_newer`; dann bleiben die Zahlen ohne diesen Zusatz.
@@ -1626,9 +1634,11 @@ Aktualisieren von Compose-Diensten auf den Neubau ihres Tags per Knopf
   sagt der Code warum (`precheck_disk_space`, `precheck_repo_unreachable`).
 - **Home Assistant:** „Container-Images“ installiert (`install_images`), wenn der Host Dienste erlaubt und die
   Leitstelle etwas zählt, das der Knopf nähme (`installable`), mit Fortschritt; die Zusammenfassung beginnt dann mit
-  „Neu gebaute Images der freigegebenen Dienste nimmt der Installieren-Knopf, neuere Tags bleiben Handarbeit“. An
-  bleibt die Entität auch für Handarbeit. Die Aktion `vordr.update_image` (Feld `service`: `<projekt>/<dienst>`)
-  aktualisiert einen Dienst, mit `reason` auch ausserhalb des Fensters, ebenso `vordr.install_outside_window` für alle.
+  „Neu gebaute Images der freigegebenen Dienste nimmt der Installieren-Knopf, neuere Tags bleiben Handarbeit“. Für
+  Handarbeit allein bleibt die Entität aus (ADR-0150): Home Assistant führte sie sonst als Update, das sich nicht
+  installieren lässt. Der Sensor „Veraltete Images“ zählt sie. Die Aktion `vordr.update_image` (Feld `service`:
+  `<projekt>/<dienst>`) aktualisiert einen Dienst, mit `reason` auch ausserhalb des Fensters, ebenso
+  `vordr.install_outside_window` für alle.
 
 ## 12. Leitstelle
 

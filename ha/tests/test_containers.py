@@ -1,12 +1,13 @@
 """The update entity "Container images" (ADR-0113): reported, and rebuilds installed by button where the host allows
-Compose services (ADR-0119)."""
+Compose services (ADR-0119); on only while the button would take something (ADR-0150), the sensor "Outdated images"
+counts every outdated image."""
 
 from __future__ import annotations
 
 from typing import Any
 
 from homeassistant.components.update import UpdateEntityFeature
-from homeassistant.const import STATE_OFF, STATE_ON
+from homeassistant.const import STATE_OFF, STATE_ON, STATE_UNKNOWN
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
@@ -47,11 +48,13 @@ def containers_view(updates: list[dict[str, Any]], ready: int) -> dict[str, Any]
 
 
 async def test_container_images_entity(hass: HomeAssistant, fake_hub: FakeHub, entry: MockConfigEntry) -> None:
-    """On while an image has a candidate; no install, and the summary says that Vördr only reports."""
+    """Without allowed services the entity only reports: no install, the summary says so, and it stays off also with a
+    candidate (ADR-0150) - the sensor "Outdated images" counts the images instead."""
+    eid, sensor = "update.vordr_echo_containers", "sensor.vordr_echo_outdated_images"
     fake_hub.hosts["echo"] = host_view("echo", containers=containers_view([APP], 0))
-    fake_hub.hosts["golf"] = host_view("golf")  # reports no images: no entity
+    fake_hub.hosts["golf"] = host_view("golf")  # reports no images: no entity, no sensor
     await setup(hass, entry)
-    state = hass.states.get("update.vordr_echo_containers")
+    state = hass.states.get(eid)
     assert state is not None and state.state == STATE_OFF  # only a tag that is too new
     assert state.attributes["installed_version"] == "4 images" and state.attributes["latest_version"] == "4 images"
     assert (
@@ -59,29 +62,40 @@ async def test_container_images_entity(hass: HomeAssistant, fake_hub: FakeHub, e
         == "Only reported, Vördr does not update images: ghcr.io/org/app 1.4.2 → 1.4.3 (too new)"
     )
     assert state.attributes["supported_features"] == UpdateEntityFeature(0)
-    assert er.async_get(hass).async_get_entity_id("update", "vordr", "golf:containers") is None
+    assert hass.states.get(sensor).state == "1" and hass.states.get(sensor).attributes["ready"] == 0
+    reg = er.async_get(hass)
+    assert reg.async_get_entity_id("update", "vordr", "golf:containers") is None
+    assert reg.async_get_entity_id("sensor", "vordr", "golf:outdated_images") is None
 
     await fake_hub.push_host(host_view("echo", containers=containers_view([DB, APP], 1)))
-    await wait_until(lambda: hass.states.get("update.vordr_echo_containers").state == STATE_ON)
-    attrs = hass.states.get("update.vordr_echo_containers").attributes
-    assert attrs["latest_version"] == "2 outdated, 1 old enough"
-    assert attrs["release_summary"] == (
+    await wait_until(lambda: hass.states.get(sensor).state == "2")
+    state = hass.states.get(eid)
+    assert state.state == STATE_OFF and state.attributes["latest_version"] == "4 images"  # nothing for a button
+    assert state.attributes["release_summary"] == (
         "Only reported, Vördr does not update images: stack/db 3 (rebuilt), stack/db 3 → 4 (new major version), "
         "ghcr.io/org/app 1.4.2 → 1.4.3 (too new)"
     )
+    attrs = state.attributes
     assert attrs["updates"][0]["containers"] == ["db"] and attrs["not_in_registry"] == 1 and attrs["local"] == 1
-    assert "updates" in hass.states.get("update.vordr_echo_containers").state_info["unrecorded_attributes"]
+    assert "updates" in state.state_info["unrecorded_attributes"]
+    attrs = hass.states.get(sensor).attributes
+    assert attrs["ready"] == 1 and "installable" not in attrs  # a hub before installable does not send it
+    assert attrs["updates"][0]["candidate"] == "4" and attrs["updates"][1]["image"] == "ghcr.io/org/app"
+    assert "updates" in hass.states.get(sensor).state_info["unrecorded_attributes"]
 
 
 async def test_container_images_without_registry_questions(
     hass: HomeAssistant, fake_hub: FakeHub, entry: MockConfigEntry
 ) -> None:
-    """packages.outdated off: the images are listed, nothing is compared - the entity stays off, never "unknown"."""
+    """packages.outdated off: the images are listed, nothing is compared - the entity stays off, never "unknown"; the
+    sensor "Outdated images" is unknown, not zero."""
     view = {**containers_view([], 0), "outdated": None, "ready": None, "updates": None}
     fake_hub.hosts["echo"] = host_view("echo", containers=view)
     await setup(hass, entry)
     state = hass.states.get("update.vordr_echo_containers")
     assert state.state == STATE_OFF and state.attributes["release_summary"] is None
+    sensor = hass.states.get("sensor.vordr_echo_outdated_images")
+    assert sensor.state == STATE_UNKNOWN and sensor.attributes["updates"] == [] and "ready" not in sensor.attributes
 
 
 async def test_container_images_same_major(hass: HomeAssistant, fake_hub: FakeHub, entry: MockConfigEntry) -> None:
@@ -100,7 +114,8 @@ async def test_container_images_same_major(hass: HomeAssistant, fake_hub: FakeHu
     fake_hub.hosts["echo"] = host_view("echo", containers=containers_view([web, db], 2))
     await setup(hass, entry)
     state = hass.states.get("update.vordr_echo_containers")
-    assert state.state == STATE_ON and state.attributes["latest_version"] == "2 outdated, 2 old enough"
+    assert state.state == STATE_OFF  # newer tags stay manual (ADR-0150)
+    assert hass.states.get("sensor.vordr_echo_outdated_images").attributes["ready"] == 2
     assert state.attributes["release_summary"] == (
         "Only reported, Vördr does not update images: "
         "stack/web 2.2.0 → 3.1.0 (new major version, or 2.4.0 in the same major version), "
@@ -108,14 +123,13 @@ async def test_container_images_same_major(hass: HomeAssistant, fake_hub: FakeHu
     )
     assert state.attributes["updates"][0]["same_major"] == "2.4.0"
 
-    # Without a step within the running major version: as before, and off while the new one is too new.
+    # Without a step within the running major version: as before.
     await fake_hub.push_host(host_view("echo", containers=containers_view([cache], 0)))
-    await wait_until(lambda: hass.states.get("update.vordr_echo_containers").state == STATE_OFF)
-    state = hass.states.get("update.vordr_echo_containers")
-    assert state.attributes["release_summary"] == (
-        "Only reported, Vördr does not update images: cache 7 → 8 (new major version, too new)"
-    )
-    assert "same_major" not in state.attributes["updates"][0]
+    cache_only = "Only reported, Vördr does not update images: cache 7 → 8 (new major version, too new)"
+    eid = "update.vordr_echo_containers"
+    await wait_until(lambda: hass.states.get(eid).attributes["release_summary"] == cache_only)
+    state = hass.states.get(eid)
+    assert state.state == STATE_OFF and "same_major" not in state.attributes["updates"][0]
 
 
 VULNERABLE_DB = {
@@ -172,7 +186,8 @@ async def test_container_images_with_vulnerabilities(
     assert state.state == STATE_OFF and state.attributes["fixable_newer"] == 0
     assert "newer" not in state.attributes["vulnerable"][0]
 
-    # A rebuild old enough is there: on, with how many of the images it fixes.
+    # A rebuild old enough is there, but of a service the host does not allow: still off (ADR-0150), the summary and
+    # the sensor "Outdated images" say what is there.
     db_newer = {**VULNERABLE_DB, "newer": True}
     view = {
         **containers_view([DB], 1),
@@ -180,8 +195,18 @@ async def test_container_images_with_vulnerabilities(
         "fixable_newer": 1,
         "unfixed": 1,
         "vulnerable": [db_newer],
+        "installable": 0,
     }
     await fake_hub.push_host(host_view("echo", containers=view))
+    await wait_until(lambda: hass.states.get("sensor.vordr_echo_outdated_images").state == "1")
+    state = hass.states.get("update.vordr_echo_containers")
+    assert state.state == STATE_OFF and state.attributes["release_summary"].endswith("1 without fix)")
+    assert hass.states.get("sensor.vordr_echo_outdated_images").attributes["installable"] == 0
+
+    # The host allows the service, so the button takes the rebuild: on, with how many of the images it fixes.
+    caps = {**host_view("echo")["capabilities"], "install": True, "image_updates": ["stack/db"]}
+    view = {**view, "updates": [{**DB, "services": ["stack/db"]}], "installable": 1}
+    await fake_hub.push_host(host_view("echo", containers=view, capabilities=caps))
     await wait_until(lambda: hass.states.get("update.vordr_echo_containers").state == STATE_ON)
     attrs = hass.states.get("update.vordr_echo_containers").attributes
     assert attrs["latest_version"] == "1 outdated, 1 old enough, 1 fixable by a newer image"
@@ -251,6 +276,8 @@ async def test_container_images_by_button(hass: HomeAssistant, fake_hub: FakeHub
     fake_hub.hosts["echo"] = host_view("echo", containers=containers_view([db, APP], 1), capabilities=caps)
     await setup(hass, entry)
     state = hass.states.get(eid)
+    # a hub before installable: the allowed services decide, as for the button
+    assert state.state == STATE_ON and state.attributes["latest_version"] == "2 outdated, 1 old enough"
     assert state.attributes["supported_features"] == UpdateEntityFeature.INSTALL | UpdateEntityFeature.PROGRESS
     assert state.attributes["release_summary"].startswith(
         "The install button takes rebuilds of the allowed services; newer tags stay manual: stack/db 3 (rebuilt)"
@@ -294,20 +321,27 @@ async def test_container_images_by_button(hass: HomeAssistant, fake_hub: FakeHub
     assert not hass.states.get(eid).attributes["in_progress"]
 
     # The hub says the button would take nothing now (only a newer tag, or no rebuild of an allowed service): no button,
-    # the entity still reports.
+    # and off (ADR-0150) - Home Assistant would list it as an update that cannot be installed. The sensor counts it.
     await fake_hub.push_host(
         host_view("echo", containers={**containers_view([db, APP], 1), "installable": 0}, capabilities=caps)
     )
     await wait_until(lambda: hass.states.get(eid).attributes["supported_features"] == 0)
-    assert hass.states.get(eid).state == STATE_ON
+    state = hass.states.get(eid)
+    assert state.state == STATE_OFF and state.attributes["latest_version"] == "4 images"
+    assert state.attributes["release_summary"].startswith("The install button takes rebuilds of the allowed services")
+    sensor = hass.states.get("sensor.vordr_echo_outdated_images").attributes
+    assert (sensor["ready"], sensor["installable"]) == (1, 0)
     await fake_hub.push_host(
         host_view("echo", containers={**containers_view([db, APP], 1), "installable": 1}, capabilities=caps)
     )
     await wait_until(lambda: hass.states.get(eid).attributes["supported_features"] != 0)
+    assert hass.states.get(eid).state == STATE_ON
 
-    # Without allowed services the entity only reports, as before.
+    # Without allowed services the entity only reports, and stays off.
     await fake_hub.push_host(
         host_view("echo", containers=containers_view([DB], 1), capabilities={**caps, "image_updates": []})
     )
     await wait_until(lambda: hass.states.get(eid).attributes["supported_features"] == 0)
-    assert hass.states.get(eid).attributes["release_summary"].startswith("Only reported, Vördr does not update images:")
+    state = hass.states.get(eid)
+    assert state.state == STATE_OFF
+    assert state.attributes["release_summary"].startswith("Only reported, Vördr does not update images:")

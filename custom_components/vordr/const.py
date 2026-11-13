@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Final
 
 DOMAIN: Final = "vordr"
-VERSION: Final = "0.34.1"  # keep in step with manifest.json
+VERSION: Final = "0.35.0"  # keep in step with manifest.json
 
 CONF_URL: Final = "url"
 CONF_NAME: Final = "name"
@@ -29,6 +29,22 @@ REASONS: Final = (
     "vulnerable_package",  # an installed pip/npm package has a known vulnerability
 )
 REASON_REBOOT_PENDING: Final = "reboot_pending"  # a reboot needed for longer than the hub's limit (ADR-0014)
+
+# What the update entity "Container images" and the sensor "Outdated images" show of one outdated image (ADR-0113).
+IMAGE_UPDATE_KEYS: Final = (
+    "image",
+    "tag",
+    "containers",
+    "rebuilt",
+    "rebuilt_at",
+    "rebuilt_ready",
+    "latest",
+    "candidate",
+    "latest_at",
+    "major",
+    "same_major",  # the smaller step beside a new major version (ADR-0131)
+    "services",
+)
 
 # Phases while a job runs and result codes once it is done, as internal/protocol/codes.go defines them. The
 # last-run sensor is an enum of exactly these.

@@ -10,7 +10,7 @@ from homeassistant.const import EntityCategory
 from homeassistant.util import dt as dt_util
 
 from .client import Connection
-from .const import CODES, PHASES
+from .const import CODES, IMAGE_UPDATE_KEYS, PHASES
 from .coordinator import VordrCoordinator
 from .entity import HostEntities, VordrHostEntity, VordrHubEntity, track_host_entities
 
@@ -52,6 +52,9 @@ async def async_setup_entry(
             factories["vulnerable_packages"] = lambda: HostPackageFindings(coordinator, node, malicious=False)
             factories["malicious_packages"] = lambda: HostPackageFindings(coordinator, node, malicious=True)
             factories["outdated_packages"] = lambda: HostOutdatedPackages(coordinator, node)
+        # container images (ADR-0113), for hosts that report them, like the update entity "Container images"
+        if isinstance(host.get("containers"), dict):
+            factories["outdated_images"] = lambda: HostOutdatedImages(coordinator, node)
         package = {"pending_updates", "security_updates"}
         if host.get("last_report") is None:
             return factories, package | undecided  # no report yet: whether there is a package source is open
@@ -238,6 +241,41 @@ class HostOutdatedPackages(VordrHostEntity, SensorEntity):
             "outdated_at": packages.get("outdated_at"),
             "min_age_days": packages.get("min_age_days"),
         }
+
+
+class HostOutdatedImages(VordrHostEntity, SensorEntity):
+    """Images of the host's running containers rebuilt under their tag or with a newer tag (ADR-0113), also those that
+    stay manual: a newer tag, a service the host does not let Home Assistant update, or a host whose images are only
+    reported. The update entity "Container images" is on only for what its install button would take (ADR-0150); this
+    sensor keeps the rest in view. ready: of those, the images with a candidate at least min_age_days old; installable:
+    the ones the button would take. Unknown while the images were never compared with their registries."""
+
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _unrecorded_attributes = frozenset({"updates"})  # can be long (ADR-0101)
+
+    def __init__(self, coordinator: VordrCoordinator, node: str) -> None:
+        super().__init__(coordinator, node, "outdated_images", PLATFORM)
+
+    def _view(self) -> dict[str, Any]:
+        view = self.host.get("containers")
+        return view if isinstance(view, dict) else {}
+
+    @property
+    def native_value(self) -> int | None:
+        value = self._view().get("outdated")
+        return value if isinstance(value, int) else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        view = self._view()
+        updates = view.get("updates") or []
+        attrs: dict[str, Any] = {"updates": [{k: u[k] for k in IMAGE_UPDATE_KEYS if u.get(k)} for u in updates]}
+        for key in ("ready", "installable", "min_age_days"):  # a hub before installable does not send it
+            if isinstance(view.get(key), int):
+                attrs[key] = view[key]
+        if view.get("compared_at"):
+            attrs["compared_at"] = view["compared_at"]
+        return attrs
 
 
 class HubHostsOnline(VordrHubEntity, SensorEntity):

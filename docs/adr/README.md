@@ -183,4 +183,5 @@ Generated from the files by `python3 docs/adr/check_index.py --write`. `build.sh
 | [0147](0147-a-backup-waits-for-a-hypervisor-busy-with-a-check-of-its-own.md) | A backup waits for a hypervisor busy with a check of its own | accepted | 2026-11-11 |
 | [0148](0148-a-kept-failed-install-is-a-repair-that-installs-again.md) | A kept failed install is a repair that installs again | accepted | 2026-11-11 |
 | [0149](0149-any-backup-system-plugs-in-through-a-status-contract-and-a-backup-command.md) | Any backup system plugs in through a read-only status contract and a backup command | proposed | 2026-11-11 |
+| [0150](0150-the-image-entity-is-on-only-when-its-install-button-would-take-something.md) | The image entity is on only when its install button would take something | accepted | 2026-11-13 |
 <!-- adr-index:end -->

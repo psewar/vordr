@@ -368,7 +368,7 @@ Name "Vördr <node>", identifier `("vordr", "host:<node>")`, manufacturer "Vörd
 | `update.vordr_<id>_system` | update | System packages | see 8.3 | the last report names a package source |
 | `update.vordr_<id>_<app>` | update | name of the app | real versions (installed, available) | not built yet; until then one button per app (below) |
 | `update.vordr_<id>_agent` | update | Agent | agent version against approved version; Install = `agent_update` (10.4) | the hub distributes agent releases |
-| `update.vordr_<id>_containers` | update | Container images | outdated and vulnerable images, rebuilds by button (11.5) | `packages.containers` on the host |
+| `update.vordr_<id>_containers` | update | Container images | outdated and vulnerable images, rebuilds by button; on only while the button would take something (11.5) | `packages.containers` on the host |
 | `update.vordr_<id>_packages_<location>` | update | Packages <location> | pip/npm packages of a location; Install = all candidates, service `vordr.update_package` = one, `vordr.refresh_dependencies` = dependencies with a finding (11.4) | the location is in `packages.update` and the hub has OSV data |
 | `sensor.vordr_<id>_last_run` | sensor (enum) | Last run | phase or result code (7.3) of the last job; attributes `job_id`, `verb`, `scope`, `started`, `finished`, `reason`, `log_excerpt` | always |
 | `sensor.vordr_<id>_pending_updates` | sensor | Pending updates | count; unknown if the check failed | the last report names a package source |
@@ -380,6 +380,7 @@ Name "Vördr <node>", identifier `("vordr", "host:<node>")`, manufacturer "Vörd
 | `sensor.vordr_<id>_malicious_packages` | sensor | Malicious packages | installed pip/npm packages that OSV lists as malware; attribute `findings` (11.2) | the agent sends a package inventory |
 | `sensor.vordr_<id>_vulnerable_packages` | sensor | Vulnerable packages | packages with a known vulnerability; attributes `findings` (per finding also `reach` and `held_by`, ADR-0129), `waiting`, `locations`, `packages_total`. The lists (`findings`, `locations`, `undecided`, for the outdated packages `updates`) are only in the state, not in the history (ADR-0101) | as above |
 | `sensor.vordr_<id>_outdated_packages` | sensor | Outdated packages | direct pip/npm packages with a newer release; attribute `updates` with `latest` and `candidate` (11.3) | as above |
+| `sensor.vordr_<id>_outdated_images` | sensor | Outdated images | images rebuilt under their tag or with a newer tag, also those that stay manual; attributes `ready`, `installable`, `updates` (not in the history), `compared_at`, `min_age_days` (11.5) | `packages.containers` on the host |
 | `button.vordr_<id>_check` | button | Check now | command `check` | the agent can do `check` |
 | `button.vordr_<id>_install_security` | button | Install security updates | command `install_security` | the agent can do `install`, `security` is allowed and not already the default scope |
 | `button.vordr_<id>_reboot` | button (restart) | Restart | command `reboot` | the agent can do `reboot` and `reboot.allowed` |
@@ -1477,12 +1478,18 @@ entry in `install.allowed_scopes`, Vördr only reports and pulls, starts or chan
   those with a candidate first). As long as the images have never been compared (`compared_at` is missing), `outdated`
   and `ready` are unknown, not zero. Outdated images are not a problem of the host. An image with only `same_major` (the
   new major version still too new) counts as `ready`: There is something that is old enough (ADR-0131).
-- **Home Assistant:** one update entity per host "Container images" (`update.vordr_<id>_containers`). On as long as an
-  image has a candidate. Without allowed services it cannot install, and the summary begins with "Reported only,
-  Vördr does not update images"; with allowed services see "Updating by button". Beside a new major version it names
-  the smaller step: "app 2.2.0 → 3.1.0 (new major version, or 2.4.0 in the same major version)". The list is in the
-  attribute `updates` (with `same_major`), not in the recorder
+- **Home Assistant:** one update entity per host "Container images" (`update.vordr_<id>_containers`). On only while
+  its install button would take something
+  ([ADR-0150](../docs/adr/0150-the-image-entity-is-on-only-when-its-install-button-would-take-something.md)).
+  Without allowed services it cannot install and stays off, and the summary begins with "Reported only, Vördr does
+  not update images"; with allowed services see "Updating by button". Beside a new major version it names the smaller
+  step: "app 2.2.0 → 3.1.0 (new major version, or 2.4.0 in the same major version)". The list is in the attribute
+  `updates` (with `same_major`), not in the recorder
   ([ADR-0101](../docs/adr/0101-package-lists-stay-out-of-the-recorder.md)).
+  - The sensor "Outdated images" (`sensor.vordr_<id>_outdated_images`) counts every outdated image (`outdated`), also
+    those that stay manual: a newer tag, a service the host does not allow, a host without allowed services. Its
+    attributes `ready` and `installable` say how many have a candidate and how many the button would take; `updates`
+    lists them, not in the recorder. Unknown while the images were never compared.
 - On the outdated pip/npm packages (11.3): If a package is at two locations, say older under `pip --user` and newer in
   the interpreter, `pip list --outdated` shows only the first, Vördr both locations.
 
@@ -1532,9 +1539,9 @@ entry in `install.allowed_scopes`, Vördr only reports and pulls, starts or chan
     there: That comes only when the publisher rebuilds.
   - In the data overview (`osv`) only releases an image needs appear.
 - **Home Assistant:** the same entity "Container images".
-  - Vulnerabilities alone do not turn it on, fixable ones neither: on only with a candidate (ADR-0130, as ADR-0106 for
-    the other update entities). With a candidate, `latest_version` also says for how many images with fixable advisories
-    a newer image is available ("1 fixable by newer image").
+  - Vulnerabilities alone do not turn it on, fixable ones neither: on only with a candidate (ADR-0130), and only with
+    one the install button would take (ADR-0150, as ADR-0106 for the other update entities). When on, `latest_version`
+    also says for how many images with fixable advisories a newer image is available ("1 fixable by newer image").
   - The summary says per image whether a newer image is ready: "2 fixable, newer image ready" or "2 fixed in the
     distribution, no newer image yet"; advisories without a fix as before. A hub from before ADR-0130 sends no
     `fixable_newer`; then the numbers stay without this addition.
@@ -1600,9 +1607,10 @@ entry in `install.allowed_scopes`, Vördr only reports and pulls, starts or chan
   nothing happened, the code says why (`precheck_disk_space`, `precheck_repo_unreachable`).
 - **Home Assistant:** "Container images" installs (`install_images`) when the host allows services and the hub counts
   something the button would take (`installable`), with progress; the summary then begins with "The Install button
-  takes rebuilt images of the approved services, newer tags remain manual work". The entity also stays on for manual
-  work. The action `vordr.update_image` (field `service`: `<project>/<service>`) updates one service, with `reason`
-  also outside the window, likewise `vordr.install_outside_window` for all.
+  takes rebuilt images of the approved services, newer tags remain manual work". Manual work alone leaves the entity off
+  (ADR-0150): Home Assistant would otherwise list it as an update that cannot be installed. The sensor "Outdated
+  images" counts it. The action `vordr.update_image` (field `service`: `<project>/<service>`) updates one service, with
+  `reason` also outside the window, likewise `vordr.install_outside_window` for all.
 
 ## 12. Hub
 

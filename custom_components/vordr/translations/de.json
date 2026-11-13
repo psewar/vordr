@@ -255,6 +255,7 @@
       "vulnerable_packages": { "name": "Verwundbare Pakete" },
       "malicious_packages": { "name": "Schädliche Pakete" },
       "outdated_packages": { "name": "Veraltete Pakete" },
+      "outdated_images": { "name": "Veraltete Images" },
       "hub_hosts_online": { "name": "Hosts verbunden" },
       "hub_hosts_with_problem": { "name": "Hosts mit Problem" },
       "hub_pending_approvals": { "name": "Wartende Freigaben" },

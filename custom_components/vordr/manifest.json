@@ -8,5 +8,5 @@
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/psewar/vordr/issues",
   "requirements": [],
-  "version": "0.34.1"
+  "version": "0.35.0"
 }
