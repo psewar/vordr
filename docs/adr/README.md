@@ -184,4 +184,6 @@ Generated from the files by `python3 docs/adr/check_index.py --write`. `build.sh
 | [0148](0148-a-kept-failed-install-is-a-repair-that-installs-again.md) | A kept failed install is a repair that installs again | accepted | 2026-11-11 |
 | [0149](0149-any-backup-system-plugs-in-through-a-status-contract-and-a-backup-command.md) | Any backup system plugs in through a read-only status contract and a backup command | proposed | 2026-11-11 |
 | [0150](0150-the-image-entity-is-on-only-when-its-install-button-would-take-something.md) | The image entity is on only when its install button would take something | accepted | 2026-11-13 |
+| [0151](0151-an-installer-that-does-not-match-its-hash-gets-its-own-result-code.md) | An installer that does not match its hash gets its own result code | accepted | 2026-11-15 |
+| [0152](0152-the-hash-mismatch-next-step-does-not-recommend-a-winget-pin.md) | The hash mismatch next step does not recommend a winget pin | accepted | 2026-11-15 |
 <!-- adr-index:end -->

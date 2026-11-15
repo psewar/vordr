@@ -76,6 +76,7 @@
               "precheck_disk_space": "Zu wenig Speicherplatz",
               "precheck_package_db_broken": "Paketdatenbank defekt",
               "precheck_repo_unreachable": "Paketquelle nicht erreichbar",
+              "precheck_hash_mismatch": "Installer passt nicht zu seinem Hash",
               "precheck_would_remove_packages": "Würde Pakete entfernen",
               "precheck_version_flagged": "Version von OSV markiert",
               "precheck_version_too_new": "Version zu neu",
@@ -116,6 +117,7 @@
               "precheck_disk_space": "Platz schaffen (Paket-Cache, /boot)",
               "precheck_package_db_broken": "Am Host dpkg --configure -a ausführen",
               "precheck_repo_unreachable": "Paketquelle und Netz prüfen",
+              "precheck_hash_mismatch": "Auf ein korrigiertes Paketmanifest warten; hat der Herausgeber die Datei nicht ersetzt, prüfen, woher sie stammt",
               "precheck_would_remove_packages": "Von Hand entscheiden: das Update würde Pakete entfernen",
               "precheck_version_flagged": "OSV-Eintrag ansehen und auf eine behobene Version warten",
               "precheck_version_too_new": "Warten, bis das Release alt genug ist",
@@ -152,6 +154,7 @@
               "precheck_disk_space": "Zu wenig Speicherplatz",
               "precheck_package_db_broken": "Paketdatenbank defekt",
               "precheck_repo_unreachable": "Paketquelle nicht erreichbar",
+              "precheck_hash_mismatch": "Installer passt nicht zu seinem Hash",
               "precheck_would_remove_packages": "Würde Pakete entfernen",
               "precheck_version_flagged": "Version von OSV markiert",
               "precheck_version_too_new": "Version zu neu",
@@ -224,6 +227,7 @@
           "precheck_disk_space": "Zu wenig Speicherplatz",
           "precheck_package_db_broken": "Paketdatenbank defekt",
           "precheck_repo_unreachable": "Paketquelle nicht erreichbar",
+          "precheck_hash_mismatch": "Installer passt nicht zu seinem Hash",
           "precheck_would_remove_packages": "Würde Pakete entfernen",
           "precheck_version_flagged": "Version von OSV markiert",
           "precheck_version_too_new": "Version zu neu",
@@ -438,6 +442,10 @@
     "problem_precheck_repo_unreachable": {
       "title": "Vördr: Update-Problem auf {node}",
       "description": "Paketquelle nicht erreichbar.\n\nNächster Schritt: Paketquelle und Netz prüfen."
+    },
+    "problem_precheck_hash_mismatch": {
+      "title": "Vördr: Update-Problem auf {node}",
+      "description": "Installer passt nicht zu seinem Hash.\n\nNächster Schritt: Auf ein korrigiertes Paketmanifest warten; hat der Herausgeber die Datei nicht ersetzt, prüfen, woher sie stammt."
     },
     "problem_precheck_would_remove_packages": {
       "title": "Vördr: Update-Problem auf {node}",

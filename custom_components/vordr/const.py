@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Final
 
 DOMAIN: Final = "vordr"
-VERSION: Final = "0.35.1"  # keep in step with manifest.json
+VERSION: Final = "0.36.1"  # keep in step with manifest.json
 
 CONF_URL: Final = "url"
 CONF_NAME: Final = "name"
@@ -63,6 +63,7 @@ CODES: Final = (
     "precheck_disk_space",
     "precheck_package_db_broken",
     "precheck_repo_unreachable",
+    "precheck_hash_mismatch",  # the downloaded installer does not match its source's hash; nothing installed (ADR-0151)
     "precheck_would_remove_packages",
     "precheck_version_flagged",
     "precheck_version_too_new",

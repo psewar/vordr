@@ -278,6 +278,7 @@ Ergebnisse (`problem` = setzt `binary_sensor.<node>_problem`):
 | `precheck_disk_space` | zu wenig Platz (Paket-Cache, `/boot`) | aufräumen | ja |
 | `precheck_package_db_broken` | Paketdatenbank unterbrochen (`dpkg --audit` nicht leer) | `dpkg --configure -a` von Hand | ja |
 | `precheck_repo_unreachable` | Paketquelle nicht erreichbar oder ihre Signatur ungültig | Quelle und Netz prüfen | ja |
+| `precheck_hash_mismatch` | der heruntergeladene Installer passt nicht zum Hash, den seine Quelle angibt (winget `0x8A150011`); nichts davon wurde installiert ([ADR-0151](../docs/adr/0151-an-installer-that-does-not-match-its-hash-gets-its-own-result-code.md)) | auf ein korrigiertes Manifest warten; hat der Herausgeber die Datei nicht ersetzt, prüfen, woher sie stammt | ja |
 | `precheck_would_remove_packages` | der Probelauf würde Pakete entfernen, die kein Paket des Laufs ersetzt | von Hand entscheiden | ja |
 | `precheck_version_flagged` | pip/npm-Update (11.4): eine Version des Plans, auch eine Abhängigkeit, steht in den OSV-Daten (Schadsoftware oder Schwachstelle) | Eintrag ansehen; auf eine behobene Version warten | ja |
 | `precheck_version_too_new` | pip/npm-Update: eine Version des Plans ist jünger als `packages.min_age_days` | warten, bis sie alt genug ist | nein |
@@ -959,6 +960,7 @@ Microsofts PowerShell-Modul `Microsoft.WinGet.Client` (dieselbe COM-Schnittstell
   | winget | Code |
   |---|---|
   | `Ok`, `NoApplicableUpgrade` | `ok` (mit `RebootRequired` → `ok_reboot_required`) |
+  | jeder Fehlschlag mit dem erweiterten Fehlercode `0x8A150011` (der Installer passt nicht zum Hash im Manifest) | `precheck_hash_mismatch` ([ADR-0151](../docs/adr/0151-an-installer-that-does-not-match-its-hash-gets-its-own-result-code.md)) |
   | `DownloadError`, `CatalogError` | `precheck_repo_unreachable` |
   | `InstallError` mit Installer-Code 1618 (anderes MSI läuft) | `rejected_busy` |
   | alles andere | `failed_package_manager`, Status und Codes im Auszug |

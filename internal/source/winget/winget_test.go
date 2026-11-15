@@ -247,6 +247,13 @@ func TestInstallResults(t *testing.T) {
 		"download, other ok": {`"status":"DownloadError"`, `"status":"Ok"`, listNone, protocol.CodeFailedPackageManager, "DownloadError"},
 		"download, nothing else": {`"status":"CatalogError","extended_error_code":-1978335137`, `"status":"NoApplicableUpgrade"`,
 			listNone, protocol.CodePrecheckRepoUnreachable, "jqlang.jq: CatalogError, 0x8A15005F"},
+		// ADR-0151: the installer does not match its manifest's hash - its own code, decided on the number.
+		"hash mismatch, nothing else": {`"status":"DownloadError","extended_error_code":-1978335215`, `"status":"NoApplicableUpgrade"`,
+			listNone, protocol.CodePrecheckHashMismatch, "jqlang.jq: DownloadError, 0x8A150011"},
+		"hash mismatch, other ok": {`"status":"DownloadError","extended_error_code":-1978335215`, `"status":"Ok"`,
+			listNone, protocol.CodeFailedPackageManager, "jqlang.jq: DownloadError, 0x8A150011"},
+		"download failed, other code": {`"status":"DownloadError","extended_error_code":-1978335224`, `"status":"NoApplicableUpgrade"`,
+			listNone, protocol.CodePrecheckRepoUnreachable, "jqlang.jq: DownloadError, 0x8A150008"},
 		"thrown": {`"status":"exception","error_type":"System.Exception","detail":"No package found"`, `"status":"Ok"`, listNone,
 			protocol.CodeFailedPackageManager, "jqlang.jq: exception (System.Exception: No package found)"},
 		"still pending": {`"status":"Ok"`, `"status":"NoApplicableUpgrade"`, strings.Replace(listTwo, `{"id":"jqlang.jq","name":"jq","installed":"1.7.0","available":"1.7.1","source":"winget"},`, "", 1),

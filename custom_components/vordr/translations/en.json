@@ -76,6 +76,7 @@
               "precheck_disk_space": "Not enough disk space",
               "precheck_package_db_broken": "Package database broken",
               "precheck_repo_unreachable": "Package source unreachable",
+              "precheck_hash_mismatch": "Installer does not match its hash",
               "precheck_would_remove_packages": "Would remove packages",
               "precheck_version_flagged": "Version flagged by OSV",
               "precheck_version_too_new": "Version too new",
@@ -116,6 +117,7 @@
               "precheck_disk_space": "Free up space (package cache, /boot)",
               "precheck_package_db_broken": "Run dpkg --configure -a on the host",
               "precheck_repo_unreachable": "Check the package source and the network",
+              "precheck_hash_mismatch": "Wait for a corrected package manifest; if the publisher did not replace the file, check where it comes from",
               "precheck_would_remove_packages": "Decide by hand: the update would remove packages",
               "precheck_version_flagged": "Look at the OSV entry and wait for a fixed version",
               "precheck_version_too_new": "Wait until the release is old enough",
@@ -152,6 +154,7 @@
               "precheck_disk_space": "Not enough disk space",
               "precheck_package_db_broken": "Package database broken",
               "precheck_repo_unreachable": "Package source unreachable",
+              "precheck_hash_mismatch": "Installer does not match its hash",
               "precheck_would_remove_packages": "Would remove packages",
               "precheck_version_flagged": "Version flagged by OSV",
               "precheck_version_too_new": "Version too new",
@@ -224,6 +227,7 @@
           "precheck_disk_space": "Not enough disk space",
           "precheck_package_db_broken": "Package database broken",
           "precheck_repo_unreachable": "Package source unreachable",
+          "precheck_hash_mismatch": "Installer does not match its hash",
           "precheck_would_remove_packages": "Would remove packages",
           "precheck_version_flagged": "Version flagged by OSV",
           "precheck_version_too_new": "Version too new",
@@ -438,6 +442,10 @@
     "problem_precheck_repo_unreachable": {
       "title": "Vördr: update problem on {node}",
       "description": "Package source unreachable.\n\nNext step: Check the package source and the network."
+    },
+    "problem_precheck_hash_mismatch": {
+      "title": "Vördr: update problem on {node}",
+      "description": "Installer does not match its hash.\n\nNext step: Wait for a corrected package manifest; if the publisher did not replace the file, check where it comes from."
     },
     "problem_precheck_would_remove_packages": {
       "title": "Vördr: update problem on {node}",

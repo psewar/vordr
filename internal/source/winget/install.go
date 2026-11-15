@@ -20,6 +20,9 @@ const (
 
 	// installerBusyCode: ERROR_INSTALL_ALREADY_RUNNING, the exit code of an MSI that found another installation going.
 	installerBusyCode = 1618
+	// installerHashMismatch: winget's APPINSTALLER_CLI_ERROR_INSTALLER_HASH_MISMATCH (0x8A150011, as the signed 32-bit
+	// value winget reports), "the installer file's hash does not match the manifest" (ADR-0151).
+	installerHashMismatch = -1978335215
 )
 
 type upgradeEvent struct {
@@ -187,11 +190,18 @@ func (w *Winget) Install(ctx context.Context, req source.InstallRequest, install
 // RebootRequired: what Windows records about a pending reboot.
 func (w *Winget) RebootRequired() bool { return w.Pending().Required }
 
-// statusCode maps winget's PSInstallResultStatus to a result code.
+// statusCode maps winget's PSInstallResultStatus to a result code. A failure whose extended error code says the
+// installer does not match its manifest's hash gets its own code (ADR-0151), whatever status winget files it under
+// (seen: DownloadError); decided on the number, never on a text.
 func statusCode(ev upgradeEvent) protocol.Code {
 	switch ev.Status {
 	case "Ok", "NoApplicableUpgrade":
 		return protocol.CodeOK
+	}
+	if ev.ExtendedErrorCode == installerHashMismatch {
+		return protocol.CodePrecheckHashMismatch // nothing of this package was installed
+	}
+	switch ev.Status {
 	case "DownloadError", "CatalogError":
 		return protocol.CodePrecheckRepoUnreachable // nothing of this package was installed
 	case "InstallError":

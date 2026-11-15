@@ -271,6 +271,7 @@ Results (`problem` = sets `binary_sensor.<node>_problem`):
 | `precheck_disk_space` | too little space (package cache, `/boot`) | clean up | yes |
 | `precheck_package_db_broken` | package database interrupted (`dpkg --audit` not empty) | `dpkg --configure -a` by hand | yes |
 | `precheck_repo_unreachable` | package source not reachable or its signature invalid | check source and network | yes |
+| `precheck_hash_mismatch` | the downloaded installer does not match the hash its source states (winget `0x8A150011`); nothing of it was installed ([ADR-0151](../docs/adr/0151-an-installer-that-does-not-match-its-hash-gets-its-own-result-code.md)) | wait for a corrected manifest; if the publisher did not replace the file, check where it comes from | yes |
 | `precheck_would_remove_packages` | the dry run would remove packages that no package of the run replaces | decide by hand | yes |
 | `precheck_version_flagged` | pip/npm update (11.4): a version of the plan, a dependency too, is in the OSV data (malware or vulnerability) | look at the entry; wait for a fixed version | yes |
 | `precheck_version_too_new` | pip/npm update: a version of the plan is younger than `packages.min_age_days` | wait until it is old enough | no |
@@ -938,6 +939,7 @@ Microsoft's PowerShell module `Microsoft.WinGet.Client` (the same COM interface 
   | winget | Code |
   |---|---|
   | `Ok`, `NoApplicableUpgrade` | `ok` (with `RebootRequired` → `ok_reboot_required`) |
+  | any failure with the extended error code `0x8A150011` (the installer does not match the manifest's hash) | `precheck_hash_mismatch` ([ADR-0151](../docs/adr/0151-an-installer-that-does-not-match-its-hash-gets-its-own-result-code.md)) |
   | `DownloadError`, `CatalogError` | `precheck_repo_unreachable` |
   | `InstallError` with installer code 1618 (another MSI is running) | `rejected_busy` |
   | everything else | `failed_package_manager`, status and codes in the excerpt |

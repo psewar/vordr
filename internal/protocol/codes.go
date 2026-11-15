@@ -58,7 +58,11 @@ const (
 	CodePrecheckDiskSpace       Code = "precheck_disk_space"
 	CodePrecheckPackageDBBroken Code = "precheck_package_db_broken"
 	CodePrecheckRepoUnreachable Code = "precheck_repo_unreachable"
-	CodePrecheckWouldRemove     Code = "precheck_would_remove_packages"
+	// CodePrecheckHashMismatch: a downloaded installer or package does not match the hash its source states, so nothing
+	// of it was installed (ADR-0151; first winget's 0x8A150011). Usually the publisher replaced the file before the
+	// source caught up (nightly builds); it may also be tampering.
+	CodePrecheckHashMismatch Code = "precheck_hash_mismatch"
+	CodePrecheckWouldRemove  Code = "precheck_would_remove_packages"
 	// pip/npm updates (design 11.4): a version of the plan is flagged by OSV; one is younger than min_age_days; the
 	// hub could not vouch for the plan (no or stale OSV data, no answer); an npm plan has an entry from somewhere other
 	// than the registry - another host, git, a file (ADR-0128).
@@ -106,6 +110,8 @@ var codes = []struct {
 	{CodePrecheckDiskSpace, true},
 	{CodePrecheckPackageDBBroken, true},
 	{CodePrecheckRepoUnreachable, true},
+	// A file that is not the one its source vouches for: someone has to look, as with a flagged version.
+	{CodePrecheckHashMismatch, true},
 	{CodePrecheckWouldRemove, true},
 	// An update that would bring malware or a known hole: someone has to look. A release too new waits by design.
 	{CodePrecheckVersionFlagged, true},

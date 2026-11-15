@@ -259,12 +259,13 @@ func TestCodes(t *testing.T) {
 		}
 		seen[c] = true
 	}
-	if len(seen) != 29 {
-		t.Errorf("%d codes, design table has 29", len(seen))
+	if len(seen) != 30 {
+		t.Errorf("%d codes, design table has 30", len(seen))
 	}
 	for c, want := range map[Code]bool{CodeOK: false, CodeRejectedOutsideWindow: false, CodeRejectedInvalidJob: true,
 		CodeInterrupted: true, Code("made_up"): true, CodePrecheckVersionFlagged: true, CodePrecheckVersionTooNew: false,
-		CodePrecheckVettingUnavailable: true, CodePrecheckNotFromRegistry: true, CodeFailedTargetAuth: true, CodeFailedTargetTLS: true,
+		CodePrecheckVettingUnavailable: true, CodePrecheckNotFromRegistry: true, CodePrecheckHashMismatch: true,
+		CodeFailedTargetAuth: true, CodeFailedTargetTLS: true,
 		CodeFailedTargetHostKey: true, CodeFailedConfigBackup: true, CodeFailedBackup: true} {
 		if c.Problem() != want {
 			t.Errorf("%q.Problem() = %v, want %v", c, c.Problem(), want)
