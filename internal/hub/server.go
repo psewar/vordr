@@ -98,6 +98,9 @@ type session struct {
 	// agent runs the check that follows its start and holds its lock (ADR-0147). Both under mu.
 	connected time.Time
 	reported  bool
+	// sending: held from the moment a job goes out until its run is recorded (sendJob). The agent may report its first
+	// phase at once; progress waits for it, so that phase is not dropped for want of a run to put it in.
+	sending sync.Mutex
 }
 
 // NewServer starts with the default limits of hub.yaml; the caller may set Limits and Version before serving. An
@@ -414,7 +417,9 @@ func (s *Server) deliver(sess *session, st wire.JobStatus) {
 		fields["reason"] = st.Reason
 	}
 	if !st.Final() {
+		sess.sending.Lock() // a job sent just now records its run first
 		s.progress(sess.node, st)
+		sess.sending.Unlock()
 		return // progress is not an event worth keeping
 	}
 	sess.mu.Lock()
@@ -665,12 +670,15 @@ func (s *Server) signAndSend(sess *session, node string, job protocol.Job) (prot
 }
 
 // sendJob sends job and records it as the host's run. started: when the run began, if before now (an install that
-// waited for its backup keeps the moment it was asked for); zero means now.
+// waited for its backup keeps the moment it was asked for); zero means now. The session's progress waits until the run
+// is recorded: the agent can report its first phase before this function gets there.
 func (s *Server) sendJob(node string, job protocol.Job, by string, started time.Time) (*SentJob, AdminCode) {
 	sess, code := s.sendable(node, job.Verb)
 	if code != AdminOK {
 		return nil, code
 	}
+	sess.sending.Lock()
+	defer sess.sending.Unlock()
 	job, ch, code := s.signAndSend(sess, node, job)
 	if code != AdminOK {
 		return nil, code

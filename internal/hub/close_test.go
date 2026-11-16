@@ -20,7 +20,9 @@ import (
 	"github.com/psewar/vordr/internal/wire"
 )
 
-// tunnelAgent logs an approved host in over a real tunnel and returns its end of the connection.
+// tunnelAgent logs an approved host in over a real tunnel and returns its end of the connection once the hub counts it
+// as connected: the hub sends its status before it registers the session, so the status alone does not say that a job
+// can reach the host yet.
 func tunnelAgent(t *testing.T, f *viewFixture, ts *httptest.Server, node string, verbs ...protocol.Verb) *wire.Conn {
 	t.Helper()
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
@@ -47,7 +49,14 @@ func tunnelAgent(t *testing.T, f *viewFixture, ts *httptest.Server, node string,
 	if err != nil || json.Unmarshal(raw, &st) != nil || st.State != wire.StateApproved {
 		t.Fatalf("status: %v %+v", err, st)
 	}
-	return conn
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+		if online, _ := f.srv.Online(node); online {
+			return conn
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the hub did not register the session")
+		}
+	}
 }
 
 func dialTunnel(t *testing.T, ts *httptest.Server) *wire.Conn {
