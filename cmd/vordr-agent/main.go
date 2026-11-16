@@ -201,6 +201,7 @@ func checkConfig(path string) int {
 	for _, h := range cfg.Health {
 		fmt.Printf("         after installs: %s\n", h)
 	}
+	fmt.Printf("       %s\n", rebootSummary(cfg.Reboot))
 	if b := cfg.GuestBackup; b != nil {
 		fmt.Printf("       guest backups before installs: to %s, at most %d min each (never pruned)\n", b.Storage, b.TimeoutMin)
 	}
@@ -219,6 +220,31 @@ func checkConfig(path string) int {
 	}
 	fmt.Printf("       %s\n", packagesSummary(cfg.Packages, cfg.Install.ImagePatterns()))
 	return 0
+}
+
+// rebootSummary is check-config's line about reboots through Vördr: when they may run, whether a reason from Home
+// Assistant opens the window (ADR-0087) or not (reboot.window_only, ADR-0154), and the idle check that can hold them
+// (ADR-0155). An operator checking agent.yaml must see when, and on whose word, this host can be rebooted from outside.
+func rebootSummary(rb policy.Reboot) string {
+	if !rb.Allowed {
+		if rb.WindowOnly || len(rb.IdleCheck) > 0 {
+			return "reboot: not through Vördr (window_only and idle_check do nothing without reboot.allowed)"
+		}
+		return "reboot: not through Vördr"
+	}
+	s := "reboot: window "
+	if w := rb.Window; w != nil { // check-config requires it with reboot.allowed
+		s += strings.Join(w.Days, ",") + " " + w.Start + "-" + w.End + " (host's local time)"
+	}
+	if rb.WindowOnly {
+		s += ", kept shut also for a reason (window_only)"
+	} else {
+		s += ", a reason opens it"
+	}
+	if len(rb.IdleCheck) == 0 {
+		return s + ", no idle check"
+	}
+	return s + ", idle check " + strings.Join(rb.IdleCheck, " ")
 }
 
 // packagesSummary is check-config's line about packages: where the agent looks, and whether it reports the images of

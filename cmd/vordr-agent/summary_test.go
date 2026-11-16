@@ -6,6 +6,32 @@ import (
 	"github.com/psewar/vordr/internal/policy"
 )
 
+// check-config says when and on whose word the host can be rebooted from outside (ADR-0087, ADR-0154, ADR-0155), and
+// that the reboot keys do nothing without reboot.allowed.
+func TestRebootSummary(t *testing.T) {
+	w := &policy.Window{Days: []string{"mon", "tue"}, Start: "06:00", End: "16:00"}
+	cases := []struct {
+		name string
+		rb   policy.Reboot
+		want string
+	}{
+		{"not allowed", policy.Reboot{}, "reboot: not through Vördr"},
+		{"keys without allowed", policy.Reboot{WindowOnly: true, IdleCheck: []string{"/usr/local/sbin/idle"}},
+			"reboot: not through Vördr (window_only and idle_check do nothing without reboot.allowed)"},
+		{"allowed", policy.Reboot{Allowed: true, Window: w},
+			"reboot: window mon,tue 06:00-16:00 (host's local time), a reason opens it, no idle check"},
+		{"window only, idle check", policy.Reboot{Allowed: true, Window: w, WindowOnly: true,
+			IdleCheck: []string{"/usr/local/sbin/idle", "--strict"}},
+			"reboot: window mon,tue 06:00-16:00 (host's local time), kept shut also for a reason (window_only), " +
+				"idle check /usr/local/sbin/idle --strict"},
+	}
+	for _, c := range cases {
+		if got := rebootSummary(c.rb); got != c.want {
+			t.Errorf("%s:\n got  %q\n want %q", c.name, got, c.want)
+		}
+	}
+}
+
 // check-config names the container images either way: switched on, they mean traffic from the host to the
 // registries (ADR-0113), and an operator checking agent.yaml must see it - and that the agent writes to the engine
 // for the services it may update (ADR-0119).
