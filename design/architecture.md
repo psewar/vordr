@@ -136,14 +136,16 @@ TLS secures confidentiality. Trust in jobs and binaries rests on the signatures
 |---|---|---|
 | taken over a host | forge its state | influence other hosts, create jobs |
 | taken over the hub | read the inventory; trigger allowed jobs, with a reason also outside the window (ADR-0087); forge the HA display | put commands or code on hosts, choose packages, widen the scope, get around the reboot ban or the minimum interval, swap agent binaries |
-| an approved Home Assistant | trigger check and install, with a reason also outside the window, with role `admin` also reboots (12) – through the hub, so within the policies | more than the hub |
+| an approved Home Assistant | trigger check and install, with a reason also outside the window, with role `admin` also reboots (12) – through the hub, so within the policies | more than the hub; reboot a host that does not need it, again after a reboot that did not take (ADR-0153), outside a window the host keeps shut (ADR-0154) or while its idle check says busy (ADR-0155) |
 | the network (eavesdrop, redirect) | disturb connections | forge jobs (hub signature), slip in binaries (operator signature and SHA-256) |
 | the operator key | put code on all agents | – hence never on the hub; rotation through a new public key in the agent configuration |
 
 For comparison: with a central patch server with remote execution, one compromised server means root on all hosts.
 
 Further brakes in the agent: at most one run at a time, minimum interval between two install runs
-(`install.min_interval_h`), reboot only if needed, allowed and in the window (or with a reason, 6.4).
+(`install.min_interval_h`), reboot only if needed, allowed and in the window (or with a reason, 6.4, unless
+`reboot.window_only`), at most once per hour, not again after a reboot that did not take, and only when the host's idle
+check says it is idle (10.2).
 
 ## 6. Verbs
 
@@ -156,7 +158,7 @@ The set of verbs is closed. What is not listed here does not exist
 |---|---|---|---|
 | `check` | – | query the sources again (package lists, Windows Update search) | always allowed; at most every 5 min |
 | `install` | `scope`: `security`, `all`, `app:<id>`, `pkg:<location>[/<name>]` (pip/npm, 11.4), `image:<project>/<service>` or `images` (container images, 11.5); `outside_window` (6.4) | install updates | scope is in `install.allowed_scopes` (for `pkg:` the location in `packages.update`; for `images` every service that an `image:` entry names), window open or a reason, preconditions met |
-| `reboot` | `outside_window` (6.4) | reboot | `reboot.allowed`, window open or a reason, and a reboot is actually needed |
+| `reboot` | `outside_window` (6.4) | reboot | `reboot.allowed`, window open or a reason (not with `reboot.window_only`), a reboot is actually needed, the last one did not fail, and `reboot.idle_check` says idle (10.2) |
 | `agent_update` | signed manifest, one-time token | agent swaps itself | `agent_update.enabled`; manifest signed by the operator |
 | `cancel` | `job_id` | abort a run | only until the package installation begins; after that the package manager runs to the end, otherwise the system would stay half updated |
 | `backup` | `guest`: `vm/<id>` or `ct/<id>` | only the hypervisor's agent: a backup of this guest to PBS, right before its install (10.2) | `guest_backup` in the `agent.yaml`; the guest lives on this host; at most one backup per guest in 10 min |
@@ -221,7 +223,9 @@ button. If a human wants a run now, they give a reason. For installs the hub doe
   along.
 - **Agent:** A job with a reason gets past `install.window` (also for `pkg:`) and `reboot.window`; the agent writes
   the reason to the log. Everything else still applies: allowed scope, `packages.update`, `reboot.allowed`, reboot
-  only if needed, `install.min_interval_h`, one run at a time, the hub's backup check.
+  only if needed, `install.min_interval_h`, one run at a time, the hub's backup check. A host with
+  `reboot.window_only: true` keeps `reboot.window` shut also for a reason
+  ([ADR-0154](../docs/adr/0154-a-host-can-keep-reboots-inside-its-window-even-with-a-reason.md)).
 - **Older agents** read jobs strictly and would reject the unknown field as `rejected_invalid_job`. The agent
   therefore announces it in the hello (`policy.outside_window`); to any other the hub sends no reason and
   answers HA with `outside_window_unsupported`.
@@ -268,6 +272,8 @@ Results (`problem` = sets `binary_sensor.<node>_problem`):
 | `rejected_busy` | another run or a foreign package manager holds the lock (e.g. unattended-upgrades) | try again later; end the double operation | no |
 | `rejected_not_allowed` | the local policy forbids the verb (e.g. `reboot` with `reboot.allowed: false`) | the host's policy | no |
 | `rejected_unsupported` | this agent version or platform cannot do the verb; the hub should not have sent it | update the agent | yes |
+| `rejected_not_idle` | the host's own idle check (`reboot.idle_check`) says it is busy, or could not say that it is idle; nothing was rebooted ([ADR-0155](../docs/adr/0155-an-idle-check-of-the-host-can-hold-a-reboot.md)) | wait until the host's own tasks are done, then reboot again | no |
+| `rejected_last_reboot_failed` | the last reboot through Vördr did not take (`failed_verification`), and the host has not booted another way since ([ADR-0153](../docs/adr/0153-a-reboot-that-did-not-take-holds-further-reboots-until-the-host-boots-another-way.md)) | reboot the host another way once; look why the last reboot did not help | yes |
 | `precheck_disk_space` | too little space (package cache, `/boot`) | clean up | yes |
 | `precheck_package_db_broken` | package database interrupted (`dpkg --audit` not empty) | `dpkg --configure -a` by hand | yes |
 | `precheck_repo_unreachable` | package source not reachable or its signature invalid | check source and network | yes |
@@ -467,6 +473,8 @@ install:
 reboot:
   allowed: false
   window: {days: [sun], start: "03:00", end: "04:00"}
+  window_only: false                # true: a reason does not open the reboot window (ADR-0154)
+  idle_check: [/usr/local/sbin/vordr-idle-check]   # optional: exit 0 = idle, otherwise no reboot (ADR-0155)
 agent_update:
   enabled: true
   public_key: "<base64>"            # operator key
@@ -679,10 +687,21 @@ Active Backup for Business was examined for this and rejected
     containers back before it reports; the result `interrupted` names them (`restarted`) and those that do not start
     ([ADR-0125](../docs/adr/0125-bring-back-containers-after-an-interrupted-run.md)).
 - **Reboot** (verb `reboot`; [ADR-0041](../docs/adr/0041-reboot-with-window-and-proof.md)):
-  - Only with `reboot.allowed` and within `reboot.window` (outside only with a reason, 6.4), only if the host really
-    needs it (the same signals as the report: `reboot-required`, running versus newest kernel), and only if nothing else
-    is running.
+  - Only with `reboot.allowed` and within `reboot.window` (outside only with a reason, 6.4; with
+    `reboot.window_only: true` not even with one,
+    [ADR-0154](../docs/adr/0154-a-host-can-keep-reboots-inside-its-window-even-with-a-reason.md)), only if the host
+    really needs it (the same signals as the report: `reboot-required`, running versus newest kernel), and only if
+    nothing else is running.
   - At most one per hour, against reboot loops.
+  - After a reboot that did not take (`failed_verification`), no further one through Vördr while the host still runs
+    the boot in which that was found: `rejected_last_reboot_failed`. The agent notes that boot in `reboot.json`
+    (`failed`, `failed_boot`); any other boot lifts the block
+    ([ADR-0153](../docs/adr/0153-a-reboot-that-did-not-take-holds-further-reboots-until-the-host-boots-another-way.md)).
+  - Idle check (`reboot.idle_check`): a command of the host that the agent runs after it has found the reboot needed,
+    under its run lock and right before the reboot, without a shell. Exit status 0 means idle; any other status, a
+    missing command or one that does not finish within 30 s holds the reboot (`rejected_not_idle`, the first line of
+    its output as the detail). For hosts with work of their own that a reboot would break off, such as a backup server
+    ([ADR-0155](../docs/adr/0155-an-idle-check-of-the-host-can-hold-a-reboot.md)).
   - Before the reboot the agent writes `reboot.json` with the boot ID (`/proc/sys/kernel/random/boot_id`) and reports the
     phase `rebooting`. The hub therefore waits for it instead of reporting `interrupted`.
   - After the start, the agent proves the reboot with a new boot ID and checks that none is needed any more. Only then

@@ -112,6 +112,11 @@ func TestIssues(t *testing.T) {
 		"interval out of range":          "install: {min_interval_h: 500}\n",
 		"unknown install mode":           "install: {mode: dist-upgrade}\n",
 		"reboot without window":          "reboot: {allowed: true}\n",
+		"window_only without window":     "reboot: {window_only: true}\n",
+		"idle check relative":            "reboot: {idle_check: [vordr-idle]}\n",
+		"idle check missing":             "reboot: {idle_check: [/nonexistent/vordr-idle]}\n",
+		"idle check empty entry":         "reboot: {idle_check: [/nonexistent/vordr-idle, '']}\n",
+		"idle check too long":            "reboot: {idle_check: [/a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q]}\n",
 		"agent update without key":       "agent_update: {enabled: true}\n",
 		"backup key not a key":           "agent_update: {enabled: true, public_key: KEY, backup_public_key: abc}\n",
 		"app duplicate":                  "apps: [{id: a, name: A, source: apt-package, package: a}, {id: a, name: A, source: apt-package, package: b}]\n",
@@ -174,6 +179,39 @@ func TestAutoHubIsRefusedOnWindows(t *testing.T) {
 	goos = "windows"
 	if _, issues := Parse([]byte(strings.Replace(raw, "auto: hub", "auto: \"off\"", 1))); len(issues) != 0 {
 		t.Errorf("windows, auto off: issues = %v", issues)
+	}
+}
+
+// A reboot kept inside its window and held by an idle check (ADR-0154, ADR-0155): the command is a file that is there
+// and executable, taken with its arguments as they stand.
+func TestRebootWindowOnlyAndIdleCheck(t *testing.T) {
+	dir := t.TempDir()
+	idle := filepath.Join(dir, "vordr-idle")
+	if err := os.WriteFile(idle, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	raw := "reboot: {allowed: true, window: {days: [sun], start: '03:00', end: '04:00'}, window_only: true, " +
+		"idle_check: ['" + idle + "', --quiet]}\n"
+	cfg, issues := Parse([]byte(raw))
+	if len(issues) > 0 {
+		t.Fatalf("issues: %v", issues)
+	}
+	if !cfg.Reboot.WindowOnly || len(cfg.Reboot.IdleCheck) != 2 || cfg.Reboot.IdleCheck[1] != "--quiet" {
+		t.Fatalf("reboot: %+v", cfg.Reboot)
+	}
+	if goos == "windows" {
+		return // no execute bit to take away
+	}
+	plain := filepath.Join(dir, "not-executable")
+	if err := os.WriteFile(plain, []byte("exit 0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, issues := Parse([]byte("reboot: {idle_check: ['" + plain + "']}\n")); len(issues) != 1 ||
+		issues[0].Field != "reboot.idle_check" {
+		t.Fatalf("not executable: issues = %v", issues)
+	}
+	if _, issues := Parse([]byte("reboot: {idle_check: ['" + dir + "']}\n")); len(issues) != 1 {
+		t.Fatalf("a folder: issues = %v", issues)
 	}
 }
 

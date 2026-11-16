@@ -73,6 +73,8 @@
               "rejected_busy": "Abgelehnt: beschäftigt",
               "rejected_not_allowed": "Abgelehnt: vom Host nicht erlaubt",
               "rejected_unsupported": "Abgelehnt: nicht unterstützt",
+              "rejected_not_idle": "Abgelehnt: Host beschäftigt (Leerlauf-Prüfung)",
+              "rejected_last_reboot_failed": "Abgelehnt: der letzte Neustart hat nicht gewirkt",
               "precheck_disk_space": "Zu wenig Speicherplatz",
               "precheck_package_db_broken": "Paketdatenbank defekt",
               "precheck_repo_unreachable": "Paketquelle nicht erreichbar",
@@ -114,6 +116,8 @@
               "rejected_busy": "Später erneut versuchen; gleichzeitig laufende Updater beenden (z. B. unattended-upgrades)",
               "rejected_not_allowed": "Richtlinie des Hosts prüfen",
               "rejected_unsupported": "Agent aktualisieren",
+              "rejected_not_idle": "Warten, bis die eigenen Aufgaben des Hosts fertig sind (seine Leerlauf-Prüfung, reboot.idle_check), dann erneut neu starten",
+              "rejected_last_reboot_failed": "Den Host einmal anders neu starten und nachsehen, warum der letzte Neustart nicht half (z. B. welchen Kernel der Bootloader startet)",
               "precheck_disk_space": "Platz schaffen (Paket-Cache, /boot)",
               "precheck_package_db_broken": "Am Host dpkg --configure -a ausführen",
               "precheck_repo_unreachable": "Paketquelle und Netz prüfen",
@@ -151,6 +155,8 @@
               "rejected_busy": "Abgelehnt: beschäftigt",
               "rejected_not_allowed": "Abgelehnt: vom Host nicht erlaubt",
               "rejected_unsupported": "Abgelehnt: nicht unterstützt",
+              "rejected_not_idle": "Abgelehnt: Host beschäftigt (Leerlauf-Prüfung)",
+              "rejected_last_reboot_failed": "Abgelehnt: der letzte Neustart hat nicht gewirkt",
               "precheck_disk_space": "Zu wenig Speicherplatz",
               "precheck_package_db_broken": "Paketdatenbank defekt",
               "precheck_repo_unreachable": "Paketquelle nicht erreichbar",
@@ -224,6 +230,8 @@
           "rejected_busy": "Abgelehnt: beschäftigt",
           "rejected_not_allowed": "Abgelehnt: vom Host nicht erlaubt",
           "rejected_unsupported": "Abgelehnt: nicht unterstützt",
+          "rejected_not_idle": "Abgelehnt: Host beschäftigt (Leerlauf-Prüfung)",
+          "rejected_last_reboot_failed": "Abgelehnt: der letzte Neustart hat nicht gewirkt",
           "precheck_disk_space": "Zu wenig Speicherplatz",
           "precheck_package_db_broken": "Paketdatenbank defekt",
           "precheck_repo_unreachable": "Paketquelle nicht erreichbar",
@@ -430,6 +438,14 @@
     "problem_rejected_unsupported": {
       "title": "Vördr: Update-Problem auf {node}",
       "description": "Abgelehnt: nicht unterstützt.\n\nNächster Schritt: Agent aktualisieren."
+    },
+    "problem_rejected_not_idle": {
+      "title": "Vördr: Update-Problem auf {node}",
+      "description": "Abgelehnt: Host beschäftigt (Leerlauf-Prüfung).\n\nNächster Schritt: Warten, bis die eigenen Aufgaben des Hosts fertig sind (seine Leerlauf-Prüfung, reboot.idle_check), dann erneut neu starten."
+    },
+    "problem_rejected_last_reboot_failed": {
+      "title": "Vördr: Update-Problem auf {node}",
+      "description": "Abgelehnt: der letzte Neustart hat nicht gewirkt.\n\nNächster Schritt: Den Host einmal anders neu starten und nachsehen, warum der letzte Neustart nicht half (z. B. welchen Kernel der Bootloader startet)."
     },
     "problem_precheck_disk_space": {
       "title": "Vördr: Update-Problem auf {node}",

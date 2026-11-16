@@ -73,6 +73,8 @@
               "rejected_busy": "Rejected: busy",
               "rejected_not_allowed": "Rejected: not allowed by the host",
               "rejected_unsupported": "Rejected: not supported",
+              "rejected_not_idle": "Rejected: the host is busy (idle check)",
+              "rejected_last_reboot_failed": "Rejected: the last reboot did not take",
               "precheck_disk_space": "Not enough disk space",
               "precheck_package_db_broken": "Package database broken",
               "precheck_repo_unreachable": "Package source unreachable",
@@ -114,6 +116,8 @@
               "rejected_busy": "Try again later; stop other updaters running at the same time (e.g. unattended-upgrades)",
               "rejected_not_allowed": "Check the host policy",
               "rejected_unsupported": "Update the agent",
+              "rejected_not_idle": "Wait until the host's own tasks are done (its idle check, reboot.idle_check), then reboot again",
+              "rejected_last_reboot_failed": "Reboot the host another way once and look why the last reboot did not help (e.g. which kernel the boot loader starts)",
               "precheck_disk_space": "Free up space (package cache, /boot)",
               "precheck_package_db_broken": "Run dpkg --configure -a on the host",
               "precheck_repo_unreachable": "Check the package source and the network",
@@ -151,6 +155,8 @@
               "rejected_busy": "Rejected: busy",
               "rejected_not_allowed": "Rejected: not allowed by the host",
               "rejected_unsupported": "Rejected: not supported",
+              "rejected_not_idle": "Rejected: the host is busy (idle check)",
+              "rejected_last_reboot_failed": "Rejected: the last reboot did not take",
               "precheck_disk_space": "Not enough disk space",
               "precheck_package_db_broken": "Package database broken",
               "precheck_repo_unreachable": "Package source unreachable",
@@ -224,6 +230,8 @@
           "rejected_busy": "Rejected: busy",
           "rejected_not_allowed": "Rejected: not allowed by the host",
           "rejected_unsupported": "Rejected: not supported",
+          "rejected_not_idle": "Rejected: the host is busy (idle check)",
+          "rejected_last_reboot_failed": "Rejected: the last reboot did not take",
           "precheck_disk_space": "Not enough disk space",
           "precheck_package_db_broken": "Package database broken",
           "precheck_repo_unreachable": "Package source unreachable",
@@ -430,6 +438,14 @@
     "problem_rejected_unsupported": {
       "title": "Vördr: update problem on {node}",
       "description": "Rejected: not supported.\n\nNext step: Update the agent."
+    },
+    "problem_rejected_not_idle": {
+      "title": "Vördr: update problem on {node}",
+      "description": "Rejected: the host is busy (idle check).\n\nNext step: Wait until the host's own tasks are done (its idle check, reboot.idle_check), then reboot again."
+    },
+    "problem_rejected_last_reboot_failed": {
+      "title": "Vördr: update problem on {node}",
+      "description": "Rejected: the last reboot did not take.\n\nNext step: Reboot the host another way once and look why the last reboot did not help (e.g. which kernel the boot loader starts)."
     },
     "problem_precheck_disk_space": {
       "title": "Vördr: update problem on {node}",

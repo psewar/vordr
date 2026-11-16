@@ -279,7 +279,17 @@ func (in Install) AllowsImage(project, service string) bool {
 type Reboot struct {
 	Allowed bool    `yaml:"allowed"`
 	Window  *Window `yaml:"window"`
+	// WindowOnly: a reason (ADR-0087) does not open reboot.window; a reboot runs only inside it, whoever asks
+	// (ADR-0154). Default false: a reason opens it, as for installs.
+	WindowOnly bool `yaml:"window_only"`
+	// IdleCheck: a command the agent runs right before a needed reboot (ADR-0155). Exit status 0 means the host is idle
+	// and may reboot; any other status holds the reboot (rejected_not_idle), and the first line of the output says why.
+	// The command and its arguments as a list, run without a shell; the command is an absolute path. Empty: no check.
+	IdleCheck []string `yaml:"idle_check"`
 }
+
+// MaxIdleCheckArgs bounds reboot.idle_check: the command and its arguments.
+const MaxIdleCheckArgs = 16
 
 type AgentUpdate struct {
 	Enabled   bool   `yaml:"enabled"`
@@ -557,8 +567,27 @@ func (c *Config) Validate() []Issue {
 	if c.Reboot.Allowed && c.Reboot.Window == nil {
 		add("reboot.window", "required when reboot.allowed is true")
 	}
+	if c.Reboot.WindowOnly && c.Reboot.Window == nil {
+		add("reboot.window", "required when reboot.window_only is true")
+	}
 	if c.Reboot.Window != nil {
 		out = append(out, c.Reboot.Window.check("reboot.window")...)
+	}
+	if ic := c.Reboot.IdleCheck; len(ic) > 0 {
+		// The agent runs it as root before every reboot: it must be a file that is there now, not something a PATH or a
+		// shell finds later.
+		switch fi, err := os.Stat(ic[0]); {
+		case len(ic) > MaxIdleCheckArgs:
+			add("reboot.idle_check", "at most %d entries (the command and its arguments)", MaxIdleCheckArgs)
+		case slices.Contains(ic, ""):
+			add("reboot.idle_check", "has an empty entry")
+		case !filepath.IsAbs(ic[0]):
+			add("reboot.idle_check", "%q: the command must be an absolute path", ic[0])
+		case err != nil:
+			add("reboot.idle_check", "%s is not readable", ic[0])
+		case !fi.Mode().IsRegular() || goos != "windows" && fi.Mode().Perm()&0o111 == 0:
+			add("reboot.idle_check", "%s is not an executable file", ic[0])
+		}
 	}
 
 	if c.AgentUpdate.Enabled && !validKey(c.AgentUpdate.PublicKey) {

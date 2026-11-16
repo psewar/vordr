@@ -26,6 +26,10 @@ install:
 reboot:
   allowed: false
   window: {days: [sun], start: "03:00", end: "04:00"}
+  # window_only: true               # a reason from Home Assistant does not open the window (ADR-0154)
+  # Asked right before a needed reboot (ADR-0155): exit status 0 = idle; any other status holds the reboot, and the
+  # first line it prints says why. The command and its arguments as a list, no shell; the command is an absolute path.
+  # idle_check: [/usr/local/sbin/vordr-idle-check]
 
 # agent_update:
 #   enabled: true

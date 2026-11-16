@@ -186,4 +186,7 @@ Generated from the files by `python3 docs/adr/check_index.py --write`. `build.sh
 | [0150](0150-the-image-entity-is-on-only-when-its-install-button-would-take-something.md) | The image entity is on only when its install button would take something | accepted | 2026-11-13 |
 | [0151](0151-an-installer-that-does-not-match-its-hash-gets-its-own-result-code.md) | An installer that does not match its hash gets its own result code | accepted | 2026-11-15 |
 | [0152](0152-the-hash-mismatch-next-step-does-not-recommend-a-winget-pin.md) | The hash mismatch next step does not recommend a winget pin | accepted | 2026-11-15 |
+| [0153](0153-a-reboot-that-did-not-take-holds-further-reboots-until-the-host-boots-another-way.md) | A reboot that did not take holds further reboots until the host boots another way | accepted | 2026-11-16 |
+| [0154](0154-a-host-can-keep-reboots-inside-its-window-even-with-a-reason.md) | A host can keep reboots inside its window even with a reason | accepted | 2026-11-16 |
+| [0155](0155-an-idle-check-of-the-host-can-hold-a-reboot.md) | An idle check of the host can hold a reboot | accepted | 2026-11-16 |
 <!-- adr-index:end -->

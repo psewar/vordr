@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Final
 
 DOMAIN: Final = "vordr"
-VERSION: Final = "0.36.1"  # keep in step with manifest.json
+VERSION: Final = "0.37.0"  # keep in step with manifest.json
 
 CONF_URL: Final = "url"
 CONF_NAME: Final = "name"
@@ -60,6 +60,8 @@ CODES: Final = (
     "rejected_busy",
     "rejected_not_allowed",
     "rejected_unsupported",
+    "rejected_not_idle",  # the host's idle check says it is busy; nothing was rebooted (ADR-0155)
+    "rejected_last_reboot_failed",  # the last reboot did not take; none until the host booted otherwise (ADR-0153)
     "precheck_disk_space",
     "precheck_package_db_broken",
     "precheck_repo_unreachable",

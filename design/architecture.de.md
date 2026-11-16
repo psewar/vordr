@@ -141,7 +141,7 @@ TLS sichert die Vertraulichkeit. Das Vertrauen in Aufträge und Binaries hängt 
 |---|---|---|
 | einen Host übernommen | dessen Zustand fälschen | andere Hosts beeinflussen, Aufträge erzeugen |
 | den Hub übernommen | den Bestand lesen; erlaubte Aufträge auslösen, mit einem Grund auch ausserhalb des Fensters (ADR-0087); die HA-Anzeige fälschen | Befehle oder Code auf Hosts bringen, Pakete wählen, Umfang erweitern, Neustartverbot oder Mindestabstand umgehen, Agent-Binaries tauschen |
-| ein freigegebenes Home Assistant | Prüfen und Installieren anstossen, mit Grund auch ausserhalb des Fensters, mit Rolle `admin` auch Neustarts (12) – über den Hub, also innerhalb der Richtlinien | mehr als der Hub |
+| ein freigegebenes Home Assistant | Prüfen und Installieren anstossen, mit Grund auch ausserhalb des Fensters, mit Rolle `admin` auch Neustarts (12) – über den Hub, also innerhalb der Richtlinien | mehr als der Hub; einen Host neu starten, der es nicht braucht, erneut nach einem Neustart, der nicht gewirkt hat (ADR-0153), ausserhalb eines Fensters, das der Host geschlossen hält (ADR-0154), oder solange seine Leerlauf-Prüfung „beschäftigt“ sagt (ADR-0155) |
 | das Netz (mitlesen, umlenken) | Verbindungen stören | Aufträge fälschen (Hub-Signatur), Binaries unterschieben (Betreiber-Signatur und SHA-256) |
 | den Betreiber-Schlüssel | Code auf alle Agenten bringen | – darum nie auf dem Hub; Rotation über einen neuen öffentlichen Schlüssel in der Agent-Konfiguration |
 
@@ -149,7 +149,9 @@ Zum Vergleich: Bei einem zentralen Patch-Server mit Fernausführung bedeutet ein
 Hosts.
 
 Weitere Bremsen im Agenten: höchstens ein Lauf gleichzeitig, Mindestabstand zwischen zwei Installationsläufen
-(`install.min_interval_h`), Neustart nur wenn nötig, erlaubt und im Fenster (oder mit Grund, 6.4).
+(`install.min_interval_h`), Neustart nur wenn nötig, erlaubt und im Fenster (oder mit Grund, 6.4, ausser mit
+`reboot.window_only`), höchstens einmal pro Stunde, nicht erneut nach einem Neustart, der nicht gewirkt hat, und nur
+wenn die Leerlauf-Prüfung des Hosts „frei“ sagt (10.2).
 
 ## 6. Verben
 
@@ -162,7 +164,7 @@ Die Verbmenge ist geschlossen. Was hier nicht steht, gibt es nicht
 |---|---|---|---|
 | `check` | – | Quellen neu abfragen (Paketlisten, Windows-Update-Suche) | immer erlaubt; höchstens alle 5 min |
 | `install` | `scope`: `security`, `all`, `app:<id>`, `pkg:<ort>[/<name>]` (pip/npm, 11.4), `image:<projekt>/<dienst>` oder `images` (Container-Images, 11.5); `outside_window` (6.4) | Updates einspielen | Umfang steht in `install.allowed_scopes` (bei `pkg:` der Ort in `packages.update`; bei `images` jeder Dienst, den ein `image:`-Eintrag nennt), Fenster offen oder ein Grund, Vorbedingungen erfüllt |
-| `reboot` | `outside_window` (6.4) | Neustart | `reboot.allowed`, Fenster offen oder ein Grund, und ein Neustart ist tatsächlich nötig |
+| `reboot` | `outside_window` (6.4) | Neustart | `reboot.allowed`, Fenster offen oder ein Grund (nicht mit `reboot.window_only`), ein Neustart ist tatsächlich nötig, der letzte ist nicht gescheitert, und `reboot.idle_check` sagt „frei“ (10.2) |
 | `agent_update` | signiertes Manifest, Einmal-Token | Agent tauscht sich selbst | `agent_update.enabled`; Manifest vom Betreiber signiert |
 | `cancel` | `job_id` | Lauf abbrechen | nur bis zum Beginn der Paketinstallation; danach läuft der Paketmanager zu Ende, sonst bliebe das System halb aktualisiert |
 | `backup` | `guest`: `vm/<id>` oder `ct/<id>` | nur der Agent des Hypervisors: ein Backup dieses Gastes nach PBS, direkt vor dessen Install (10.2) | `guest_backup` in der `agent.yaml`; der Gast liegt auf diesem Host; höchstens ein Backup je Gast in 10 min |
@@ -228,7 +230,9 @@ ihn ([ADR-0109](../docs/adr/0109-the-install-button-installs-at-once.md)):
   signiert den Grund mit.
 - **Agent:** Ein Auftrag mit Grund kommt an `install.window` (auch bei `pkg:`) und `reboot.window` vorbei; der Agent
   schreibt den Grund ins Log. Alles andere gilt weiter: erlaubter Umfang, `packages.update`, `reboot.allowed`, Neustart
-  nur wenn nötig, `install.min_interval_h`, ein Lauf zur Zeit, die Backup-Prüfung der Leitstelle.
+  nur wenn nötig, `install.min_interval_h`, ein Lauf zur Zeit, die Backup-Prüfung der Leitstelle. Ein Host mit
+  `reboot.window_only: true` hält `reboot.window` auch für einen Grund geschlossen
+  ([ADR-0154](../docs/adr/0154-a-host-can-keep-reboots-inside-its-window-even-with-a-reason.md)).
 - **Ältere Agenten** lesen Aufträge streng und würden das unbekannte Feld als `rejected_invalid_job` ablehnen. Der
   Agent kündigt es darum im Hello an (`policy.outside_window`); einem anderen schickt die Leitstelle keinen Grund und
   antwortet HA mit `outside_window_unsupported`.
@@ -275,6 +279,8 @@ Ergebnisse (`problem` = setzt `binary_sensor.<node>_problem`):
 | `rejected_busy` | ein anderer Lauf oder ein fremder Paketmanager hält die Sperre (z. B. unattended-upgrades) | später erneut; Doppelbetrieb beenden | nein |
 | `rejected_not_allowed` | die lokale Richtlinie verbietet das Verb (z. B. `reboot` bei `reboot.allowed: false`) | Richtlinie des Hosts | nein |
 | `rejected_unsupported` | diese Agent-Version oder Plattform kann das Verb nicht; der Hub hätte es nicht schicken dürfen | Agent aktualisieren | ja |
+| `rejected_not_idle` | die eigene Leerlauf-Prüfung des Hosts (`reboot.idle_check`) sagt „beschäftigt“ oder konnte nicht sagen, dass er frei ist; nichts wurde neu gestartet ([ADR-0155](../docs/adr/0155-an-idle-check-of-the-host-can-hold-a-reboot.md)) | warten, bis die eigenen Aufgaben des Hosts fertig sind, dann erneut neu starten | nein |
+| `rejected_last_reboot_failed` | der letzte Neustart über Vördr hat nicht gewirkt (`failed_verification`), und der Host ist seither nicht anders neu gestartet ([ADR-0153](../docs/adr/0153-a-reboot-that-did-not-take-holds-further-reboots-until-the-host-boots-another-way.md)) | den Host einmal anders neu starten; nachsehen, warum der letzte Neustart nicht half | ja |
 | `precheck_disk_space` | zu wenig Platz (Paket-Cache, `/boot`) | aufräumen | ja |
 | `precheck_package_db_broken` | Paketdatenbank unterbrochen (`dpkg --audit` nicht leer) | `dpkg --configure -a` von Hand | ja |
 | `precheck_repo_unreachable` | Paketquelle nicht erreichbar oder ihre Signatur ungültig | Quelle und Netz prüfen | ja |
@@ -475,6 +481,8 @@ install:
 reboot:
   allowed: false
   window: {days: [sun], start: "03:00", end: "04:00"}
+  window_only: false                # true: ein Grund öffnet das Neustart-Fenster nicht (ADR-0154)
+  idle_check: [/usr/local/sbin/vordr-idle-check]   # freiwillig: Exit 0 = frei, sonst kein Neustart (ADR-0155)
 agent_update:
   enabled: true
   public_key: "<base64>"            # Betreiber-Schlüssel
@@ -694,10 +702,22 @@ Active Backup for Business wurde dafür geprüft und verworfen
     Agenten diese Container zurück, bevor er sich meldet; das Ergebnis `interrupted` nennt sie (`restarted`) und die,
     die nicht starten ([ADR-0125](../docs/adr/0125-bring-back-containers-after-an-interrupted-run.md)).
 - **Neustart** (Verb `reboot`; [ADR-0041](../docs/adr/0041-reboot-with-window-and-proof.md)):
-  - Nur mit `reboot.allowed` und im `reboot.window` (ausserhalb nur mit Grund, 6.4), nur wenn der Host ihn wirklich
-    braucht (dieselben Signale wie der Bericht: `reboot-required`, laufender gegen neuesten Kernel), und nur, wenn
-    sonst nichts läuft.
+  - Nur mit `reboot.allowed` und im `reboot.window` (ausserhalb nur mit Grund, 6.4; mit `reboot.window_only: true`
+    auch mit Grund nicht,
+    [ADR-0154](../docs/adr/0154-a-host-can-keep-reboots-inside-its-window-even-with-a-reason.md)), nur wenn der Host
+    ihn wirklich braucht (dieselben Signale wie der Bericht: `reboot-required`, laufender gegen neuesten Kernel), und
+    nur, wenn sonst nichts läuft.
   - Höchstens einer pro Stunde, gegen Neustart-Schleifen.
+  - Nach einem Neustart, der nicht gewirkt hat (`failed_verification`), keiner mehr über Vördr, solange der Host noch
+    in dem Boot läuft, in dem das festgestellt wurde: `rejected_last_reboot_failed`. Der Agent vermerkt den Boot in
+    `reboot.json` (`failed`, `failed_boot`); jeder andere Neustart hebt die Sperre auf
+    ([ADR-0153](../docs/adr/0153-a-reboot-that-did-not-take-holds-further-reboots-until-the-host-boots-another-way.md)).
+  - Leerlauf-Prüfung (`reboot.idle_check`): ein Befehl des Hosts, den der Agent nach der Feststellung des Bedarfs und
+    unter seiner Laufsperre direkt vor dem Neustart ausführt, ohne Shell. Exit-Status 0 heisst frei; jeder andere
+    Status, ein fehlender Befehl oder einer, der nicht innert 30 s fertig wird, hält den Neustart an
+    (`rejected_not_idle`, die erste Zeile der Ausgabe als Detail). Für Hosts mit eigener Arbeit, die ein Neustart
+    abbricht, etwa einen Backup-Server
+    ([ADR-0155](../docs/adr/0155-an-idle-check-of-the-host-can-hold-a-reboot.md)).
   - Vor dem Neustart schreibt der Agent `reboot.json` mit der Boot-Kennung (`/proc/sys/kernel/random/boot_id`) und
     meldet die Phase `rebooting`. Die Leitstelle wartet deshalb auf ihn, statt `interrupted` zu melden.
   - Der Agent nach dem Start belegt den Neustart mit einer neuen Boot-Kennung und prüft, dass keiner mehr nötig ist.

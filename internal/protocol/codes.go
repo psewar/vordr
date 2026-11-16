@@ -55,9 +55,15 @@ const (
 	CodeRejectedBusy            Code = "rejected_busy"
 	CodeRejectedNotAllowed      Code = "rejected_not_allowed" // the local policy forbids this verb
 	CodeRejectedUnsupported     Code = "rejected_unsupported" // this agent version or platform cannot do it
-	CodePrecheckDiskSpace       Code = "precheck_disk_space"
-	CodePrecheckPackageDBBroken Code = "precheck_package_db_broken"
-	CodePrecheckRepoUnreachable Code = "precheck_repo_unreachable"
+	// CodeRejectedNotIdle: the host's own idle check (reboot.idle_check, ADR-0155) says it is busy, or could not say that
+	// it is idle; nothing was rebooted.
+	CodeRejectedNotIdle Code = "rejected_not_idle"
+	// CodeRejectedLastRebootFailed: the last reboot through Vördr did not take (failed_verification), and the host has
+	// not booted another way since (ADR-0153). Someone has to look at it.
+	CodeRejectedLastRebootFailed Code = "rejected_last_reboot_failed"
+	CodePrecheckDiskSpace        Code = "precheck_disk_space"
+	CodePrecheckPackageDBBroken  Code = "precheck_package_db_broken"
+	CodePrecheckRepoUnreachable  Code = "precheck_repo_unreachable"
 	// CodePrecheckHashMismatch: a downloaded installer or package does not match the hash its source states, so nothing
 	// of it was installed (ADR-0151; first winget's 0x8A150011). Usually the publisher replaced the file before the
 	// source caught up (nightly builds); it may also be tampering.
@@ -107,6 +113,10 @@ var codes = []struct {
 	{CodeRejectedNotAllowed, false},
 	// The hub knows the agent's verbs from its hello and should never send another one; if it does, that is worth seeing.
 	{CodeRejectedUnsupported, true},
+	// The host is busy by its own account: wait, as with rejected_busy.
+	{CodeRejectedNotIdle, false},
+	// A reboot that did not take is no routine matter; it stays a problem until someone looks.
+	{CodeRejectedLastRebootFailed, true},
 	{CodePrecheckDiskSpace, true},
 	{CodePrecheckPackageDBBroken, true},
 	{CodePrecheckRepoUnreachable, true},
