@@ -7,12 +7,17 @@ from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
 from homeassistant.const import EntityCategory
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.util import dt as dt_util
 
+from .ai_explain import ATTRIBUTES as AI_ATTRIBUTES
 from .client import Connection
 from .const import CODES, IMAGE_UPDATE_KEYS, PHASES
-from .coordinator import VordrCoordinator
-from .entity import HostEntities, VordrHostEntity, VordrHubEntity, track_host_entities
+from .coordinator import HA_DEVICE, VordrCoordinator
+from .entity import HA_UPDATES_UID, HostEntities, VordrHostEntity, VordrHubEntity, track_host_entities
+from .ha_updates import CODES as HA_UPDATE_CODES, PHASES as HA_UPDATE_PHASES, READY, RESULTS, Planned
+from .ha_updates_installer import HaUpdatesInstaller
+from .ha_updates_tracker import HaUpdatesTracker
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
@@ -34,6 +39,8 @@ async def async_setup_entry(
             HubPendingApprovals(coordinator),
             HubConnection(coordinator),
             HubVulnerabilityData(coordinator),
+            HaUpdatesReady(coordinator.ha_updates),
+            HaUpdatesLastRun(coordinator.ha_updates_installer),
         ]
     )
 
@@ -108,10 +115,13 @@ class HostLastBackup(VordrHostEntity, SensorEntity):
 
 
 class HostLastRun(VordrHostEntity, SensorEntity):
-    """Phase while a job runs, its result code once done."""
+    """Phase while a job runs, its result code once done. With AI explanations switched on (ADR-0166), the result for
+    the run it shows: ai_code, and with ok the select fields, the explanation and the checked quote; out of the
+    recorder, advice only."""
 
     _attr_device_class = SensorDeviceClass.ENUM
     _attr_options = [*PHASES, *CODES]
+    _unrecorded_attributes = frozenset(AI_ATTRIBUTES)
 
     def __init__(self, coordinator: VordrCoordinator, node: str) -> None:
         super().__init__(coordinator, node, "last_run", PLATFORM)
@@ -137,7 +147,7 @@ class HostLastRun(VordrHostEntity, SensorEntity):
         # Commands waiting at the hub until this run has ended (e.g. "install:all" after an agent update).
         if self.host.get("queued"):
             attrs["queued"] = self.host["queued"]
-        return attrs
+        return attrs | self.coordinator.ai.attributes(self.node, str(run.get("job_id") or ""))
 
 
 class HostCount(VordrHostEntity, SensorEntity):
@@ -180,7 +190,8 @@ class HostPackageFindings(VordrHostEntity, SensorEntity):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         packages = self._packages()
-        # reach and held_by (ADR-0129): where the fix is, and what keeps the package below it
+        # reach and held_by (ADR-0129): where the fix is, and what keeps the package below it; known_exploited and the
+        # kev_ fields (ADR-0168): a CVE of the finding is in the KEV catalog
         keys = (
             "location",
             "name",
@@ -192,6 +203,10 @@ class HostPackageFindings(VordrHostEntity, SensorEntity):
             "fixed_in",
             "reach",
             "held_by",
+            "known_exploited",
+            "kev_cves",
+            "kev_added",
+            "kev_ransomware",
         )
         findings = [
             {k: f[k] for k in keys if f.get(k)}
@@ -202,6 +217,8 @@ class HostPackageFindings(VordrHostEntity, SensorEntity):
         if not self._malicious:  # the overview once per host: where the agent looked and how much it found
             if isinstance(packages.get("waiting"), int):
                 attrs["waiting"] = packages["waiting"]  # whose fix nothing on the host can take now: no problem
+            if isinstance(packages.get("known_exploited"), int):  # absent while the hub has no KEV catalog
+                attrs["known_exploited"] = packages["known_exploited"]
             attrs["packages_total"] = packages.get("total")
             attrs["locations"] = [
                 {k: loc[k] for k in ("id", "ecosystem", "path", "packages", "code") if loc.get(k) is not None}
@@ -329,7 +346,8 @@ class HubPendingApprovals(VordrHubEntity, SensorEntity):
 
 class HubVulnerabilityData(VordrHubEntity, SensorEntity):
     """When the hub last fetched its OSV data (the oldest of its ecosystems); unknown while one has none, or when the
-    hub has no osv section. The state of each ecosystem is in the attributes."""
+    hub has no osv section. The state of each ecosystem is in the attributes, and with a kev section the state of the
+    KEV catalog (ADR-0168)."""
 
     _attr_device_class = SensorDeviceClass.TIMESTAMP
     _attr_entity_category = EntityCategory.DIAGNOSTIC
@@ -350,7 +368,7 @@ class HubVulnerabilityData(VordrHubEntity, SensorEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        return {
+        attrs: dict[str, Any] = {
             "ecosystems": {
                 e.get("ecosystem"): {
                     k: e[k] for k in ("state", "code", "modified", "advisories", "malicious") if e.get(k)
@@ -358,6 +376,132 @@ class HubVulnerabilityData(VordrHubEntity, SensorEntity):
                 for e in self._osv()
             }
         }
+        kev = self.hub.get("kev")
+        if isinstance(kev, dict):  # absent without a kev section at the hub
+            keys = ("state", "code", "checked", "released", "catalog_version", "entries")
+            attrs["kev"] = {k: kev[k] for k in keys if kev.get(k)}
+        return attrs
+
+
+def _local(at: datetime | None) -> str | None:
+    """A time for the attributes: ISO 8601 in Home Assistant's time zone, to the minute."""
+    return dt_util.as_local(at).isoformat(timespec="minutes") if at is not None else None
+
+
+class HaUpdatesReady(SensorEntity):
+    """Home Assistant's own update entities that Vördr's rules would install now (ADR-0158); Vördr installs them only
+    once the options switch that on (ADR-0162), and the sensor "Last run" shows what it did. State: how many are ready.
+    Attributes: per reason code how many (their names are the codes' texts), the minimum age and the one of device
+    firmware and radio (ADR-0180), and the list `updates` - per update entity its kind, code, versions, first sight
+    (ADR-0159), that of its line where it inherits from it (ADR-0179), and, where it waits for a time, the earliest
+    time it would be ready. The list stays out of the recorder (ADR-0101). On the device "Vördr Home Assistant", not the
+    hub's: it does not need the hub and stays available without a connection."""
+
+    _attr_has_entity_name = True
+    _attr_should_poll = False
+    _attr_translation_key = "ha_updates_ready"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _unrecorded_attributes = frozenset({"updates"})
+
+    def __init__(self, tracker: HaUpdatesTracker) -> None:
+        self._tracker = tracker
+        self._attr_unique_id = f"{HA_UPDATES_UID}ready"
+        self.entity_id = "sensor.vordr_ha_updates_ready"
+        self._attr_device_info = ha_device()
+
+    async def async_added_to_hass(self) -> None:
+        self.async_on_remove(self._tracker.async_add_listener(self.async_write_ha_state))
+
+    @property
+    def native_value(self) -> int:
+        return sum(1 for p in self._tracker.planned if p.code == READY)
+
+    @staticmethod
+    def _item(p: Planned) -> dict[str, Any]:
+        item = {
+            "entity_id": p.entity_id,
+            "kind": p.kind,
+            "code": p.code,
+            "installed_version": p.installed,
+            "latest_version": p.latest,
+            "first_seen": _local(p.first_seen),
+            "line_first_seen": _local(p.line_seen),
+            "earliest": _local(p.earliest),
+        }
+        return {k: v for k, v in item.items() if v is not None}
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        counts = dict.fromkeys(HA_UPDATE_CODES, 0)
+        for p in self._tracker.planned:
+            counts[p.code] += 1
+        return {
+            **counts,
+            "min_age_days": self._tracker.policy.min_age.days,
+            # the same for both kinds of FIRMWARE_KINDS: device firmware and the radio adapter
+            "min_age_days_firmware": self._tracker.policy.min_age_for("firmware").days,
+            "updates": [self._item(p) for p in self._tracker.planned],
+        }
+
+
+def ha_device() -> DeviceInfo:
+    """The device "Vördr Home Assistant" of Home Assistant's own updates (ADR-0158)."""
+    return DeviceInfo(
+        identifiers={HA_DEVICE},
+        translation_key="home_assistant",  # name in HA's system language, like the hub device
+        manufacturer="Vördr",
+    )
+
+
+class HaUpdatesLastRun(SensorEntity):
+    """The last install of one of Home Assistant's own updates by Vördr (ADR-0164): its phase while it runs, its result
+    code once it ended; kept across restarts. Attributes: the entity, its kind, the versions, how it was backed up, when
+    it started and ended, whether Home Assistant restarted during it, and what the installer does now (`installer`)
+    with the ready updates in the order it would take them (`queue`, out of the recorder)."""
+
+    _attr_has_entity_name = True
+    _attr_should_poll = False
+    _attr_translation_key = "ha_updates_last_run"
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_options = [*HA_UPDATE_PHASES, *RESULTS]
+    _unrecorded_attributes = frozenset({"queue"})
+
+    def __init__(self, installer: HaUpdatesInstaller) -> None:
+        self._installer = installer
+        self._attr_unique_id = f"{HA_UPDATES_UID}last_run"
+        self.entity_id = "sensor.vordr_ha_updates_last_run"
+        self._attr_device_info = ha_device()
+
+    async def async_added_to_hass(self) -> None:
+        self.async_on_remove(self._installer.async_add_listener(self.async_write_ha_state))
+
+    @property
+    def native_value(self) -> str | None:
+        run, last = self._installer.run, self._installer.last
+        if run is not None:
+            return run.phase
+        return last.get("result") if last is not None else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        run, last = self._installer.run, self._installer.last
+        shown: dict[str, Any] = {}
+        if run is not None:
+            shown = {
+                "entity_id": run.entity_id,
+                "kind": run.kind,
+                "from_version": run.from_version,
+                "to_version": run.to_version,
+                "backup": run.backup,
+                "started": _local(run.started),
+                "restarted": run.restarted,
+            }
+        elif last is not None:
+            shown = {k: last.get(k) for k in ("entity_id", "kind", "from_version", "to_version", "installed_version")}
+            shown |= {k: last.get(k) for k in ("reason", "backup", "restarted")}
+            shown |= {k: _local(_time(last.get(k))) for k in ("started", "finished")}
+        attrs = {k: v for k, v in shown.items() if v not in (None, False)}
+        return {**attrs, "installer": self._installer.status, "queue": self._installer.queue()}
 
 
 class HubConnection(VordrHubEntity, SensorEntity):

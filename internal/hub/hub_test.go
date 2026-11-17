@@ -119,7 +119,8 @@ func TestAdminSocket(t *testing.T) {
 		t.Fatalf("approve over the socket: %+v %v", resp, err)
 	}
 	resp, _ = AdminCall(path, AdminRequest{Cmd: "list"}, time.Second)
-	if len(resp.Nodes) != 1 || resp.Nodes[0].State != wire.StateApproved || resp.Nodes[0].Online || resp.Nodes[0].Reboot != nil {
+	if resp.Hosts == nil || len(resp.Hosts.Nodes) != 1 || resp.Hosts.Nodes[0].State != wire.StateApproved ||
+		resp.Hosts.Nodes[0].Online || resp.Hosts.Nodes[0].Reboot != nil {
 		t.Fatalf("list: %+v", resp)
 	}
 	if resp, _ := AdminCall(path, AdminRequest{Cmd: "shell"}, time.Second); resp.Code != AdminBadRequest {

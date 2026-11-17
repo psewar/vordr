@@ -41,7 +41,49 @@ type Config struct {
 	AutoInstall *AutoInstallConfig `yaml:"auto_install"`
 	// OSV: with it, the hub downloads the OSV data of PyPI and npm daily and matches the hosts' packages against it.
 	OSV *OSVConfig `yaml:"osv"`
+	// KEV: with it (and osv), the hub fetches the CISA catalog of known exploited vulnerabilities and marks the findings
+	// whose CVE it lists (ADR-0168).
+	KEV *KEVConfig `yaml:"kev"`
+	// EventLog: with it, events.jsonl is rotated by size and the full files are kept up to a number (ADR-0172).
+	// Without it the event log only grows, as before.
+	EventLog *EventLogConfig `yaml:"event_log"`
 }
+
+// EventLogConfig is the section event_log of hub.yaml.
+type EventLogConfig struct {
+	// MaxSizeMB: a line that would take events.jsonl past this starts a new file; default 32.
+	MaxSizeMB int `yaml:"max_size_mb"`
+	// Keep: the full files kept, events.jsonl.1 (newest) to events.jsonl.<keep>; the oldest beyond goes. Default 8.
+	Keep int `yaml:"keep"`
+}
+
+const (
+	defaultEventLogMaxMB = 32
+	defaultEventLogKeep  = 8
+)
+
+func (l *EventLogConfig) applyDefaults() {
+	if l.MaxSizeMB == 0 {
+		l.MaxSizeMB = defaultEventLogMaxMB
+	}
+	if l.Keep == 0 {
+		l.Keep = defaultEventLogKeep
+	}
+}
+
+func (l *EventLogConfig) check() []string {
+	var out []string
+	if l.MaxSizeMB < 1 || l.MaxSizeMB > 1024 {
+		out = append(out, "event_log.max_size_mb: must be between 1 and 1024")
+	}
+	if l.Keep < 1 || l.Keep > 100 {
+		out = append(out, "event_log.keep: must be between 1 and 100")
+	}
+	return out
+}
+
+// MaxBytes is the size limit of the current file.
+func (l *EventLogConfig) MaxBytes() int64 { return int64(l.MaxSizeMB) << 20 }
 
 const (
 	DefaultConfigPath  = "/etc/vordr-hub/hub.yaml"
@@ -160,6 +202,14 @@ func ParseConfig(raw []byte) (Config, []string) {
 	if o := cfg.OSV; o != nil {
 		o.applyDefaults()
 		issues = append(issues, o.check()...)
+	}
+	if k := cfg.KEV; k != nil {
+		k.applyDefaults()
+		issues = append(issues, k.check(cfg.OSV != nil)...)
+	}
+	if l := cfg.EventLog; l != nil {
+		l.applyDefaults()
+		issues = append(issues, l.check()...)
 	}
 	return cfg, issues
 }

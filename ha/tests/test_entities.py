@@ -486,6 +486,7 @@ async def test_package_findings(hass: HomeAssistant, fake_hub: FakeHub, entry: M
     data = hass.states.get("sensor.vordr_hub_vulnerability_data")
     assert data.state == "2023-11-14T05:00:00+00:00"  # the older of the two
     assert data.attributes["ecosystems"]["npm"] == {"state": "ok", "advisories": 230000, "malicious": 220000}
+    assert "kev" not in data.attributes  # the hub has no kev section (ADR-0168)
 
     # Inventory sent, but the hub has no data for npm: unknown, not zero.
     await fake_hub.push_host(host_view("echo", packages=packages_view(None, None, [])))
@@ -538,6 +539,43 @@ async def test_findings_say_where_their_fix_is(hass: HomeAssistant, fake_hub: Fa
     assert vuln.attributes["findings"][1]["reach"] == "refresh"
     issue = ir.async_get(hass).async_get_issue(DOMAIN, "problem_echo")
     assert issue.translation_placeholders["packages"] == "lib-b 1.0.7 (node-red)"
+
+
+async def test_findings_known_exploited(hass: HomeAssistant, fake_hub: FakeHub, entry: MockConfigEntry) -> None:
+    """ADR-0168: the KEV marks of each finding and the host's count reach the sensors, the catalog's state the
+    vulnerability data. A host view without them (the hub has no KEV catalog) shows none of it."""
+    kev = {"known_exploited": True, "kev_cves": ["CVE-2017-16137"], "kev_added": "2026-11-09", "kev_ransomware": True}
+    exploited = {**DEBUG, **kev}
+    other = {**DEBUG, "name": "lib-b", "version": "1.0.7", "fixed_in": "1.0.8"}
+    malware = {**CHALK, "known_exploited": True, "kev_cves": ["CVE-2025-59144"], "kev_added": "2025-09-10"}
+    fake_hub.hosts["echo"] = host_view(
+        "echo", packages={**packages_view(1, 2, [malware, exploited, other]), "known_exploited": 2}
+    )
+    fake_hub.hosts["foxtrot"] = host_view("foxtrot", packages=packages_view(1, 1, [CHALK, DEBUG]))
+    fake_hub.hub["kev"] = {
+        "state": "stale",
+        "code": "download_failed",
+        "checked": "2026-11-10T06:00:00Z",
+        "released": "2026-11-09T18:00:00.123Z",
+        "catalog_version": "2026.11.09",
+        "entries": 1781,
+    }
+    await setup(hass, entry)
+
+    vuln = hass.states.get("sensor.vordr_echo_vulnerable_packages")
+    assert vuln.state == "2" and vuln.attributes["known_exploited"] == 2
+    assert vuln.attributes["findings"][0] == exploited
+    assert "known_exploited" not in vuln.attributes["findings"][1]
+    mal = hass.states.get("sensor.vordr_echo_malicious_packages")
+    assert mal.attributes["findings"][0]["kev_cves"] == ["CVE-2025-59144"]
+    assert "kev_ransomware" not in mal.attributes["findings"][0]  # false is left out like every empty field
+    assert "known_exploited" not in mal.attributes  # the count is on the vulnerable packages, once per host
+    data = hass.states.get("sensor.vordr_hub_vulnerability_data")
+    assert data.attributes["kev"] == fake_hub.hub["kev"]
+
+    plain = hass.states.get("sensor.vordr_foxtrot_vulnerable_packages")
+    assert "known_exploited" not in plain.attributes
+    assert not any(k.startswith(("known_", "kev_")) for k in plain.attributes["findings"][0])
 
 
 async def test_outdated_packages(hass: HomeAssistant, fake_hub: FakeHub, entry: MockConfigEntry) -> None:

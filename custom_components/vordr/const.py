@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Final
 
 DOMAIN: Final = "vordr"
-VERSION: Final = "0.37.0"  # keep in step with manifest.json
+VERSION: Final = "0.43.0"  # keep in step with manifest.json
 
 CONF_URL: Final = "url"
 CONF_NAME: Final = "name"
@@ -17,6 +17,10 @@ DEFAULT_NAME: Final = "homeassistant"
 # Events for automations (design/ha-integration.md, section 6).
 EVENT_PROBLEM: Final = "vordr_problem"
 EVENT_RUN_FINISHED: Final = "vordr_run_finished"
+# One of Home Assistant's own updates installed by Vördr ended (ADR-0164), with a fixed result code.
+EVENT_HA_UPDATE_FINISHED: Final = "vordr_ha_update_finished"
+# The optional AI explanation of a failed run (ADR-0166), advisory only, with a fixed code.
+EVENT_AI_EXPLANATION: Final = "vordr_ai_explanation"
 
 # Problem reasons besides the result codes, as internal/hub/view.go defines them.
 REASONS: Final = (

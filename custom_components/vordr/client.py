@@ -32,9 +32,10 @@ COMMAND_TIMEOUT = 15.0
 REJECTED_RETRY = 600.0  # like the agent: a refused client asks again after 10 minutes
 BACKOFF_MAX = 30.0
 
-# Codes of the client itself, besides those the hub sends in command_result.
+# Codes of the client itself, besides those the hub sends in command_result and agent_download_result.
 CODE_HUB_NOT_CONNECTED = "hub_not_connected"
 CODE_NO_ANSWER = "no_answer"
+CODE_HUB_WITHOUT_DOWNLOAD = "hub_without_download"  # the hub's status does not name agent_download
 
 
 class Connection(StrEnum):
@@ -64,6 +65,18 @@ class Status:
     state: str
     reason: str
     fingerprint: str
+    # What the hub accepts beyond the base protocol (agent_download); older hubs send none.
+    features: frozenset[str] = frozenset()
+
+    @classmethod
+    def of(cls, data: dict[str, Any]) -> Status:
+        features = data.get("features")
+        return cls(
+            str(data.get("state", "")),
+            str(data.get("reason", "")),
+            str(data.get("fingerprint", "")),
+            frozenset(f for f in features if isinstance(f, str)) if isinstance(features, list) else frozenset(),
+        )
 
 
 async def ssl_context(hass: HomeAssistant, ca_pem: str) -> ssl.SSLContext:
@@ -166,6 +179,8 @@ class VordrClient:
         self._approved = False
         self._pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self.fingerprint = p.fingerprint(p.public_key(key))
+        # The features of the hub's last status on the current connection; none without one.
+        self.features: frozenset[str] = frozenset()
 
     async def run(self) -> None:
         """Keep connecting until cancelled."""
@@ -198,7 +213,7 @@ class VordrClient:
         data = await _read(ws, p.HELLO_TIMEOUT)
         if data is None or data.get("t") != p.T_STATUS:
             return None
-        return Status(str(data.get("state", "")), str(data.get("reason", "")), str(data.get("fingerprint", "")))
+        return Status.of(data)
 
     async def _session(self) -> Connection:
         """One connection from login to its end; returns how far it got."""
@@ -227,7 +242,7 @@ class VordrClient:
         finally:
             if heartbeat:
                 heartbeat.cancel()
-            self._ws, self._approved = None, False
+            self._ws, self._approved, self.features = None, False, frozenset()
             for fut in self._pending.values():
                 if not fut.done():
                     fut.set_result({"code": CODE_HUB_NOT_CONNECTED})
@@ -237,6 +252,7 @@ class VordrClient:
         return got
 
     def _status(self, status: Status) -> Connection:
+        self.features = status.features
         if status.state == p.STATE_APPROVED:
             self._approved = True
             self._on_connection(Connection.APPROVED, "")
@@ -251,10 +267,9 @@ class VordrClient:
     def _dispatch(self, data: dict[str, Any]) -> Connection:
         t = data["t"]
         if t == p.T_STATUS:
-            return self._status(
-                Status(str(data.get("state", "")), str(data.get("reason", "")), str(data.get("fingerprint", "")))
-            )
-        if t == p.T_COMMAND_RESULT:
+            return self._status(Status.of(data))
+        if t in (p.T_COMMAND_RESULT, p.T_AGENT_DOWNLOAD_RESULT):
+            # Answers go to who asked, and nowhere else: an agent_download_result carries single-use tokens.
             fut = self._pending.get(str(data.get("request_id", "")))
             if fut and not fut.done():
                 fut.set_result(data)
@@ -273,15 +288,35 @@ class VordrClient:
     async def command(self, node: str, command: str, reason: str = "") -> dict[str, Any]:
         """Ask the hub for a command; the answer carries a code (ok, a refusal of the hub, or one of ours). A reason
         asks for it outside the host's window (ADR-0087)."""
+        msg = {"t": p.T_COMMAND, "node": node, "command": command}
+        if reason:
+            msg["reason"] = reason
+        return await self._request(msg)
+
+    @property
+    def offers_agent_download(self) -> bool:
+        """Approved, connected, and the hub's status names agent_download (ADR-0161)."""
+        return self._ws is not None and self._approved and p.FEATURE_AGENT_DOWNLOAD in self.features
+
+    async def agent_download(self, os_name: str, arch: str) -> dict[str, Any]:
+        """Ask the hub for the signed agent release for one platform; the answer carries a code. Sent only to a hub
+        that named the feature: an older hub ends the connection on a message it does not know. The answer holds
+        single-use download tokens: the caller keeps it out of logs and storage."""
+        if self._ws is None or not self._approved:
+            return {"code": CODE_HUB_NOT_CONNECTED}
+        if p.FEATURE_AGENT_DOWNLOAD not in self.features:
+            return {"code": CODE_HUB_WITHOUT_DOWNLOAD}
+        return await self._request({"t": p.T_AGENT_DOWNLOAD, "os": os_name, "arch": arch})
+
+    async def _request(self, msg: dict[str, Any]) -> dict[str, Any]:
+        """Send a message with a fresh request_id and wait for the answer that names it."""
         ws = self._ws
         if ws is None or not self._approved:
             return {"code": CODE_HUB_NOT_CONNECTED}
         rid = secrets.token_hex(8)
         fut: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
         self._pending[rid] = fut
-        msg = {"t": p.T_COMMAND, "request_id": rid, "node": node, "command": command}
-        if reason:
-            msg["reason"] = reason
+        msg = {**msg, "request_id": rid}
         try:
             await ws.send_json(msg)
             return await asyncio.wait_for(fut, COMMAND_TIMEOUT)
@@ -309,9 +344,7 @@ class VordrClient:
                     if data is None:
                         return None
                     if data["t"] == p.T_STATUS and data.get("state") != p.STATE_PENDING:
-                        return Status(
-                            str(data.get("state")), str(data.get("reason", "")), str(data.get("fingerprint", ""))
-                        )
+                        return Status.of(data)
         except TimeoutError:  # before OSError, of which it is a subclass: the time ran out, still undecided
             return Status(p.STATE_PENDING, "", self.fingerprint)
         except (aiohttp.ClientError, OSError):

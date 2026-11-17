@@ -1,5 +1,5 @@
-"""Repairs with a fix: the reboot a host needs (ADR-0132), and installing again after a kept failed install
-(ADR-0148)."""
+"""Repairs with a fix: the reboot a host needs (ADR-0132), installing again after a kept failed install (ADR-0148),
+and installing one of Home Assistant's own updates again, at once, after its install failed (ADR-0165, ADR-0182)."""
 
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ from .coordinator import (
     reboot_required,
     refusal,
 )
+from .ha_updates_installer import FIX_KIND, STARTED, HaUpdatesInstaller, failure_names
 from .texts import can_reboot
 
 if TYPE_CHECKING:
@@ -126,10 +127,47 @@ class InstallAgainFlow(_HostFlow):
         return ""
 
 
+class HaUpdateRetryFlow(RepairsFlow):
+    """A kept failed install of one of Home Assistant's own updates (ADR-0165): confirm, and Vördr installs it at
+    once, outside the window, under every other rule (ADR-0182). Checked at confirmation: if it cannot start now -
+    another install runs, paused, installing off, not ready - the flow says why with a fixed code and nothing is
+    queued. The failure stays until an install goes through; its repair comes back if the run fails again."""
+
+    def __init__(self, entry_id: str, entity_id: str) -> None:
+        self._entry_id = entry_id
+        self._entity_id = entity_id
+
+    def _installer(self) -> HaUpdatesInstaller | None:
+        entry = self.hass.config_entries.async_get_entry(self._entry_id)
+        if entry is None or entry.state is not ConfigEntryState.LOADED:
+            return None
+        coordinator: VordrCoordinator = entry.runtime_data
+        return coordinator.ha_updates_installer
+
+    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        return await self.async_step_confirm()
+
+    async def async_step_confirm(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        installer = self._installer()
+        names = (
+            installer.failure_names(self._entity_id) if installer is not None else failure_names(self._entity_id, None)
+        )
+        if user_input is None:
+            return self.async_show_form(step_id="confirm", data_schema=vol.Schema({}), description_placeholders=names)
+        if installer is None:
+            return self.async_abort(reason="entry_not_loaded", description_placeholders=names)
+        if (code := await installer.async_install_now(self._entity_id)) != STARTED:
+            return self.async_abort(reason=code, description_placeholders=names)
+        return self.async_create_entry(data={})
+
+
 async def async_create_fix_flow(
     hass: HomeAssistant, issue_id: str, data: dict[str, str | int | float | None] | None
 ) -> RepairsFlow:
-    """Home Assistant asks for the flow of a fixable repair: install_again_<node> or reboot_<node>."""
+    """Home Assistant asks for the flow of a fixable repair: install_again_<node>, reboot_<node>, or
+    ha_update_failed_<object id>."""
     data = data or {}
+    if data.get("kind") == FIX_KIND:
+        return HaUpdateRetryFlow(str(data.get("entry_id") or ""), str(data.get("entity_id") or ""))
     flow = InstallAgainFlow if data.get("kind") == "install_again" else RebootFlow
     return flow(str(data.get("entry_id") or ""), str(data.get("node") or ""))

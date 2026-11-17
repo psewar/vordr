@@ -189,4 +189,33 @@ Generated from the files by `python3 docs/adr/check_index.py --write`. `build.sh
 | [0153](0153-a-reboot-that-did-not-take-holds-further-reboots-until-the-host-boots-another-way.md) | A reboot that did not take holds further reboots until the host boots another way | accepted | 2026-11-16 |
 | [0154](0154-a-host-can-keep-reboots-inside-its-window-even-with-a-reason.md) | A host can keep reboots inside its window even with a reason | accepted | 2026-11-16 |
 | [0155](0155-an-idle-check-of-the-host-can-hold-a-reboot.md) | An idle check of the host can hold a reboot | accepted | 2026-11-16 |
+| [0156](0156-the-config-flow-keeps-its-key-until-the-client-is-set-up.md) | The config flow keeps its key for a hub and client name until the client is set up | accepted | 2026-11-17 |
+| [0157](0157-a-waiting-host-is-a-repair-that-names-the-approval-command.md) | A waiting host is a repair that names the approval command | accepted | 2026-11-17 |
+| [0158](0158-home-assistants-own-updates-follow-vordrs-rules-in-the-integration.md) | Home Assistant's own updates follow Vördr's rules in the integration, closed by default | accepted | 2026-11-17 |
+| [0159](0159-the-minimum-age-of-a-home-assistant-update-counts-from-its-first-sight.md) | The minimum age of a Home Assistant update counts from its first sight | accepted | 2026-11-17 |
+| [0160](0160-a-new-major-version-of-a-home-assistant-update-stays-manual.md) | A new major version of a Home Assistant update stays manual | accepted | 2026-11-17 |
+| [0161](0161-home-assistant-installs-the-agent-once-over-ssh-and-keeps-no-credentials.md) | Home Assistant installs the agent on a new Linux host once over SSH and keeps no credentials | accepted | 2026-11-17 |
+| [0162](0162-home-assistants-own-updates-install-only-when-switched-on-and-a-pause-holds-them.md) | Home Assistant's own updates install only when switched on, from one entry, and a pause holds them | accepted | 2026-11-17 |
+| [0163](0163-a-backup-before-every-automatic-home-assistant-update.md) | A backup before every automatic Home Assistant update | accepted | 2026-11-17 |
+| [0164](0164-home-assistant-updates-install-one-at-a-time-with-core-os-and-supervisor-last.md) | Home Assistant updates install one at a time, with Core, OS and Supervisor last | accepted | 2026-11-17 |
+| [0165](0165-a-failed-home-assistant-update-stays-until-an-install-of-it-goes-through.md) | A failed Home Assistant update stays until an install of it goes through | accepted | 2026-11-17 |
+| [0166](0166-optional-ai-explanations-of-failed-runs-go-through-home-assistants-ai-task-and-only-advise.md) | Optional AI explanations of failed runs go through Home Assistant's AI Task and only advise | accepted | 2026-11-17 |
+| [0167](0167-home-assistant-gets-one-time-downloads-of-the-signed-agent-release.md) | Home Assistant gets one-time downloads of the signed agent release | accepted | 2026-11-17 |
+| [0168](0168-known-exploitation-comes-from-the-kev-catalog-fetched-whole-at-the-hub.md) | Known exploitation comes from the KEV catalog, fetched whole at the hub | accepted | 2026-11-17 |
+| [0169](0169-the-linux-agent-installs-itself-from-one-binary-and-one-command.md) | The Linux agent installs itself from one binary and one command | accepted | 2026-11-17 |
+| [0170](0170-the-hub-signs-its-challenge-and-the-agent-checks-its-key.md) | The hub signs its challenge, and the agent checks the hub key before it logs in | accepted | 2026-11-17 |
+| [0171](0171-the-hub-command-line-gives-programs-a-versioned-host-view.md) | The hub's command line gives programs a versioned host view | accepted | 2026-11-17 |
+| [0172](0172-the-event-log-is-rotated-by-size-and-keeps-a-fixed-number-of-files.md) | The event log is rotated by size and keeps a fixed number of files | accepted | 2026-11-17 |
+| [0173](0173-notifications-are-shipped-as-blueprints-the-user-imports.md) | Notifications are shipped as blueprints that the user imports | accepted | 2026-11-17 |
+| [0174](0174-the-hub-stays-a-standalone-service-and-does-not-run-as-a-home-assistant-app.md) | The hub stays a standalone service and does not run as a Home Assistant app | rejected | 2026-11-17 |
+| [0175](0175-a-host-can-join-with-a-one-time-token-issued-at-the-hub.md) | A host can join with a one-time token issued at the hub | proposed | 2026-11-17 |
+| [0176](0176-an-ai-may-not-change-maintenance-windows-minimum-ages-ring-delays-or-scopes.md) | An AI may not change maintenance windows, minimum ages, ring delays or scopes | rejected | 2026-11-17 |
+| [0177](0177-a-fix-for-a-known-exploited-vulnerability-does-not-skip-the-ring-delay.md) | A fix for a known-exploited vulnerability does not skip the ring delay | rejected | 2026-11-17 |
+| [0178](0178-updates-carry-a-fixed-urgency-code-from-deterministic-signals.md) | Updates carry a fixed urgency code from deterministic signals | proposed | 2026-11-17 |
+| [0179](0179-a-newer-release-of-a-version-line-inherits-the-lines-age-with-two-days-of-its-own.md) | A newer release of a version line inherits the line's age, with two days of its own | accepted | 2026-11-17 |
+| [0180](0180-device-firmware-and-the-radio-adapter-wait-at-least-14-days.md) | Device firmware and the radio adapter wait at least 14 days | accepted | 2026-11-17 |
+| [0181](0181-device-firmware-and-the-radio-adapter-install-without-a-backup-of-home-assistant.md) | Device firmware and the radio adapter install without a backup of Home Assistant | accepted | 2026-11-17 |
+| [0182](0182-the-repairs-fix-installs-a-failed-home-assistant-update-at-once.md) | The repair's fix installs a failed Home Assistant update at once | accepted | 2026-11-17 |
+| [0183](0183-device-firmware-and-the-radio-adapter-get-two-hours-to-report-their-version.md) | Device firmware and the radio adapter get two hours to report their version | accepted | 2026-11-17 |
+| [0184](0184-with-ai-explanations-off-nothing-is-sent-and-no-event-is-fired.md) | With AI explanations off, nothing is sent and no event is fired | accepted | 2026-11-17 |
 <!-- adr-index:end -->

@@ -24,11 +24,18 @@ an approved client and creates one device per host, with its update sources and 
   implementation: Proxmox VE with Proxmox Backup Server).
 - Signed self-update of the agents with rollback; releases are signed with `vordr-release` on the operator's machine.
 - Packages from pip, pipx and npm, and container images: inventory, known vulnerabilities and malware from the OSV
-  data, outdated versions, updates by button.
+  data, optionally marked when CISA's KEV catalog lists them as exploited, outdated versions, updates by button.
 - Appliances without an agent of their own (firewall, NAS) through a proxy agent: firmware reports and configuration
   backups.
 - In Home Assistant one device per host with update entities, sensors and buttons; problems as repairs and as events
   for automations.
+- Home Assistant's own updates (Core, OS, apps, HACS, ESPHome, device firmware) under Vördr's rules – allowed kinds,
+  window, minimum age, major versions by hand – installed once you switch it on: one at a time, Core, OS and
+  Supervisor last, each with a backup, checked by the version it reaches, a failure kept as a repair.
+- A new Linux host set up from Home Assistant: once over SSH, the signed agent release checked before it runs, nothing
+  of the SSH access stored; the host then waits for approval at the hub.
+- Optionally, a failed run explained by an AI Task entity of Home Assistant: a short text, a cause and next steps from
+  fixed lists, and a quote checked against the log; host names and addresses replaced before sending, advice only.
 
 Design documents: [design/architecture.md](design/architecture.md),
 [design/ha-integration.md](design/ha-integration.md), [design/proxy-agent.md](design/proxy-agent.md).
@@ -63,11 +70,12 @@ Connect hub and agent (templates: `hub.example.yaml`, `agent.example.yaml`):
 ```bash
 vordr-hub key                                   # public hub key -> agent.yaml hub.public_key
 vordr-hub run                                   # tunnel over TLS, administration through the local socket
-vordr-agent hub-check                           # on the host: can it reach the hub?
+vordr-agent hub-check                           # on the host: can it reach the hub, is hub.public_key its key?
 vordr-agent run                                 # on the host: logs in, waits for approval
 vordr-agent identity                            # on the host: fingerprint to compare
 vordr-hub approve <node> --fingerprint <fp>     # at the hub: approve
 vordr-hub list                                  # state, online, last report
+vordr-hub show <node>                           # one host in full; --json for programs (list too)
 vordr-hub check <node>                          # send a signed check job
 vordr-hub events <node> --since 24h             # events of a host in the last 24 h
 ```
@@ -89,6 +97,7 @@ vordr-hub events <node> --since 24h             # events of a host in the last 2
 | `internal/inventory` | pip, pipx and npm packages per location, outdated versions, updates |
 | `internal/images` | container images: inventory, comparison with the registry, rebuilds by button |
 | `internal/osv` | matching against the OSV data at the hub |
+| `internal/kev` | the CISA catalog of known exploited vulnerabilities, looked up at the hub |
 | `internal/versions` | order versions as their ecosystem does (PEP 440, SemVer, Debian, Alpine) |
 | `internal/target` | the proxy agent's drivers for appliances (Synology DSM, pfSense) |
 | `internal/runner` | start external commands; exit codes as data |

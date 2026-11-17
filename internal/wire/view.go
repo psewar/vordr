@@ -169,7 +169,10 @@ type PackagesView struct {
 	Waiting *int `json:"waiting,omitempty"`
 	// Undecided: advisories that may apply but whose versions do not parse; neither counted nor dropped silently.
 	Undecided int `json:"undecided,omitempty"`
-	// Findings: at most MaxFindings, malware first, then by rating.
+	// KnownExploited (ADR-0168): of the findings, malware and vulnerable ones, those marked known_exploited. nil while
+	// the hub has no KEV catalog (no kev section, or none fetched yet), and whenever Vulnerable is nil.
+	KnownExploited *int `json:"known_exploited,omitempty"`
+	// Findings: at most MaxFindings, malware first, then the known exploited ones (ADR-0168), then by rating.
 	Findings []FindingView `json:"findings,omitempty"`
 	// Outdated: direct packages with a newer release (11.3); nil when the agent does not ask the registries.
 	Outdated *int `json:"outdated"`
@@ -240,6 +243,14 @@ type FindingView struct {
 	// below FixedIn (reach held, update_via).
 	Reach  string           `json:"reach,omitempty"`
 	HeldBy []inventory.Hold `json:"held_by,omitempty"`
+	// KnownExploited (ADR-0168): the KEV catalog lists a CVE of one of the advisories - the vulnerability is exploited.
+	// KEVCVEs: those CVEs; KEVAdded: the earliest date one of them was added to the catalog (YYYY-MM-DD), not when its
+	// exploitation began; KEVRansomware: the catalog knows one of them to be used in ransomware campaigns. All empty
+	// when it lists none, and while the hub has no catalog (then PackagesView.KnownExploited is nil).
+	KnownExploited bool     `json:"known_exploited,omitempty"`
+	KEVCVEs        []string `json:"kev_cves,omitempty"`
+	KEVAdded       string   `json:"kev_added,omitempty"`
+	KEVRansomware  bool     `json:"kev_ransomware,omitempty"`
 }
 
 // Where the fix of a vulnerable finding is (ADR-0129). The first four make the problem vulnerable_package.
@@ -269,6 +280,18 @@ type OSVView struct {
 	Modified   *time.Time `json:"modified,omitempty"` // newest entry of the data
 	Advisories int        `json:"advisories,omitempty"`
 	Malicious  int        `json:"malicious,omitempty"`
+}
+
+// KEVView is the state of the hub's copy of the KEV catalog (ADR-0168). State: ok, stale (not confirmed for longer
+// than stale_hours: entries added since may be missing), missing (none yet, nothing is marked); Code: why the last
+// refresh failed (download_failed, bad_feed, store_failed, implausible_feed).
+type KEVView struct {
+	State          string     `json:"state"`
+	Code           string     `json:"code,omitempty"`
+	Checked        *time.Time `json:"checked,omitempty"`  // last download, or answer "not modified"
+	Released       *time.Time `json:"released,omitempty"` // the catalog's dateReleased
+	CatalogVersion string     `json:"catalog_version,omitempty"`
+	Entries        int        `json:"entries,omitempty"` // CVEs listed
 }
 
 // BackupView is the host's last backup on Proxmox Backup Server as the hub's backup check sees it. An install only
@@ -385,6 +408,8 @@ type HubView struct {
 	Limits      LimitsView    `json:"limits"`
 	// OSV: the hub's vulnerability data per ecosystem; absent without an osv section in hub.yaml.
 	OSV []OSVView `json:"osv,omitempty"`
+	// KEV: the hub's KEV catalog (ADR-0168); absent without a kev section in hub.yaml.
+	KEV *KEVView `json:"kev,omitempty"`
 }
 
 // LimitsView: the thresholds after which a host counts as having a problem, in the units of hub.yaml.

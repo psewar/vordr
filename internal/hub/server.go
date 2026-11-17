@@ -129,13 +129,14 @@ func NewServer(reg *Registry, clients *ClientRegistry, events *Events, key *iden
 	return s
 }
 
-// Handler serves only the tunnel path and the Home Assistant path.
+// Handler serves only the tunnel path, the Home Assistant path and, with releases, their two download paths.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(wire.TunnelPath, s.serveTunnel)
 	mux.HandleFunc(wire.HAPath, s.serveHA)
 	if s.Releases != nil {
 		mux.Handle(AgentReleasePath, s.Releases)
+		mux.HandleFunc(AgentDownloadPath, s.serveAgentDownload)
 	}
 	return mux
 }
@@ -152,7 +153,8 @@ func (s *Server) serveTunnel(w http.ResponseWriter, r *http.Request) {
 	}
 	defer s.release(conn)
 
-	sess, ok := s.login(conn, r.RemoteAddr)
+	agentNonce, _ := wire.AgentNonce(r.Header) // nil from an agent before ADR-0170: its challenge goes unsigned
+	sess, ok := s.login(conn, r.RemoteAddr, agentNonce)
 	if !ok {
 		return
 	}
@@ -161,17 +163,28 @@ func (s *Server) serveTunnel(w http.ResponseWriter, r *http.Request) {
 }
 
 // login runs challenge and hello and answers with the registration state. Only pending and approved hosts stay.
-func (s *Server) login(conn *wire.Conn, remote string) (*session, bool) {
+// For an agent that sent its own nonce the challenge carries the hub key's signature over both nonces (ADR-0170): the
+// agent checks hub.public_key with it before it sends anything about its host.
+func (s *Server) login(conn *wire.Conn, remote string, agentNonce []byte) (*session, bool) {
 	nonce := make([]byte, wire.NonceSize)
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, false
 	}
 	// The hello comes before the status: what it may carry beyond the base protocol is announced here (ADR-0114).
-	if conn.Send(wire.Challenge{T: wire.TChallenge, Nonce: nonce, Features: []string{wire.FeatureAck}}) != nil {
+	ch := wire.Challenge{T: wire.TChallenge, Nonce: nonce, Features: []string{wire.FeatureAck}}
+	if agentNonce != nil {
+		ch.HubSig = s.Key.Sign(wire.ChallengeSigned(nonce, agentNonce))
+	}
+	if conn.Send(ch) != nil {
 		return nil, false
 	}
 	t, raw, err := conn.Receive(wire.HelloTimeout)
 	if err != nil {
+		// An agent that refuses this hub's key ends with a close code instead of a hello (ADR-0170). It names no host,
+		// so the event has only the code and the address: hosts going offline after a new hub key show here.
+		if hubKey, refused := wire.HubKeyRefusal(wire.CloseCode(err)); refused {
+			s.Events.Log("", "agent_refused_hub_key", map[string]any{"hub_key": hubKey, "remote": remote})
+		}
 		return nil, false
 	}
 	var h wire.Hello

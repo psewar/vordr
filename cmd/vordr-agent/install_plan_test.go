@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/psewar/vordr/internal/identity"
 )
 
 var at = time.Date(2026, 10, 30, 15, 4, 5, 0, time.UTC)
@@ -201,5 +203,53 @@ func TestLogLine(t *testing.T) {
 	}
 	if err := logLine(filepath.Join(dir, "missing"), "x"); err == nil {
 		t.Error("a log line into a missing state_dir reported as written")
+	}
+}
+
+// install-service creates the key pair before the service starts, and the service then loads that one: the fingerprint
+// install-service prints is the one the hub will show. A second run keeps the key.
+func TestIdentityStepIsTheServicesKey(t *testing.T) {
+	dir := t.TempDir()
+	var id *identity.Identity
+	st := identityStep(dir, &id)
+	if st.undo != nil {
+		t.Error("a created key is no change to the service and has nothing to undo")
+	}
+	if err := st.do(); err != nil || id == nil {
+		t.Fatalf("identity step: %v, %v", id, err)
+	}
+	service, created, err := identity.LoadOrCreate(dir) // what runAgentCtx does when the service starts
+	if err != nil || created || service.Fingerprint() != id.Fingerprint() {
+		t.Fatalf("service key %v created %v (%v), install-service printed %s", service, created, err, id.Fingerprint())
+	}
+	var again *identity.Identity
+	if err := identityStep(dir, &again).do(); err != nil || again.Fingerprint() != id.Fingerprint() {
+		t.Errorf("second install-service: %v, %v - the key must stay", again, err)
+	}
+}
+
+// A key file the agent cannot read stops install-service before the service is touched; nothing is overwritten.
+func TestIdentityStepRefusesAnUnreadableKey(t *testing.T) {
+	dir := t.TempDir()
+	key := writeFile(t, filepath.Join(dir, "agent-identity.key"), "short")
+	var id *identity.Identity
+	if err := identityStep(dir, &id).do(); err == nil || id != nil {
+		t.Fatalf("unreadable key: %v, %v", id, err)
+	}
+	if got, _ := os.ReadFile(key); string(got) != "short" {
+		t.Errorf("key file changed to %q", got)
+	}
+}
+
+// The hint carries the fingerprint itself, in the form vordr-hub approve takes, as install-agent.sh prints it.
+func TestApprovalHint(t *testing.T) {
+	fp := strings.Repeat("ab", 32)
+	got := approvalHint("pc-01", fp)
+	if !strings.Contains(got, "  vordr-hub approve pc-01 --fingerprint "+fp+"\n") ||
+		!strings.Contains(got, "node pc-01, fingerprint "+fp+"\n") {
+		t.Errorf("hint %q", got)
+	}
+	if strings.Contains(got, "<fp>") {
+		t.Errorf("hint with a placeholder: %q", got)
 	}
 }

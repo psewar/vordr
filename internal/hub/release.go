@@ -123,6 +123,15 @@ type Releases struct {
 	attempts map[string]attempt
 	logged   string   // the last load outcome that was logged (so a broken release is not logged every tick)
 	loaded   *Release // the release Current found last; views read this instead of the disk
+	// installs: the tokens of downloads for installing a new host (agentdownload.go, ADR-0167); refusals: how many
+	// refusals of unknown tokens on their path went into the event log in the current minute; hashes: the SHA-256 of
+	// each binary of the release folder as last read, by file name.
+	installs map[string]*installDownload
+	refusals refusalWindow
+	hashes   map[string]binaryHash
+	// writeWindow: how long one download may take to write a binary of a size, so that a slow reader does not hold a
+	// goroutine and an open file without end (downloadWriteWindow; tests shorten it).
+	writeWindow func(size int64) time.Duration
 }
 
 // Loaded is the release the last Current call found, nil when none.
@@ -140,7 +149,8 @@ func NewReleases(cfg AgentUpdateConfig, dir string, now func() time.Time) *Relea
 			keys = append(keys, raw)
 		}
 	}
-	return &Releases{cfg: cfg, keys: keys, dir: dir, now: now, tokens: map[string]download{}, attempts: map[string]attempt{}}
+	return &Releases{cfg: cfg, keys: keys, dir: dir, now: now, tokens: map[string]download{}, attempts: map[string]attempt{},
+		installs: map[string]*installDownload{}, hashes: map[string]binaryHash{}, writeWindow: downloadWriteWindow}
 }
 
 // Current reads and verifies the release in dir. No release (no manifest) is a normal state; a manifest with a bad
@@ -175,9 +185,7 @@ func (r *Releases) read() (*Release, string) {
 
 // newToken opens the release's binaries for one job until downloadWindow passes.
 func (r *Releases) newToken(node, jobID string) string {
-	b := make([]byte, 24)
-	_, _ = rand.Read(b)
-	t := hex.EncodeToString(b)
+	t := randomToken()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	now := r.now()
@@ -188,6 +196,13 @@ func (r *Releases) newToken(node, jobID string) string {
 	}
 	r.tokens[t] = download{node: node, jobID: jobID, until: now.Add(downloadWindow)}
 	return t
+}
+
+// randomToken is a download token: 24 random bytes in hex (protocol.ValidToken).
+func randomToken() string {
+	b := make([]byte, 24)
+	_, _ = rand.Read(b) // crypto/rand.Read never fails (Go 1.24 and later)
+	return hex.EncodeToString(b)
 }
 
 // ServeHTTP serves a binary of the current release to the holder of an open token: GET /v1/agent/<file>?token=<t>.
@@ -222,6 +237,7 @@ func (r *Releases) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "binary unreadable", http.StatusInternalServerError)
 		return
 	}
+	setWriteDeadline(w, r.writeWindow(info.Size()))
 	http.ServeContent(w, req, file, info.ModTime(), f)
 }
 

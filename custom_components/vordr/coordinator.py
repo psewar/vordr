@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 import logging
+import re
 from typing import TYPE_CHECKING, Any
 import unicodedata
 
@@ -16,6 +17,7 @@ from homeassistant.util import dt as dt_util
 import voluptuous as vol
 
 from . import protocol as p
+from .ai_explain import Explainer
 from .client import Connection, VordrClient
 from .const import (
     CODES,
@@ -29,6 +31,8 @@ from .const import (
     REASON_REBOOT_PENDING,
     VERSION,
 )
+from .ha_updates_installer import HaUpdatesInstaller
+from .ha_updates_tracker import HaUpdatesTracker
 from .texts import TEXT_KEYS, Texts, can_reboot, placeholders, problem_key
 
 if TYPE_CHECKING:
@@ -37,6 +41,8 @@ if TYPE_CHECKING:
 _LOGGER = logging.getLogger(__name__)
 
 HUB_DEVICE = (DOMAIN, "hub")
+# The device of Home Assistant's own updates under Vördr's rules (ADR-0158): not below the hub, it does not need it.
+HA_DEVICE = (DOMAIN, "home_assistant")
 
 # ADR-0132: after a reboot asked for through the repair, the repair stays away this long while the host still reports
 # "reboot required" - the reboot takes a moment. A finished reboot run ends the wait earlier.
@@ -57,6 +63,11 @@ BACKUP_REFUSALS = (
 
 # A reason to run outside the window, as the hub takes it (protocol.ValidReason): at most this many bytes of UTF-8.
 MAX_REASON_BYTES = 200
+
+# ADR-0157: a key fingerprint as the hub shows it (hex SHA-256), and how much of a waiting host's own word about its
+# system the repair shows.
+FINGERPRINT_PATTERN = re.compile(r"[0-9a-f]{64}")
+WAITING_OS_MAX = 64
 
 
 def valid_reason(value: Any) -> str:
@@ -144,6 +155,33 @@ def failed_install_names(host: dict[str, Any] | None) -> dict[str, str]:
     return {"code": str(failed.get("state") or "-"), "detail": detail[:DETAIL_MAX] or "-"}
 
 
+def waiting_hosts(hub: dict[str, Any] | None) -> dict[str, dict[str, str]]:
+    """The hosts waiting for approval at the hub as it last said, by node, as the placeholders of their repair
+    (ADR-0157). Only entries whose node and fingerprint a command can carry as they are; anything else stays in the
+    sensor's attributes only. The system is what the not yet approved host says about itself: one line without
+    backticks, shortened, for the repair to show as code."""
+    out: dict[str, dict[str, str]] = {}
+    for w in (hub or {}).get("waiting") or []:
+        if not isinstance(w, dict):
+            continue
+        node, fp = w.get("node"), w.get("fingerprint")
+        if not (
+            isinstance(node, str)
+            and p.NAME_PATTERN.fullmatch(node)
+            and isinstance(fp, str)
+            and FINGERPRINT_PATTERN.fullmatch(fp)
+        ):
+            continue
+        system = " ".join(str(w.get("os") or "").replace("`", "'").split())[:WAITING_OS_MAX]
+        out[node] = {
+            "node": node,
+            "fingerprint": fp,
+            "os": system or "?",
+            "command": f"vordr-hub approve {node} --fingerprint {fp}",
+        }
+    return out
+
+
 def host_device(node: str) -> tuple[str, str]:
     """Device identifier of a host."""
     return (DOMAIN, f"host:{node}")
@@ -175,8 +213,15 @@ class VordrCoordinator(DataUpdateCoordinator[VordrData]):
         self._reboot_asked: dict[str, datetime] = {}  # node -> when a reboot was asked for through the repair
         # node -> whether the install-again repair carries the whole problem (its own repair is gone then)
         self._carried: dict[str, bool] = {}
+        self._waiting: set[str] = set()  # nodes with a repair "waits for approval" (ADR-0157)
         self.hub_device_id = ""  # set at setup; host devices hang below it
         self.texts = Texts(hass)  # loaded at setup, before the first message
+        # Home Assistant's own updates under Vördr's rules (ADR-0158): held here, but independent of the hub.
+        self.ha_updates = HaUpdatesTracker(hass, entry)
+        # ... and installed by Vördr only once the options switch it on (ADR-0162).
+        self.ha_updates_installer = HaUpdatesInstaller(hass, entry, self.ha_updates)
+        # Optional AI explanations of failed runs (ADR-0166): advisory, shown on the last-run sensor and as an event.
+        self.ai = Explainer(hass, entry, lambda: set(self.data.hosts), self.async_update_listeners)
         self.client = VordrClient(
             hass,
             entry.data[CONF_URL],
@@ -263,6 +308,8 @@ class VordrCoordinator(DataUpdateCoordinator[VordrData]):
         self.async_set_updated_data(replace(self.data, hub=hub, hosts=hosts, synced=synced))
         if t == p.T_SNAPSHOT:
             self._remove_stale_devices(set(hosts))
+        if t in (p.T_SNAPSHOT, p.T_HUB):
+            self._waiting_issues(hub)
         self._hub_version((hub or {}).get("version"))
 
     def _hub_version(self, version: str | None) -> None:
@@ -316,6 +363,7 @@ class VordrCoordinator(DataUpdateCoordinator[VordrData]):
                     "summary": run.get("summary") or {},
                 },
             )
+            self.ai.run_finished(node, run)  # a failed run: explained by AI if switched on, advice only
             if run.get("verb") == "reboot":  # the asked-for reboot ran: from now on the host's report decides
                 self._reboot_asked.pop(node, None)
         self._runs[node] = seen
@@ -362,6 +410,7 @@ class VordrCoordinator(DataUpdateCoordinator[VordrData]):
         self._runs.pop(node, None)
         self._reboot_asked.pop(node, None)
         self._carried.pop(node, None)
+        self.ai.forget(node)
         ir.async_delete_issue(self.hass, DOMAIN, f"problem_{node}")
         ir.async_delete_issue(self.hass, DOMAIN, f"reboot_{node}")
         ir.async_delete_issue(self.hass, DOMAIN, f"install_again_{node}")
@@ -462,6 +511,26 @@ class VordrCoordinator(DataUpdateCoordinator[VordrData]):
             },
             data={"entry_id": self.config_entry.entry_id, "node": node},
         )
+
+    def _waiting_issues(self, hub: dict[str, Any] | None) -> None:
+        """ADR-0157: a host waiting for approval at the hub is a repair that shows the fingerprint the hub saw and the
+        command that approves it, to be run at the hub after comparing with the host's own `vordr-agent identity`. Not
+        fixable: approval stays at the hub (ADR-0010). A warning, because a new host is news, not an alarm. Gone as soon
+        as the hub no longer lists the host as waiting: approved, rejected or forgotten."""
+        waiting = waiting_hosts(hub)
+        for node in self._waiting - set(waiting):
+            ir.async_delete_issue(self.hass, DOMAIN, f"waiting_{node}")
+        for node, names in waiting.items():
+            ir.async_create_issue(
+                self.hass,
+                DOMAIN,
+                f"waiting_{node}",
+                is_fixable=False,
+                severity=ir.IssueSeverity.WARNING,
+                translation_key="waiting_host",
+                translation_placeholders=names,
+            )
+        self._waiting = set(waiting)
 
     def _connection_issues(self, state: Connection, reason: str) -> None:
         if state == Connection.REJECTED and reason == p.REASON_PROTOCOL_MISMATCH:

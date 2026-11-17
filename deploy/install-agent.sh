@@ -8,28 +8,44 @@
 # Proxy instances (vordr-agent@<name>, design/proxy-agent.md 4.3) run the same binary. Each running one must accept its
 # policy with the new binary before anything changes, and once the new agent stays up they are restarted onto it, as
 # the self-update does after its confirmation.
-set -euo pipefail
+# Exit 0: installed, the service runs. 2: refused before the first change - nothing changed. 1: failed after the first
+# change, the output says where. vordr-agent install runs this script and reports the same (ADR-0169).
+set -eEuo pipefail
+# A command that fails unexpectedly ends the script too, and so does SIGINT, SIGTERM or SIGHUP (once the command that
+# runs has ended); the exit still says whether anything had changed by then.
+changed=0
+trap 'exit $((changed ? 1 : 2))' ERR INT TERM HUP
 here=$(cd "$(dirname "$0")" && pwd)
 unit="$here/systemd/vordr-agent.service"
 rollback_unit="$here/systemd/vordr-agent-rollback.service"
 rollback="$here/rollback.sh"
+refuse() { echo "install-agent: $*" >&2; exit 2; }
 fail() { echo "install-agent: $*" >&2; exit 1; }
 
 usage="usage: install-agent.sh <vordr-agent binary> <agent.yaml> [--replace-config \"<reason>\"]"
-[ $# -eq 2 ] || { [ $# -eq 4 ] && [ "$3" = "--replace-config" ]; } || fail "$usage"
+[ $# -eq 2 ] || { [ $# -eq 4 ] && [ "$3" = "--replace-config" ]; } || refuse "$usage"
 reason=${4:-}
-[ $# -eq 2 ] || [ -n "${reason// }" ] || fail "--replace-config needs a reason"
+[ $# -eq 2 ] || [ -n "${reason// }" ] || refuse "--replace-config needs a reason"
 bin=$(realpath "$1")
 cfg=$(realpath "$2")
-[ "$(id -u)" = 0 ] || fail "run as root (the agent runs as root: apt needs it)"
-[ -d /run/systemd/system ] || fail "systemd is not running on this host"
-command -v apt-get >/dev/null || fail "no apt-get here - this version only knows the apt source"
+[ "$(id -u)" = 0 ] || refuse "run as root (the agent runs as root: apt needs it)"
+[ -d /run/systemd/system ] || refuse "systemd is not running on this host"
+command -v apt-get >/dev/null || refuse "no apt-get here - this version only knows the apt source"
 for f in "$unit" "$rollback_unit" "$rollback"; do
-  [ -f "$f" ] || fail "$f missing - run the script from the repository's deploy/ folder"
+  [ -f "$f" ] || refuse "$f missing - run the script from the repository's deploy/ folder"
 done
-"$bin" version >/dev/null 2>&1 || fail "$bin does not run here (wrong architecture?)"
-"$bin" check-config --config "$cfg" || fail "$cfg has issues (listed above) - nothing installed"
-"$bin" hub-check --config "$cfg" || fail "the hub is not reachable from here (see above) - nothing installed"
+"$bin" version >/dev/null 2>&1 || refuse "$bin does not run here (wrong architecture?)"
+"$bin" check-config --config "$cfg" || refuse "$cfg has issues (listed above) - nothing installed"
+# hub-check's exit code is its finding (ADR-0170): 3 means the hub answers but does not sign with hub.public_key.
+# A hub that does not sign at all (an older one) passes with exit 0; its output says the key was not checked.
+hub=0
+"$bin" hub-check --config "$cfg" || hub=$?
+case $hub in
+0) ;;
+3) refuse "the hub at hub.url does not sign with hub.public_key of $cfg (see above) - take the key from \
+vordr-hub key on the hub; nothing installed" ;;
+*) refuse "the hub is not reachable from here (see above) - nothing installed" ;;
+esac
 # The policy path of an instance is the one deploy/systemd/vordr-agent@.service starts it with.
 mapfile -t instances < <(systemctl list-units --state=running --plain --no-legend 'vordr-agent@*.service' | awk '{print $1}')
 for u in "${instances[@]}"; do
@@ -37,19 +53,21 @@ for u in "${instances[@]}"; do
   name=${name%.service}
   out=$("$bin" check-config --config "/etc/vordr/targets/$name.yaml" 2>&1) || {
     echo "$out" >&2
-    fail "proxy instance $name: /etc/vordr/targets/$name.yaml has issues with the new binary (above) - nothing installed"
+    refuse "proxy instance $name: /etc/vordr/targets/$name.yaml has issues with the new binary (above) - nothing installed"
   }
 done
 if [ -f /etc/vordr/agent.yaml ] && ! cmp -s "$cfg" /etc/vordr/agent.yaml; then
-  [ -n "$reason" ] || fail "/etc/vordr/agent.yaml exists and differs from $cfg - compare them and decide yourself, \
+  [ -n "$reason" ] || refuse "/etc/vordr/agent.yaml exists and differs from $cfg - compare them and decide yourself, \
 or replace it with --replace-config \"<reason>\"; nothing installed"
   diff -u /etc/vordr/agent.yaml "$cfg" || true
   backup=/etc/vordr/agent.yaml.bak-$(date +%Y%m%d-%H%M%S)
+  changed=1
   cp -p /etc/vordr/agent.yaml "$backup"
   logger -t install-agent "agent.yaml replaced (old one in $backup): $reason"
   echo "install-agent: agent.yaml will be replaced, old one kept as $backup - reason: $reason"
 fi
 
+changed=1
 install -d -m 0755 /etc/vordr
 install -m 0600 "$cfg" /etc/vordr/agent.yaml
 install -m 0755 "$bin" /usr/local/bin/vordr-agent.new

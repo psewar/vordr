@@ -39,6 +39,10 @@ func RoleAllows(role string, verb protocol.Verb) bool {
 	return false
 }
 
+// RoleAllowsAgentDownload reports whether a client with role may fetch the agent release to install a new host
+// (ADR-0167): admin only. The client sets up a host with it, which is more than any button on a known host does.
+func RoleAllowsAgentDownload(role string) bool { return EffectiveRole(role) == RoleAdmin }
+
 // SetRole gives a client a role.
 func (r *ClientRegistry) SetRole(name, role string) AdminCode {
 	if !ValidRole(role) {

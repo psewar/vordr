@@ -15,13 +15,17 @@ jobs; the integration shows its views and requests commands.
    if you use your own CA. The integration checks reachability in stages (name, connection, TLS, endpoint, challenge)
    and names the one that fails.
 3. It shows a fingerprint and a command; approve it at the hub:
-   `vordr-hub approve-client <name> --fingerprint <fp>`. Then devices and entities appear.
+   `vordr-hub approve-client <name> --fingerprint <fp>`. Then devices and entities appear. The dialog waits at most an
+   hour and may be closed: adding the integration again with the same name continues the request with the same key,
+   also after a restart of Home Assistant
+   ([ADR-0156](../docs/adr/0156-the-config-flow-keeps-its-key-until-the-client-is-set-up.md)).
 
 ## What it creates
 
 | Device | Entities |
 |---|---|
 | "Vördr-Leitstelle" or "Vördr hub" (system language) | `binary_sensor.vordr_hub_online`, `sensor.vordr_hub_hosts_online`, `_hosts_with_problem`, `_pending_approvals`, `_connection` (diagnostic) |
+| "Vördr Home Assistant" | `sensor.vordr_ha_updates_ready` "Updates ready": Home Assistant's own updates that Vördr's rules let through now; `sensor.vordr_ha_updates_last_run` "Last run": what Vördr installed last and how it ended; `switch.vordr_ha_updates_paused` "Pause Home Assistant updates". Nothing installs until you switch it on (see below) |
 | "Vördr <node>" per host | `binary_sensor.vordr_<id>_online`, `_problem`, `_reboot_required`; `sensor.vordr_<id>_last_report`, `_last_run`; with a package source `update.vordr_<id>_system`, `sensor.vordr_<id>_pending_updates`, `_security_updates`; buttons depending on capability (`_check`, `_install_security`, `_reboot`, `_agent_update`, `_install_app_<app>`); with `packages.containers` `update.vordr_<id>_containers` "Container images", reported; it installs only if agent.yaml allows Compose services (`image:<project>/<service>` in `install.allowed_scopes`), and then only the rebuild of their tag (a single service through the action `vordr.update_image`); "on" only while that install button would take something, so a newer tag or a service not allowed leaves it off; `sensor.vordr_<id>_outdated_images` "Outdated images" counts every outdated image, also those that stay manual (attributes `ready`, `installable`, `updates`); with `Debian` or `Alpine` in `osv.ecosystems` of the hub also known vulnerabilities in the images (attribute `vulnerable`; "on" only if a newer image is available to install, vulnerabilities alone do not turn it on; the summary says per image whether a newer image is ready; reports about the image's kernel do not count and are listed per image as `kernel`) |
 
 Unknown stays unknown: a failed check makes `update.*_system` and the counters "unknown", never "up to date"; a host
@@ -45,11 +49,184 @@ without a reboot signal (container) has `reboot_required` "unknown", never "off"
   again" where Vördr may install: once the cause is fixed, "Fix" installs again, and a run that goes through clears it,
   even with nothing left to install
   ([ADR-0148](../docs/adr/0148-a-kept-failed-install-is-a-repair-that-installs-again.md)).
+- A host waiting for approval at the hub shows up as a repair hint (a warning) with the fingerprint the hub saw and the
+  command for the hub, `vordr-hub approve <node> --fingerprint <fp>`. Compare the fingerprint with
+  `vordr-agent identity` on the host first. Home Assistant cannot approve; the hint goes once the host is approved,
+  rejected or forgotten
+  ([ADR-0157](../docs/adr/0157-a-waiting-host-is-a-repair-that-names-the-approval-command.md)).
 - Vulnerable pip/npm packages make a problem only if someone can take the fix now: by button, by refreshing the
   dependencies or by hand. If a finding waits on others (a package or a project file pins the version, there is no fix
   yet, or it is younger than the minimum age), it appears only on the sensor `_vulnerable_packages`: per finding
   `reach` and `held_by`, plus `waiting`
   ([ADR-0129](../docs/adr/0129-findings-say-where-their-fix-is.md)).
+- With a `kev:` section in the hub's `hub.yaml`, a finding whose CVE is in CISA's catalog of Known Exploited
+  Vulnerabilities carries `known_exploited: true`, `kev_cves`, `kev_added` (when CISA added it) and, for use in
+  ransomware campaigns, `kev_ransomware: true`; such findings come right after malware. `_vulnerable_packages` counts
+  them per host in the attribute `known_exploited`, and `sensor.vordr_hub_vulnerability_data` shows the catalog's state
+  in `kev` (`stale`: older than `stale_hours`, newer entries may be missing). The marks change no problem and no timing
+  ([ADR-0168](../docs/adr/0168-known-exploitation-comes-from-the-kev-catalog-fetched-whole-at-the-hub.md)); an
+  automation can use them, e.g. `{{ state_attr('sensor.vordr_<id>_vulnerable_packages', 'known_exploited') }}`.
+- Event `vordr_ai_explanation` with the optional AI explanation of a failed run (see "AI explanations of failed
+  runs").
+
+## Home Assistant's own updates
+
+Home Assistant can install its own updates – Core, OS, apps, HACS, ESPHome, device firmware – but without rules. Under
+*Settings → Devices & services → Vördr → Configure → Home Assistant updates* you set Vördr's rules for them
+([ADR-0158](../docs/adr/0158-home-assistants-own-updates-follow-vordrs-rules-in-the-integration.md)):
+
+- **Allowed kinds** (Core, OS, Supervisor, apps, HACS, ESPHome, device firmware, radio adapter firmware, other) and
+  single update entities. Nothing chosen, nothing allowed.
+- **Window:** days, start and end in Home Assistant's time zone; past midnight it belongs to the day it starts on.
+- **Minimum age:** 7 days by default (1–90), counted from when Vördr first saw the version, since Home Assistant gives
+  no release date
+  ([ADR-0159](../docs/adr/0159-the-minimum-age-of-a-home-assistant-update-counts-from-its-first-sight.md)). What is
+  pending when this version of the integration first runs starts its age then. A newer release of the same line (the
+  same first two numbers, such as 2026.11.2 after 2026.11.1) counts from when Vördr first saw the line, but must itself
+  be 2 days old
+  ([ADR-0179](../docs/adr/0179-a-newer-release-of-a-version-line-inherits-the-lines-age-with-two-days-of-its-own.md)).
+  Device firmware and the radio adapter's firmware wait at least 14 days
+  ([ADR-0180](../docs/adr/0180-device-firmware-and-the-radio-adapter-wait-at-least-14-days.md)).
+- **Install automatically:** off by default. Until you switch it on, Vördr only plans.
+
+**It installs only once you switch it on.** The sensor `sensor.vordr_ha_updates_ready` (device "Vördr Home
+Assistant") counts the updates the rules let through now, also while installing is off. Its attributes say how many
+there are per reason, and per update entity why not and from when (`updates`: `code`, `earliest`, `first_seen`). Never
+touched: Vördr's own entities, a version skipped in Home Assistant (`skipped`), an update that installs itself
+(`self_updating`), and a new major version, which stays
+manual (`major`, [ADR-0160](../docs/adr/0160-a-new-major-version-of-a-home-assistant-update-stays-manual.md)). The
+sensor works without the hub.
+
+**Installing** ("Install automatically" in the same form, off by default; [ADR-0162](../docs/adr/0162-home-assistants-own-updates-install-only-when-switched-on-and-a-pause-holds-them.md)):
+
+- One update at a time, inside the window, only what is `ready` at that moment: the plan is checked again right
+  before each install. Other kinds first; Core, OS and Supervisor last, one of them per opening of the window, since
+  they restart Home Assistant or the machine ([ADR-0164](../docs/adr/0164-home-assistant-updates-install-one-at-a-time-with-core-os-and-supervisor-last.md)).
+- A backup before each: `update.install` with `backup` where the entity can back itself up (Core, OS, apps); for the
+  others (HACS, ESPHome, the Supervisor) Home Assistant's last automatic backup must be at most 26 hours old,
+  or Vördr makes one with `backup.create_automatic`. No backup, no install ([ADR-0163](../docs/adr/0163-a-backup-before-every-automatic-home-assistant-update.md)).
+  Device firmware and the radio adapter need none: a backup of Home Assistant cannot roll a device back
+  ([ADR-0181](../docs/adr/0181-device-firmware-and-the-radio-adapter-install-without-a-backup-of-home-assistant.md)).
+- The switch `switch.vordr_ha_updates_paused` "Pause Home Assistant updates" holds every install that has not started
+  yet, also across restarts. Only one Vördr entry (one per hub) may install.
+- After the install Vördr waits until the entity reports the new version: 30 minutes, device firmware and the radio
+  adapter 2 hours
+  ([ADR-0183](../docs/adr/0183-device-firmware-and-the-radio-adapter-get-two-hours-to-report-their-version.md)). A Core
+  or OS update restarts Home Assistant: the run is kept, and its outcome is checked first after the restart.
+- The sensor `sensor.vordr_ha_updates_last_run` "Last run" shows the phase, then the result (`ok`, `failed`,
+  `not_reached`, `timeout`, `backup_failed`, `skipped_paused`, `skipped_not_ready`), the versions, the backup and what
+  the installer does now (`installer`), with the ready updates in their order (`queue`).
+- Event `vordr_ha_update_finished` `{entity_id, kind, from_version, to_version, installed_version, result, reason,
+  backup, started, finished, restarted}` when a run ends.
+- A failed install (`failed`, `not_reached`, `timeout`) is a repair hint and is not tried again until a newer version
+  comes, until you install it by hand, or until you confirm the hint: then Vördr installs it at once, outside the
+  window but under all its other rules. If another install is running, installing is paused or off, or a rule stops it,
+  the hint says why and nothing is queued
+  ([ADR-0182](../docs/adr/0182-the-repairs-fix-installs-a-failed-home-assistant-update-at-once.md)). The hint goes
+  once an install of it goes through ([ADR-0165](../docs/adr/0165-a-failed-home-assistant-update-stays-until-an-install-of-it-goes-through.md)). A failed backup is a hint of its own until Home Assistant has a
+  newer automatic backup.
+- Not yet: one device of a model first before the others of that model (a later change).
+
+## Installing the agent on a new Linux host
+
+Home Assistant can set up a new host itself: it reaches it once over SSH, has it fetch the signed agent release from
+the hub, checks it, and runs `vordr-agent install` there. Nothing of the SSH access is stored
+([ADR-0161](../docs/adr/0161-home-assistant-installs-the-agent-once-over-ssh-and-keeps-no-credentials.md)). For
+Linux with systemd and apt (Debian, Ubuntu, Raspberry Pi OS) on x86_64, aarch64 or armv7.
+
+What it needs:
+
+- a hub that hands out the agent release (its status names `agent_download`), with a signed release on it
+  (`deploy/README.md`, "Signing agent releases");
+- this Home Assistant approved at the hub with role `admin`: `vordr-hub client-role <name> --role admin`;
+- the operator key (and its backup, if any), entered once under *Settings → Devices & services → Vördr → Configure →
+  Operator keys*, as `vordr-release public-key` prints them. Home Assistant checks every release against them and
+  never takes a key from the hub;
+- on the host: SSH, `root` or a user with `sudo`, `curl` or `wget`, and the hub reachable at the address this
+  integration uses.
+
+Then *Configure → Install the agent on a Linux host (SSH)*:
+
+1. host, SSH port, user and node name (empty: the host's own name);
+2. the host key the server presents: compare it with the host's own on its console
+   (`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`) and confirm only if they are the same;
+3. a password or a private key (with its passphrase), and sudo's password if it differs from the login password. Use a
+   key or a password made for this if you can: Home Assistant holds the login's password and key in memory until it is
+   logged in, sudo's password until the install starts, and stores them nowhere. Closing the dialog while it logs in
+   stops everything: nothing runs on the host;
+4. Home Assistant checks the host (Linux, processor, systemd, apt, the tools, sudo), fetches the release, checks its
+   signature (and that it is not older than one an earlier install took), and the host, as a service of its own
+   (`systemd-run`) that finishes even if the connection ends, downloads the binary into a private temporary folder,
+   compares its size and SHA-256 with the signed manifest and only then runs `vordr-agent install`. The folder goes in
+   every case.
+
+At the end the dialog shows the agent's fingerprint. The host now waits for approval at the hub; as soon as the hub
+lists it, the repair "Host … waits for approval" shows the command. Compare the fingerprint, then approve at the hub.
+Every other end names what happened on the host and what to do next. A host with a policy of its own is still set up
+by hand (`deploy/README.md`); the agent installed this way checks and reports, and installs nothing until its
+`agent.yaml` allows it.
+
+## AI explanations of failed runs
+
+Optional and off by default
+([ADR-0166](../docs/adr/0166-optional-ai-explanations-of-failed-runs-go-through-home-assistants-ai-task-and-only-advise.md)).
+When a run on a host fails, an AI Task entity you choose explains it: a few sentences in Home Assistant's language, a
+likely cause and up to three next steps from fixed lists, and a quote from the run's log excerpt as evidence. It only
+advises: it never changes windows, minimum ages, scopes, buttons or repairs, and the hub knows nothing of it.
+
+It needs an AI Task entity that can generate data, from any integration that offers one (a local model or a cloud
+service). Then *Settings → Devices & services → Vördr → Configure → AI explanations of failed runs*: choose the entity
+and confirm that package names and log excerpts of failed runs may go to its provider. Empty the entity to switch it
+off.
+
+**What goes to the provider**, per failed run: the result code, the action, the package names and the end of the log
+excerpt (at most 2000 characters). Before that, the hub's address, the names of the hosts the hub knows (with their
+domain), names in the hub's domain, the server of every URL with its user and password, and IP addresses are replaced
+by placeholders; the other words of the excerpt go as they are. A provider that is a cloud service sees them, also
+behind an integration for local models: check where the entity sends its data.
+
+**Which runs:** failures whose log tells the cause (package manager, check after the update, verification, disk space,
+package source, backup, timeout, interruption). Not: runs that ended `ok`, refusals, the decisions of Vördr's rules
+(too new, flagged, not from the registry) and security signals (a hash, certificate or host key that does not match):
+an AI does not explain those away.
+
+**The result:**
+
+- Event `vordr_ai_explanation` `{node, job_id, state, code, entity_id}`; with `code` `ok` also `likely_cause`,
+  `next_steps`, `explanation` and `quote`. While switched on it comes for every such run, also when no answer can be
+  had, so an automation that waits for it does not wait in vain; a push can add `{{ trigger.event.data.explanation }}`
+  when `code` is `ok`. While off, nothing is sent and no event comes
+  ([ADR-0184](../docs/adr/0184-with-ai-explanations-off-nothing-is-sent-and-no-event-is-fired.md)).
+- The host's sensor "Last run" shows `ai_code`, `ai_entity_id` and with `ok` the fields (`ai_likely_cause`,
+  `ai_next_steps`, `ai_explanation`, `ai_quote`) while it shows that run; out of the recorder.
+- `code`: `ok`; `unverified` (the quote is not in the log as it was sent: nothing of the answer is shown);
+  `invalid_answer` (a field missing or a value not in its list); `no_answer` (none within 60 seconds, or the provider
+  failed); `no_excerpt` (the run has no log excerpt); `unsupported` (the entity cannot generate data, or AI Task is not
+  set up); `entity_missing` (the entity is gone or unavailable); `not_configured` (the stored options are not valid).
+
+Only `likely_cause` and `next_steps` come from fixed lists: base an automation on those, never on the text. The
+explanation is AI text, not checked beyond its quote being in the log, and a log can be crafted to make a model say
+anything. One question at a time, each run once; the same failure on several hosts is asked about once.
+
+## Blueprints
+
+Four automation blueprints in [`blueprints/automation/vordr/`](../blueprints/automation/vordr/) turn the events and
+entities above into notifications
+([ADR-0173](../docs/adr/0173-notifications-are-shipped-as-blueprints-the-user-imports.md),
+[design](../design/ha-integration.md)). They only notify; none installs or reboots by itself.
+
+- `problem.yaml`: a host's problem begins or changes, with reason and next step; optional wait, ignored reasons, a note
+  when it ends.
+- `run_failed.yaml`: a run ends with a result other than `ok`.
+- `reboot_offer.yaml`: a host needs a reboot; where Vördr may reboot it, the notification has the action "Reboot now",
+  which presses the host's reboot button when you tap it (Companion app).
+- `hub_offline.yaml`: the hub's online entity is off for N minutes.
+
+Import: *Settings → Automations & scenes → Blueprints → Import blueprint*, with the address of the file in the
+repository, for example `https://github.com/<owner>/<repo>/blob/main/blueprints/automation/vordr/problem.yaml`
+([Home Assistant: using blueprints](https://www.home-assistant.io/docs/automation/using_blueprints/)); or copy the
+files to `/config/blueprints/automation/vordr/`. Then create an automation from the blueprint and pick the notify
+service, for example `notify.mobile_app_<device>`. Home Assistant needs 2024.10 or newer for them.
 
 ## Languages
 
@@ -58,7 +235,8 @@ HA decides which language applies where:
 
 | What | Language |
 |---|---|
-| Setup, errors, states (`last_run`, `hub_connection`), attribute values of `_problem` (`reason`, `next_step`, `check_failed_code`), repair hints | the language in the profile of the person reading |
+| Setup and options, errors, states (`last_run`, `hub_connection`, `ha_updates_last_run`), attribute values of `_problem` (`reason`, `next_step`, `check_failed_code`) and of `_last_run` (`ai_code`, `ai_likely_cause`, `ai_next_steps`), the reasons of `ha_updates_ready`, repair hints | the language in the profile of the person reading |
+| The text of an AI explanation (`explanation`) | the system language of HA, which the model is asked to write in |
 | Entity and device names, `latest_version` and summary of the update entity | the system language of HA (HA sets names at startup) |
 | `message` in the events | all shipped languages; the automation chooses |
 

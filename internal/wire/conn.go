@@ -2,6 +2,7 @@ package wire
 
 import (
 	"encoding/json"
+	"errors"
 	"sync"
 	"time"
 
@@ -48,3 +49,26 @@ func (c *Conn) Receive(timeout time.Duration) (string, []byte, error) {
 }
 
 func (c *Conn) Close() error { return c.ws.Close() }
+
+// CloseWith ends the connection with a close frame that carries code, so the other side reads a fixed code instead of
+// a connection that just ends. The frame is best effort: the connection is closed either way.
+func (c *Conn) CloseWith(code int) error {
+	err := c.ws.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(code, ""),
+		time.Now().Add(writeTimeout))
+	if cerr := c.ws.Close(); err == nil {
+		err = cerr
+	}
+	return err
+}
+
+// CloseCode is the code of the close frame the other side ended the connection with, as Receive returned it: 1006
+// (abnormal closure, a code no peer sends) for a connection that just ended, 0 for an error that is no close at all
+// (a timeout). gorilla/websocket hands a close frame to the reader only as the error of the read; its code is a field
+// of that error, not a text.
+func CloseCode(err error) int {
+	var ce *websocket.CloseError
+	if errors.As(err, &ce) {
+		return ce.Code
+	}
+	return 0
+}

@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/psewar/vordr/internal/hub"
 )
 
 func TestEventFilterOptions(t *testing.T) {
@@ -70,5 +72,19 @@ func TestPrintEvents(t *testing.T) {
 	printEvents(&b, nil, 0, time.UTC)
 	if b.String() != "no events\n" {
 		t.Errorf("empty: %q", b.String())
+	}
+}
+
+// check-config says how long the event log keeps what, also when it keeps everything.
+func TestEventLogSummary(t *testing.T) {
+	cfg := hub.Config{StateDir: "/var/lib/vordr-hub"}
+	if got := eventLogSummary(cfg); got != "event log: /var/lib/vordr-hub/events.jsonl grows without a limit (no event_log section)" {
+		t.Errorf("off: %q", got)
+	}
+	cfg.EventLog = &hub.EventLogConfig{MaxSizeMB: 32, Keep: 8}
+	want := "event log: /var/lib/vordr-hub/events.jsonl, a new file after 32 MiB, the last 8 full files kept as " +
+		"events.jsonl.1 to .8 (at most 288 MiB in all)"
+	if got := eventLogSummary(cfg); got != want {
+		t.Errorf("on: %q", got)
 	}
 }

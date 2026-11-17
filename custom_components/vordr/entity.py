@@ -22,6 +22,10 @@ if TYPE_CHECKING:
 # (no report so far): those are neither added nor removed.
 HostEntities = tuple[dict[str, Callable[[], Entity]], set[str]]
 
+# Unique ids of the entities of Home Assistant's own updates (ADR-0158): "ha_updates:<key>". The underscore keeps them
+# apart from host entities ("<node>:<key>"), since a node has none.
+HA_UPDATES_UID = "ha_updates:"
+
 
 class VordrHostEntity(CoordinatorEntity[VordrCoordinator]):
     """An entity of one host; ids as the MQTT side had them: <platform>.vordr_<node>_<key>."""
@@ -114,7 +118,8 @@ def track_host_entities(
                     new.append(make())
         reg = er.async_get(coordinator.hass)
         for ent in er.async_entries_for_config_entry(reg, entry.entry_id):
-            if ent.domain != platform or ent.unique_id.startswith("hub:"):
+            # Hub entities and those of Home Assistant's own updates (ADR-0158) are no host's.
+            if ent.domain != platform or ent.unique_id.startswith(("hub:", HA_UPDATES_UID)):
                 continue
             node, _, key = ent.unique_id.partition(":")
             if node in keep and key not in keep[node]:

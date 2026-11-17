@@ -52,7 +52,7 @@ func cmdOutput(res runner.Result) string {
 	return strings.TrimSpace(string(res.Stderr))
 }
 
-// On Linux systemd runs the agent (deploy/install-agent.sh); these exist only on Windows.
+// On Linux systemd runs the agent (vordr-agent install, deploy/install-agent.sh); these exist only on Windows.
 
 func asService() bool { return false }
 
@@ -61,7 +61,8 @@ func runService(string) int { return 2 }
 func serviceLog(string) io.Writer { return os.Stderr }
 
 func installService(string, string) int {
-	fmt.Fprintln(os.Stderr, "install-service is for Windows; on Linux: deploy/install-agent.sh")
+	fmt.Fprintln(os.Stderr, "install-service is for Windows; on Linux, as root: vordr-agent install --hub <wss-url> "+
+		"--hub-key <base64> (or deploy/install-agent.sh with an agent.yaml of your own)")
 	return 2
 }
 

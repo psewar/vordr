@@ -10,6 +10,14 @@ offline_after_min: 10                   # disconnected this long: problem "offli
 reboot_pending_after_days: 7            # a reboot needed this long: problem "reboot_pending"
 no_report_after_hours: 26               # connected, but no check reported this long: problem "no_report"
 
+# Optional limit of the event log (ADR-0172): once events.jsonl would pass max_size_mb, it becomes events.jsonl.1, the
+# older files move one number up and the oldest beyond keep is deleted; `vordr-hub events` reads across all of them.
+# Without this section the event log only grows, as before. `event_log: {}` takes the defaults below. Whatever copies
+# events.jsonl elsewhere (ADR-0060) copies the numbered files too; each new file starts with event_log_rotated.
+event_log:
+  max_size_mb: 32                       # default 32, 1 to 1024
+  keep: 8                               # full files kept, default 8, 1 to 100: at most (keep + 1) x max_size_mb
+
 # Home Assistant connects itself (integration custom_components/vordr, endpoint /v1/ha on the same port); admit it
 # with `vordr-hub approve-client`. There is no MQTT any more (since 0.6).
 
@@ -65,3 +73,12 @@ osv:
   # ecosystems: [PyPI, npm, Debian, Alpine]
   refresh_hours: 24                     # an unchanged dump costs one request (ETag)
   stale_hours: 72                       # older data shows as stale in Home Assistant
+
+# Optional, needs osv: mark the findings whose CVE is in CISA's catalog of Known Exploited Vulnerabilities (KEV, CC0,
+# ADR-0168). The hub fetches the whole catalog (JSON, about 2 MB) from one more host, keeps it in <state_dir>/kev and
+# looks the CVEs up itself; nothing of a host goes along. It only marks (known_exploited, kev_added, kev_ransomware);
+# problems and timing stay as they are. Without this section the hub fetches nothing and marks nothing.
+kev:
+  url: https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json  # default; or a mirror
+  refresh_hours: 24                     # an unchanged catalog costs one request (ETag, Last-Modified)
+  stale_hours: 72                       # a catalog not confirmed for longer shows as stale in Home Assistant

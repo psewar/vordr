@@ -1,7 +1,8 @@
 """The reboot repair (ADR-0132): from the first report, fixable where the hub offers the reboot, gone once the host no
 longer needs one; one repair for the long-pending reboot instead of two. The install-again repair (ADR-0148): a kept
 failed install is fixable where the hub offers the install, and gone with the failure. Both say why the hub refused
-their command, as the buttons do."""
+their command, as the buttons do. The waiting-host repair (ADR-0157): a host waiting for approval names the command
+for the hub and goes once the hub decided."""
 
 from __future__ import annotations
 
@@ -299,3 +300,81 @@ async def test_install_again_refused_says_why(hass: HomeAssistant, fake_hub: Fak
         assert result["type"] is FlowResultType.ABORT and result["reason"] == "command_refused", code
         assert result["description_placeholders"] == {"node": "h", "code": code}
     assert issue(hass, "install_again_h") is not None
+
+
+FP_NEW = "ab" * 32
+FP_OTHER = "cd" * 32
+
+
+def waiting(node: str, fp: str, system: str = "TestOS 1") -> dict[str, str]:
+    """A WaitingHost as the hub sends it in its own view."""
+    return {"node": node, "fingerprint": fp, "os": system}
+
+
+async def test_a_waiting_host_is_a_repair_with_the_approval_command(
+    hass: HomeAssistant, fake_hub: FakeHub, entry: MockConfigEntry
+) -> None:
+    """ADR-0157: a warning per host waiting for approval, with the node, the fingerprint the hub saw and the command
+    for the hub. Not fixable: approval stays at the hub. None for an approved host, none for an entry a command could
+    not carry as it is; the system the host names for itself is shown as one short line of code."""
+    fake_hub.hosts["h"] = host_view("h")
+    fake_hub.hub["waiting"] = [
+        waiting("new-host", FP_NEW, "Debian GNU/Linux 13 (trixie)"),
+        waiting("odd", FP_OTHER, "x`[look](https://example.org)`\n second line " + "y" * 80),
+        waiting("Bad Name", FP_NEW),  # no host name
+        waiting("short", "ab" * 8),  # no fingerprint as the hub shows one
+        waiting("upper", FP_NEW.upper()),
+        waiting("bare", FP_NEW, ""),
+    ]
+    await setup(hass, entry)
+    new = issue(hass, "waiting_new-host")
+    assert new is not None and not new.is_fixable and new.severity == ir.IssueSeverity.WARNING
+    assert new.translation_key == "waiting_host"
+    assert new.translation_placeholders == {
+        "node": "new-host",
+        "fingerprint": FP_NEW,
+        "os": "Debian GNU/Linux 13 (trixie)",
+        "command": f"vordr-hub approve new-host --fingerprint {FP_NEW}",
+    }
+    odd = issue(hass, "waiting_odd")
+    assert odd is not None and odd.translation_placeholders["os"].startswith("x'[look](https://example.org)' second")
+    assert "`" not in odd.translation_placeholders["os"] and len(odd.translation_placeholders["os"]) == 64
+    assert issue(hass, "waiting_bare").translation_placeholders["os"] == "?"
+    for node in ("h", "Bad Name", "short", "upper"):
+        assert issue(hass, f"waiting_{node}") is None, node
+    # The sensor keeps listing every waiting host as the hub sent it.
+    assert hass.states.get("sensor.vordr_hub_pending_approvals").state == "6"
+
+
+async def test_the_waiting_repair_goes_on_approval_and_on_removal(
+    hass: HomeAssistant, fake_hub: FakeHub, entry: MockConfigEntry
+) -> None:
+    fake_hub.hub["waiting"] = [waiting("new-host", FP_NEW), waiting("other", FP_OTHER)]
+    await setup(hass, entry)
+    assert issue(hass, "waiting_new-host") is not None and issue(hass, "waiting_other") is not None
+    # Approved at the hub: it leaves the waiting list and comes as a host.
+    await fake_hub.push_hub(waiting=[waiting("other", FP_OTHER)])
+    await fake_hub.push_host(host_view("new-host"))
+    # Two messages, two conditions: the repair goes with the hub's, the host's entities come with the host's.
+    await wait_until(
+        lambda: (
+            issue(hass, "waiting_new-host") is None
+            and hass.states.get("binary_sensor.vordr_new_host_online") is not None
+        )
+    )
+    assert issue(hass, "waiting_other") is not None
+    # Rejected or forgotten at the hub: it leaves the waiting list and does not come as a host.
+    await fake_hub.push_hub(waiting=[])
+    await wait_until(lambda: issue(hass, "waiting_other") is None)
+
+
+async def test_the_waiting_repair_follows_the_snapshot_after_a_reconnect(
+    hass: HomeAssistant, fake_hub: FakeHub, entry: MockConfigEntry
+) -> None:
+    """Decided at the hub while Home Assistant was not connected: the snapshot on the next connection settles it."""
+    fake_hub.hub["waiting"] = [waiting("new-host", FP_NEW)]
+    await setup(hass, entry)
+    assert issue(hass, "waiting_new-host") is not None
+    fake_hub.hub["waiting"] = [waiting("later", FP_OTHER)]
+    await fake_hub.drop_connections()
+    await wait_until(lambda: issue(hass, "waiting_new-host") is None and issue(hass, "waiting_later") is not None)

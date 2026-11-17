@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from dataclasses import dataclass
 import datetime as dt
 import hashlib
 import ipaddress
 import json
 import os
+from pathlib import Path
+import secrets
 import ssl
 import threading
 from typing import Any
@@ -17,13 +20,15 @@ from aiohttp import WSMsgType, web
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 from cryptography.x509.oid import NameOID
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.vordr import protocol as p
 from custom_components.vordr.const import CONF_CA_PEM, CONF_NAME, CONF_PRIVATE_KEY, CONF_URL, DOMAIN
+
+from .fake_ssh_host import FakeHost
 
 
 @pytest.fixture(autouse=True)
@@ -90,9 +95,48 @@ def host_view(node: str, **over: Any) -> dict[str, Any]:
     return view
 
 
+@dataclass
+class FakeRelease:
+    """An agent release as vordr-release signs it: manifest.json, its signature, the binaries by file. served is what
+    the hub hands out for each file (another content tests the host's check), hub_key the hub's job key."""
+
+    version: str
+    manifest: bytes
+    sig: bytes
+    served: dict[str, bytes]
+    hub_key: bytes
+
+
+MANIFEST_CONTEXT = b"vordr/agent-manifest/v1\x00"  # internal/protocol/manifest.go
+
+
+def make_release(
+    signer: Ed25519PrivateKey, binaries: dict[tuple[str, str], bytes], version: str = "1.4.0"
+) -> FakeRelease:
+    """A release signed by signer, one binary per platform, named as build.sh names them."""
+    entries = [
+        {
+            "os": os_name,
+            "arch": arch,
+            "file": f"vordr-agent-{os_name}-{arch}",
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "size": len(data),
+        }
+        for (os_name, arch), data in binaries.items()
+    ]
+    manifest = json.dumps({"version": version, "issued": "2030-01-01T00:00:00Z", "binaries": entries}).encode()
+    return FakeRelease(
+        version=version,
+        manifest=manifest,
+        sig=signer.sign(MANIFEST_CONTEXT + manifest),
+        served={e["file"]: binaries[(e["os"], e["arch"])] for e in entries},
+        hub_key=Ed25519PrivateKey.generate().public_key().public_bytes_raw(),
+    )
+
+
 class FakeHub:
     """Enough of vordr-hub's /v1/ha for the integration: login with a real signature check, status, snapshot,
-    pushes and command results, all driven by the test."""
+    pushes, command results and the agent release for a new host, all driven by the test."""
 
     def __init__(self) -> None:
         self.cert_pem, self._key_pem = self_signed()
@@ -114,6 +158,14 @@ class FakeHub:
         self.hosts: dict[str, dict[str, Any]] = {}
         self.commands: list[dict[str, Any]] = []
         self.command_code = "ok"
+        # What the hub accepts beyond the base protocol, in every status (agent_download, ADR-0161).
+        self.features: list[str] = []
+        # The agent release for a new host: the requests, the code to answer, the release, the single-use downloads.
+        self.download_requests: list[dict[str, Any]] = []
+        self.download_code = "ok"
+        self.release: FakeRelease | None = None
+        self.tokens: dict[str, dict[str, Any]] = {}  # token -> {"file", "used"}
+        self.download_refusal: tuple[int, str] | None = None  # (status, code) instead of the binary
         self.conns: list[tuple[str, web.WebSocketResponse]] = []
         self.port = 0
         self._runner: web.AppRunner | None = None
@@ -150,6 +202,16 @@ class FakeHub:
     async def remove_host(self, node: str) -> None:
         await self._on_hub(self._remove_host(node))
 
+    async def push_hub(self, **over: Any) -> None:
+        """Change the hub's own view (e.g. the waiting hosts) and push it, as the hub does on a change."""
+        self.hub.update(over)
+        await self._on_hub(self._send_approved({"t": "hub", "hub": self.hub}))
+
+    async def drop_connections(self) -> None:
+        """End every connection while the hub keeps serving, as a restart of the hub does: clients come back and get a
+        new snapshot."""
+        await self._on_hub(self._drop_connections())
+
     async def shut_down(self) -> None:
         """Stop serving (connections end), as when the hub goes down."""
         await self._on_hub(self._stop())
@@ -157,7 +219,10 @@ class FakeHub:
     async def _start(self, path: str = p.PATH) -> None:
         app = web.Application()
         app.router.add_get(path, self._handle)
-        self._runner = web.AppRunner(app)
+        app.router.add_get("/v1/agent-download/{file}", self._download)
+        # No access log: it would name the download tokens, which the tests look for in every log line (the real hub
+        # logs a download_id instead).
+        self._runner = web.AppRunner(app, access_log=None)
         await self._runner.setup()
         ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
         cert_file = os.path.join(os.environ.get("TMPDIR", "/tmp"), f"vordr-fake-{id(self)}.pem")
@@ -214,7 +279,7 @@ class FakeHub:
             await ws.send_json({"t": "status", "state": "rejected", "reason": "key_mismatch"})
             await ws.close()
             return ws
-        await ws.send_json({"t": "status", "state": client["state"], "fingerprint": fp})
+        await ws.send_json({"t": "status", "state": client["state"], "fingerprint": fp, "features": self.features})
         if client["state"] == "rejected":
             await ws.close()
             return ws
@@ -239,9 +304,52 @@ class FakeHub:
                             "job_id": "job1" if code == "ok" else "",
                         }
                     )
+                elif data["t"] == "agent_download":
+                    self.download_requests.append(data)
+                    await ws.send_json(self._agent_download(data))
         finally:
             self.conns.remove((name, ws))
         return ws
+
+    def _agent_download(self, data: dict[str, Any]) -> dict[str, Any]:
+        """The hub's agent_download_result (design/ha-integration.md 5b): with ok, the release as the operator signed
+        it and one single-use path per binary of the platform."""
+        answer: dict[str, Any] = {"t": "agent_download_result", "request_id": data["request_id"]}
+        if self.download_code != "ok" or self.release is None:
+            return {**answer, "code": self.download_code if self.download_code != "ok" else "no_release"}
+        r = self.release
+        downloads = []
+        for b in json.loads(r.manifest)["binaries"]:
+            if (b["os"], b["arch"]) == (data.get("os"), data.get("arch")):
+                token = secrets.token_hex(24)
+                self.tokens[token] = {"file": b["file"], "used": False}
+                downloads.append({"file": b["file"], "path": f"/v1/agent-download/{b['file']}?token={token}"})
+        expires = dt.datetime.now(dt.UTC) + dt.timedelta(minutes=15)
+        return {
+            **answer,
+            "code": "ok",
+            "version": r.version,
+            "manifest": base64.b64encode(r.manifest).decode(),
+            "manifest_sig": base64.b64encode(r.sig).decode(),
+            "hub_key": base64.b64encode(r.hub_key).decode(),
+            "expires_at": expires.isoformat().replace("+00:00", "Z"),
+            "downloads": downloads,
+        }
+
+    async def _download(self, request: web.Request) -> web.Response:
+        """GET /v1/agent-download/<file>?token=: the binary once, or a fixed status with the code as the body."""
+        if self.download_refusal is not None:
+            status, code = self.download_refusal
+            return web.Response(status=status, text=code)
+        entry = self.tokens.get(request.query.get("token", ""))
+        if entry is None:
+            return web.Response(status=403, text="unknown_token")
+        if entry["used"]:
+            return web.Response(status=409, text="token_used")
+        if entry["file"] != request.match_info["file"] or self.release is None:
+            return web.Response(status=404, text="wrong_file")
+        entry["used"] = True
+        return web.Response(body=self.release.served[entry["file"]], content_type="application/octet-stream")
 
     async def _snapshot(self, ws: web.WebSocketResponse) -> None:
         await ws.send_json({"t": "snapshot", "hub": self.hub, "hosts": list(self.hosts.values())})
@@ -255,7 +363,8 @@ class FakeHub:
         self.clients[name]["state"] = "approved"
         for n, ws in list(self.conns):
             if n == name:
-                await ws.send_json({"t": "status", "state": "approved", "fingerprint": self.clients[name]["fp"]})
+                status = {"t": "status", "state": "approved", "fingerprint": self.clients[name]["fp"]}
+                await ws.send_json({**status, "features": self.features})
                 await self._snapshot(ws)
 
     async def _push_host(self, view: dict[str, Any]) -> None:
@@ -266,6 +375,10 @@ class FakeHub:
         self.hosts.pop(node, None)
         await self._send_approved({"t": "host_removed", "node": node})
 
+    async def _drop_connections(self) -> None:
+        for _, ws in list(self.conns):
+            await ws.close()
+
 
 @pytest.fixture
 def fake_hub(socket_enabled: None) -> FakeHub:
@@ -273,6 +386,15 @@ def fake_hub(socket_enabled: None) -> FakeHub:
     hub.start()
     yield hub
     hub.stop()
+
+
+@pytest.fixture
+def fake_host(tmp_path: Path, socket_enabled: None) -> FakeHost:
+    """A Linux host behind SSH, played in a sandbox (fake_ssh_host.py)."""
+    host = FakeHost(tmp_path / "host")
+    host.start()
+    yield host
+    host.stop()
 
 
 @pytest.fixture

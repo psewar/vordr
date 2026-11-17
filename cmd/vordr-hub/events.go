@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
@@ -18,6 +19,17 @@ var (
 	dateOnly = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}$`)
 	number   = regexp.MustCompile(`^[1-9][0-9]{0,4}$`)
 )
+
+// eventLogSummary is the line of check-config about how long the event log keeps what (ADR-0172).
+func eventLogSummary(cfg hub.Config) string {
+	path := filepath.Join(cfg.StateDir, "events.jsonl")
+	l := cfg.EventLog
+	if l == nil {
+		return "event log: " + path + " grows without a limit (no event_log section)"
+	}
+	return fmt.Sprintf("event log: %s, a new file after %d MiB, the last %d full files kept as %s.1 to .%d "+
+		"(at most %d MiB in all)", path, l.MaxSizeMB, l.Keep, filepath.Base(path), l.Keep, l.MaxSizeMB*(l.Keep+1))
+}
 
 // eventFilter turns the options of "vordr-hub events" into the filter; false: one of them cannot be read. since is a
 // duration back from now (90m, 24h, 7d), a date (midnight local time) or a time in RFC 3339.

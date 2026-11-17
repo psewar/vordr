@@ -21,6 +21,7 @@ import (
 	"golang.org/x/sys/windows/svc/mgr"
 
 	"github.com/psewar/vordr/internal/agent"
+	"github.com/psewar/vordr/internal/identity"
 	"github.com/psewar/vordr/internal/policy"
 	"github.com/psewar/vordr/internal/source/winget"
 	"github.com/psewar/vordr/internal/wire"
@@ -153,16 +154,20 @@ func serviceLog(stateDir string) io.Writer {
 }
 
 // installService sets the agent up as a service in one step. Everything that can refuse is checked before anything
-// changes (exit 2): elevated, agent.yaml valid with a hub, the hub reachable, an installed agent.yaml the same or
+// changes (exit 2): elevated, agent.yaml valid with a hub, the hub reachable and signing with hub.public_key or not
+// signing at all (an older hub that state_dir has not seen sign, ADR-0170; hubCheckRefusal), an installed agent.yaml the
+// same or
 // replaced with a reason (--replace-config), the service manager and an existing service readable.
 // Then, while an existing agent keeps running, PowerShell 7 and the WinGet PowerShell module are installed for all
 // users if missing, %ProgramData%\vordr and state_dir become readable for SYSTEM and administrators only (identity key,
-// policy) and a replaced agent.yaml is kept as agent.yaml.bak-<time>. Only then the service stops, the binary goes to
+// policy), the identity is loaded from state_dir or created there, and a replaced agent.yaml is kept as
+// agent.yaml.bak-<time>. Only then the service stops, the binary goes to
 // %ProgramFiles%\Vordr (a service binary in a folder users can write would hand them LocalSystem), agent.yaml to
 // %ProgramData%\vordr, and the service is created or pointed at the new binary and started.
 // A step that fails undoes what changed after the stop, last first: the service is as before, with its previous binary,
 // agent.yaml and configuration (exit 3). Exit 1 only if something could not be put back; the last line then states
-// the service as the service manager reports it.
+// the service as the service manager reports it. Done, it prints the command to approve this agent at the hub with its
+// fingerprint.
 func installService(path, reason string) int {
 	if !windows.GetCurrentProcessToken().IsElevated() {
 		fmt.Fprintln(os.Stderr, "install-service: run it as administrator (it creates a LocalSystem service)")
@@ -182,8 +187,8 @@ func installService(path, reason string) int {
 		fmt.Fprintf(os.Stderr, "install-service: %s needs hub.url and hub.public_key\n", abs)
 		return 2
 	}
-	if code := hubCheck(abs); code != 0 {
-		fmt.Fprintln(os.Stderr, "install-service: the hub is not reachable from here - nothing changed")
+	if refusal := hubCheckRefusal(hubCheck(abs), abs); refusal != "" {
+		fmt.Fprintln(os.Stderr, refusal)
 		return 2
 	}
 	// The service reads agent.yaml from its own folder: a file in a folder users can write could be swapped for one
@@ -239,11 +244,13 @@ func installService(path, reason string) int {
 		fmt.Printf("note   %s is new or the same as %s: --replace-config has nothing to replace\n", target, abs)
 	}
 	// First what a running agent does not notice: it keeps working while PowerShell 7 installs.
+	var id *identity.Identity
 	steps := []step{
 		{what: "PowerShell 7 for all users", do: installPowerShell7},
 		{what: "PowerShell module Microsoft.WinGet.Client for all users", do: installWinGetClient},
 		{what: filepath.Dir(target) + " for SYSTEM and administrators only", do: func() error { return restrict(filepath.Dir(target)) }},
 		{what: "state_dir " + cfg.StateDir + " for SYSTEM and administrators only", do: func() error { return restrict(cfg.StateDir) }},
+		identityStep(cfg.StateDir, &id), // after the folder's ACL: the key is only as safe as the folder
 	}
 	if plan.action == configReplace {
 		steps = append(steps, step{what: "old agent.yaml kept as " + plan.backup,
@@ -338,8 +345,7 @@ func installService(path, reason string) int {
 		}
 	}
 	fmt.Printf("ok     service %s runs: %s run --config %s\n", serviceName, exe, target)
-	fmt.Println("At the hub, after comparing the fingerprint (vordr-agent identity):")
-	fmt.Printf("  vordr-hub approve %s --fingerprint <fp>\n", cfg.Node)
+	fmt.Print(approvalHint(cfg.Node, id.Fingerprint()))
 	return 0
 }
 

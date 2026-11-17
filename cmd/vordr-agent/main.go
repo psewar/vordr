@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/signal"
@@ -23,6 +24,7 @@ import (
 	"github.com/psewar/vordr/internal/runner"
 	"github.com/psewar/vordr/internal/source"
 	"github.com/psewar/vordr/internal/target"
+	"github.com/psewar/vordr/internal/wire"
 )
 
 var version = "dev"
@@ -33,7 +35,10 @@ func usage() {
   vordr-agent <verb> [--config <path>]
 
   run                   connect to the hub (hub.url, hub.public_key), wait for approval, report, carry out jobs
-  hub-check             can this host reach its hub? dns, connect, tls, websocket, challenge - without logging in
+  hub-check             can this host reach its hub, and is hub.public_key its key? dns, connect, tls, websocket,
+                        challenge, hub_key - without logging in. Exit 0 ok (hub_key: matches, or not checked
+                        with a hub that does not sign), 1 a stage before hub_key failed, 2 agent.yaml not usable,
+                        3 the hub does not sign with hub.public_key
   check [--no-refresh]  check every update source once and print the report as JSON
                         (refreshes the package lists only as root and only if apt's lock is free)
   check-config          load agent.yaml and list every issue (exit 0 ok, 1 issues, 2 not found or unreadable)
@@ -43,6 +48,15 @@ func usage() {
   packages --plan-deps <location>:<name>[,<name>...]   what refreshing these dependencies would install there
                         (ADR-0104: npm folders with a lock file); the hub would name them, here you do
   identity             show fingerprint and public key of this agent; creates the key pair on first use
+  install --hub <wss-url> --hub-key <base64> [--node <name>] [--ca-file <path>]
+          [--operator-key <base64> [--backup-operator-key <base64>]] [--replace-config "<reason>"]
+                        Linux, as root (ADR-0169): set this host up from this binary alone. Writes a minimal
+                        agent.yaml (node: the host name; check only, no install, no reboot; self-update with an
+                        operator key), checks root, systemd, apt, agent.yaml, an installed agent.yaml and the hub
+                        first, then installs with the embedded deploy/install-agent.sh. Exit 0 done, 2 refused
+                        (nothing changed), 1 failed after the first change. The last line is for programs:
+                        result=installed node=<node> fingerprint=<hex> | result=refused code=<code> | result=failed
+                        code=<code>
   install-service [--replace-config "<reason>"]
                         Windows, as administrator: set the agent up as a service (checks config and hub first).
                         An installed agent.yaml that differs is replaced only with a reason: kept as
@@ -60,16 +74,17 @@ func usage() {
 
 func main() {
 	cfgPath := policy.DefaultConfigPath
-	var verb, plan, planDeps, reason, job, exe string
-	refresh, replace := true, false
+	var verb, plan, planDeps, reason, job, exe, stray string
+	refresh, replace, cfgSet := true, false, false
+	var ins installArgs
 	args := os.Args[1:]
 	for i := 0; i < len(args); i++ {
 		switch {
 		case args[i] == "--config" && i+1 < len(args):
-			cfgPath = args[i+1]
+			cfgPath, cfgSet = args[i+1], true
 			i++
 		case strings.HasPrefix(args[i], "--config="):
-			cfgPath = strings.TrimPrefix(args[i], "--config=")
+			cfgPath, cfgSet = strings.TrimPrefix(args[i], "--config="), true
 		case args[i] == "--no-refresh":
 			refresh = false
 		case args[i] == "--plan" && i+1 < len(args):
@@ -89,16 +104,33 @@ func main() {
 		case args[i] == "--exe" && i+1 < len(args):
 			exe = args[i+1]
 			i++
+		case ins.takeFlag(args, &i):
 		case verb == "" && !strings.HasPrefix(args[i], "-"):
 			verb = args[i]
-		default:
-			usage()
-			os.Exit(2)
+		case stray == "":
+			stray = args[i]
 		}
 	}
+	if verb == "install" {
+		// install reports every outcome in its last line, a wrong command line too (ADR-0169).
+		ins.config, ins.replace, ins.reason = cfgSet, replace, reason
+		if stray != "" {
+			ins.note(stray + " does not belong to install")
+		}
+		if !refresh || plan != "" || planDeps != "" || job != "" || exe != "" {
+			ins.note("--no-refresh, --plan, --plan-deps, --job and --exe do not belong to install")
+		}
+		os.Exit(install(realHost(), ins))
+	}
 	switch {
+	case stray != "":
+		usage()
+		os.Exit(2)
+	case len(ins.given) > 0 || ins.problem != "":
+		fmt.Fprintln(os.Stderr, "--hub, --hub-key, --node, --ca-file, --operator-key and --backup-operator-key belong to install")
+		os.Exit(2)
 	case replace && verb != "install-service":
-		fmt.Fprintln(os.Stderr, "--replace-config belongs to install-service; on Linux: deploy/install-agent.sh")
+		fmt.Fprintln(os.Stderr, "--replace-config belongs to install and install-service")
 		os.Exit(2)
 	case replace && strings.TrimSpace(reason) == "":
 		fmt.Fprintln(os.Stderr, "--replace-config needs a reason")
@@ -367,6 +399,41 @@ var stageHint = map[agent.ProbeStage]string{
 	agent.StageTLS:       "certificate not trusted - check name, chain and hub.ca_file",
 	agent.StageWebSocket: "TLS works, but no vordr tunnel at this URL - check the path (/v1/tunnel) and port",
 	agent.StageChallenge: "something answers, but it is not a vordr hub",
+	agent.StageHubKey: "the hub at hub.url does not sign with hub.public_key - copy the key again from vordr-hub key " +
+		"on the hub, or check that hub.url names your hub",
+}
+
+// downgradeHint replaces the hint of stage hub_key when the hub signed before and does not now (ADR-0170).
+const downgradeHint = "the hub at hub.url signed its challenge with hub.public_key before and does not now - check " +
+	"that hub.url still reaches your hub and that nothing in between drops the header " + wire.ChallengeNonceHeader
+
+// hubKeyFact: the line hub-check prints about hub.public_key when every stage passed.
+var hubKeyFact = map[wire.HubKeyCheck]string{
+	wire.HubKeyMatches:  "matches hub.public_key (the hub signed its challenge with it)",
+	wire.HubKeyUnsigned: "not checked - the hub does not sign its challenge (a hub before ADR-0170); its jobs are checked as always",
+}
+
+// hub-check's exit codes: its finding as a code, so that install-agent.sh and install-service tell an unreachable hub
+// from one with another key without reading its text (ADR-0170).
+const (
+	hubCheckOK          = 0 // every stage passed: hub.public_key matches, or the hub does not sign (an older hub)
+	hubCheckUnreachable = 1 // a stage before hub_key failed
+	hubCheckNoConfig    = 2 // agent.yaml is not usable
+	hubCheckWrongKey    = 3 // the hub answers, but does not sign its challenge with hub.public_key (or no longer signs)
+)
+
+// hubCheckRefusal is what install-service makes of hub-check's exit code: "" when it may go on, otherwise its reason
+// for changing nothing. Apart from the Windows service code, so that the refused cases are tested on every platform.
+func hubCheckRefusal(code int, cfgPath string) string {
+	switch code {
+	case hubCheckOK:
+		return ""
+	case hubCheckWrongKey: // ADR-0170: the agent would not log in, and the hub's jobs would be refused
+		return "install-service: the hub does not sign with hub.public_key of " + cfgPath + " - nothing changed"
+	case hubCheckNoConfig:
+		return "install-service: " + cfgPath + " is not usable - run check-config; nothing changed"
+	}
+	return "install-service: the hub is not reachable from here - nothing changed"
 }
 
 // hubCheck reports the first stage that fails, or every detail of a working connection.
@@ -374,19 +441,30 @@ func hubCheck(path string) int {
 	cfg, issues, found, err := policy.Load(path)
 	if err != nil || !found || len(issues) > 0 {
 		fmt.Fprintf(os.Stderr, "config %s not usable - run check-config\n", path)
-		return 2
+		return hubCheckNoConfig
 	}
-	r := agent.Probe(context.Background(), cfg)
+	return reportProbe(os.Stdout, cfg.Hub.URL, agent.Probe(context.Background(), cfg))
+}
+
+// reportProbe prints what Probe found and returns hub-check's exit code for it.
+func reportProbe(w io.Writer, url string, r agent.ProbeResult) int {
 	if r.Failed != "" {
-		fmt.Printf("hub-check %s: failed at stage %s\n  %s\n", cfg.Hub.URL, r.Failed, stageHint[r.Failed])
-		if r.Detail != "" {
-			fmt.Printf("  detail: %s\n", r.Detail)
+		hint := stageHint[r.Failed]
+		if r.HubKey == wire.HubKeyDowngrade {
+			hint = downgradeHint
 		}
-		return 1
+		fmt.Fprintf(w, "hub-check %s: failed at stage %s\n  %s\n", url, r.Failed, hint)
+		if r.Detail != "" {
+			fmt.Fprintf(w, "  detail: %s\n", r.Detail)
+		}
+		if r.Failed == agent.StageHubKey {
+			return hubCheckWrongKey
+		}
+		return hubCheckUnreachable
 	}
-	fmt.Printf("hub-check %s: ok\n  addresses: %s\n  chain: %s\n", cfg.Hub.URL, strings.Join(r.Addresses, ", "),
-		strings.Join(r.Chain, " <- "))
-	return 0
+	fmt.Fprintf(w, "hub-check %s: ok\n  addresses: %s\n  chain: %s\n  hub key: %s\n", url,
+		strings.Join(r.Addresses, ", "), strings.Join(r.Chain, " <- "), hubKeyFact[r.HubKey])
+	return hubCheckOK
 }
 
 // updateGuard watches the self-update job until it is settled, or rolls it back (ADR-0098). The agent starts it, on

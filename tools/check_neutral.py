@@ -41,9 +41,9 @@ SELF_TEST = os.path.join(os.path.dirname(SELF), "check_neutral_test.py")  # its 
 
 # Public sites the repository may link to; a host matches itself and its subdomains.
 PUBLIC = (
-    "adr.github.io", "anthropic.com", "claude.com", "debian.org", "github.com", "github.io", "go.dev", "golang.org", "googleapis.com",
-    "home-assistant.io", "it-connect.tech", "microsoft.com", "netgate.com", "npmjs.org", "osv.dev", "proxmox.com",
-    "pypi.org", "python.org", "semver.org", "synology.com", "ubuntu.com", "w3.org",
+    "adr.github.io", "anthropic.com", "cisa.gov", "claude.com", "debian.org", "github.com", "github.io", "go.dev",
+    "golang.org", "googleapis.com", "home-assistant.io", "it-connect.tech", "microsoft.com", "netgate.com", "npmjs.org",
+    "osv.dev", "proxmox.com", "pypi.org", "python.org", "semver.org", "synology.com", "ubuntu.com", "w3.org",
 )
 PLACEHOLDER_SUFFIXES = (".example", ".invalid", ".test", ".localhost", "example.org", "example.com", "example.net")
 SITE_NETS_V4 = [ipaddress.ip_network(n) for n in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10")]

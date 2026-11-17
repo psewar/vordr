@@ -10,11 +10,13 @@ from typing import Any
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers.selector import SelectSelector
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.vordr import agent_install as ai, ai_explain as ax, ha_updates as hu, ha_updates_installer as hi
 from custom_components.vordr.const import CODES, DOMAIN, REASONS
-from custom_components.vordr.coordinator import refusal
+from custom_components.vordr.coordinator import refusal, waiting_hosts
 from custom_components.vordr.repairs import InstallAgainFlow, RebootFlow
 from custom_components.vordr.texts import TEXT_KEYS, Texts, placeholders, problem_key
 
@@ -107,6 +109,137 @@ def test_repair_refusals_have_their_texts(lang: str) -> None:
             assert "node" in fields and fields <= set(names), (issue, code, fields)
             used.add(key)
         assert used == {k for k in abort if k.startswith("command_refused")}, issue
+
+
+@pytest.mark.parametrize("lang", sorted(LANGS))
+def test_waiting_host_text(lang: str) -> None:
+    """ADR-0157: the repair of a waiting host renders with exactly what the integration passes, shows fingerprint,
+    system and command as code, and asks for the comparison with the host's own identity before the command."""
+    text = LANGS[lang]["issues"]["waiting_host"]
+    names = waiting_hosts({"waiting": [{"node": "n1", "fingerprint": "ab" * 32, "os": "TestOS 1"}]})["n1"]
+    fields = {field for _, field, _, _ in string.Formatter().parse(text["description"]) if field}
+    assert fields == set(names)
+    assert "{node}" in text["title"]
+    description = text["description"]
+    for code in ("`{fingerprint}`", "`{os}`", "`{command}`", "`vordr-agent identity`", "`vordr-hub reject {node}`"):
+        assert code in description, code
+    assert description.index("vordr-agent identity") < description.index("{command}")
+    assert names["command"] in description.format(**names)
+
+
+def test_waiting_host_command_is_the_hubs() -> None:
+    """The command the repair shows is the one vordr-hub's usage names for admitting a host."""
+    usage = (BASE.parents[1] / "cmd" / "vordr-hub" / "main.go").read_text(encoding="utf-8")
+    assert "approve <node> --fingerprint <fp>" in usage
+    names = waiting_hosts({"waiting": [{"node": "n1", "fingerprint": "ab" * 32, "os": ""}]})["n1"]
+    assert names["command"] == f"vordr-hub approve n1 --fingerprint {'ab' * 32}"
+
+
+@pytest.mark.parametrize("lang", sorted(LANGS))
+def test_ha_updates_texts(lang: str) -> None:
+    """ADR-0158: every reason code of Home Assistant's updates has its own text (the sensor's attribute names, which
+    the frontend shows in the reader's language), and so has every error of the options."""
+    data = LANGS[lang]
+    attrs = data["entity"]["sensor"]["ha_updates_ready"]["state_attributes"]
+    assert set(attrs) == {*hu.CODES, "min_age_days", "min_age_days_firmware", "updates"}
+    names = [attrs[code]["name"] for code in hu.CODES]
+    assert all(names) and len(set(names)) == len(names), names
+    assert set(data["options"]["error"]) == {*hu.ERRORS, hu.ERR_AUTO_INSTALL_OTHER, *ai.FORM_ERRORS, *ax.FORM_ERRORS}
+    assert data["device"]["home_assistant"]["name"]
+
+
+@pytest.mark.parametrize("lang", sorted(LANGS))
+def test_ai_explanation_texts(lang: str) -> None:
+    """ADR-0166: every code of an AI explanation, every likely cause and every next step has its own text on the
+    last-run sensor, every new attribute a name, and every error of the item its text. The fixed lists in the texts are
+    exactly the ones the answer may choose from."""
+    data = LANGS[lang]
+    attrs = data["entity"]["sensor"]["last_run"]["state_attributes"]
+    assert set(ax.ATTRIBUTES) <= set(attrs) and all(attrs[a]["name"] for a in ax.ATTRIBUTES)
+    for attr, values in (("ai_code", ax.CODES), ("ai_likely_cause", ax.CAUSES), ("ai_next_steps", ax.NEXT_STEPS)):
+        states = attrs[attr]["state"]
+        assert set(states) == set(values), (lang, attr)
+        assert all(states.values()) and len(set(states.values())) == len(states), (lang, attr)
+    assert set(ax.FORM_ERRORS) <= set(data["options"]["error"])
+    step = data["options"]["step"]["ai_explanations"]
+    assert step["title"] and "vordr_ai_explanation" in step["description"]
+    assert set(step["data"]) == set(step["data_description"]) == {ax.CONF_ENTITY, ax.CONF_DATA_ACK}
+
+
+async def test_ai_explanations_form_has_its_texts(hass: HomeAssistant) -> None:
+    """The item as the integration builds it: each field has its label and description in every language."""
+    entry = MockConfigEntry(domain=DOMAIN, data={})
+    entry.add_to_hass(hass)
+    menu = await hass.config_entries.options.async_init(entry.entry_id)
+    form = await hass.config_entries.options.async_configure(menu["flow_id"], {"next_step_id": "ai_explanations"})
+    fields = {str(k) for k in form["data_schema"].schema}
+    for lang, data in LANGS.items():
+        step = data["options"]["step"]["ai_explanations"]
+        assert set(step["data"]) == fields == set(step["data_description"]), lang
+        assert data["options"]["step"]["init"]["menu_options"]["ai_explanations"], lang
+
+
+def fields_of(text: str) -> set[str]:
+    return {field for _, field, _, _ in string.Formatter().parse(text) if field}
+
+
+@pytest.mark.parametrize("lang", sorted(LANGS))
+def test_ha_updates_install_texts(lang: str) -> None:
+    """ADR-0162 – ADR-0165, ADR-0181, ADR-0182: every phase and result of the last-run sensor, every state of the
+    installer and every kind of backup (also none, for firmware) has its text; the pause switch has its name; each kept
+    result has its repair, whose texts use only the names the integration fills, with a text for every reason its fix
+    may not install now; and the failed backup has its own."""
+    data = LANGS[lang]
+    run = data["entity"]["sensor"]["ha_updates_last_run"]
+    assert set(run["state"]) == {*hu.PHASES, *hu.RESULTS}
+    assert all(run["state"].values())
+    assert set(run["state_attributes"]["installer"]["state"]) == set(hi.INSTALLER_STATES)
+    assert set(run["state_attributes"]["backup"]["state"]) == set(hu.BACKUPS)
+    assert data["entity"]["switch"]["ha_updates_paused"]["name"]
+    names = set(hi.failure_names("update.example", None))
+    for result in hu.KEPT:
+        issue = data["issues"][f"ha_update_{result}"]
+        confirm = issue["fix_flow"]["step"]["confirm"]
+        for text in (issue["title"], confirm["title"], confirm["description"]):
+            assert fields_of(text) <= names, (result, text)
+        assert {"entity_id", "to_version", "at"} <= fields_of(confirm["description"]), result
+        assert set(issue["fix_flow"]["abort"]) == {*hi.FIX_REFUSALS, "entry_not_loaded"}
+        assert all(fields_of(t) <= {"entity_id"} for t in issue["fix_flow"]["abort"].values())
+    backup = data["issues"][hi.ISSUE_BACKUP]
+    assert fields_of(backup["description"]) == {"at"} and not fields_of(backup["title"])
+
+
+async def test_ha_updates_form_has_its_texts(hass: HomeAssistant) -> None:
+    """The options menu and form as the integration builds them: every menu item, field and choice has its text in
+    every language, and the choices are exactly the ones the form offers."""
+    entry = MockConfigEntry(domain=DOMAIN, data={})
+    entry.add_to_hass(hass)
+    menu = await hass.config_entries.options.async_init(entry.entry_id)
+    form = await hass.config_entries.options.async_configure(menu["flow_id"], {"next_step_id": "ha_updates"})
+    fields = {str(k): v for k, v in form["data_schema"].schema.items()}
+    for lang, data in LANGS.items():
+        options = data["options"]
+        assert set(options["step"]["init"]["menu_options"]) == set(menu["menu_options"]), lang
+        step = options["step"]["ha_updates"]
+        assert set(step["data"]) == set(fields) == set(step["data_description"]), lang
+        assert step["title"] and step["description"], lang
+        # The fixed parts of the minimum age come from the rules (ADR-0179, ADR-0180), in every language.
+        assert set(re.findall(r"\{(\w+)\}", step["description"])) == set(form["description_placeholders"]), lang
+        for field, selector in fields.items():
+            key = selector.config.get("translation_key") if isinstance(selector, SelectSelector) else None
+            if key:
+                assert set(data["selector"][key]["options"]) == set(selector.config["options"]), (lang, field)
+    assert {k for k, s in fields.items() if isinstance(s, SelectSelector)} == {"kinds", "days"}
+    assert form["description_placeholders"] == {
+        "firmware_days": str(hu.FIRMWARE_MIN_AGE_DAYS),
+        "patch_days": str(hu.PATCH_MIN_AGE_DAYS),
+    }
+
+
+@pytest.mark.parametrize("lang", sorted(LANGS))
+def test_swiss_spelling(lang: str) -> None:
+    """German texts use Swiss spelling: ss, never the sharp s (AGENTS.md)."""
+    assert "\N{LATIN SMALL LETTER SHARP S}" not in json.dumps(LANGS[lang], ensure_ascii=False)
 
 
 def test_problem_key() -> None:

@@ -103,8 +103,8 @@ Operator key: signs the agent manifests, never on the hub
 
 Connections:
 
-- **Agent → hub:** outbound only, WebSocket over TLS (`/v1/tunnel`), login by Ed25519 challenge. No port is open on
-  the hosts, reconnect with backoff 1–30 s.
+- **Agent → hub:** outbound only, WebSocket over TLS (`/v1/tunnel`), login by Ed25519 challenge, which the hub signs
+  with its key (6.2). No port is open on the hosts, reconnect with backoff 1–30 s.
 - **Home Assistant → hub:** the integration connects as an approved client over `/v1/ha`, on the same port and with
   the same certificate ([ha-integration.md](ha-integration.md),
   [ADR-0023](../docs/adr/0023-own-ha-integration.md)). The hub needs no path to HA.
@@ -116,7 +116,7 @@ Connections:
 | Key | Lives | Used for | Whoever steals it can |
 |---|---|---|---|
 | Agent identity (Ed25519) | every host; Linux as a file with 0600, Windows protected by DPAPI | login at the hub | impersonate this host and forge its state |
-| Hub key (Ed25519) | hub | signs every job; every agent has the public key fixed in its configuration | trigger allowed jobs within the local policies, with a reason also outside the window |
+| Hub key (Ed25519) | hub | signs every job and its challenge to every agent; every agent has the public key fixed in its configuration | trigger allowed jobs within the local policies, with a reason also outside the window |
 | Operator key (Ed25519) | at the operator, readable only by them; never on the hub. The replacement key is kept separately from it (10.4) | signs the manifest of the agent binaries | put code on all agents – hence never on the hub, plus a replacement key (10.4) |
 | Code-signing certificate (Authenticode) | none ([ADR-0084](../docs/adr/0084-windows-self-update-without-code-signing.md)) | only needed if Smart App Control blocks the swap of the Windows binary | nothing beyond the manifest signature |
 
@@ -127,6 +127,12 @@ network. A job carries `job_id`, `node`, `verb`, `params`, `issued_at`, `expires
 already seen (replay protection) and reports that as `rejected_invalid_job`
 ([ADR-0002](../docs/adr/0002-own-project-following-an-earlier-agent.md)).
 
+**Why the hub also signs its challenge:** so that a wrong `hub.public_key` shows before the first job: `hub-check`
+finds it before an installation changes anything, and the agent sends nothing about its host to a hub that signs with
+another key (6.2, [ADR-0170](../docs/adr/0170-the-hub-signs-its-challenge-and-the-agent-checks-its-key.md)). Once
+the agent has seen its hub sign, it also refuses an unsigned challenge from the same `hub.url`. It does not replace the
+job signatures: as long as older hubs exist, an unsigned challenge passes at the very first contact.
+
 TLS secures confidentiality. Trust in jobs and binaries rests on the signatures
 ([ADR-0032](../docs/adr/0032-self-update-signed-by-operator.md), [ADR-0035](../docs/adr/0035-backup-operator-key.md)).
 
@@ -136,7 +142,7 @@ TLS secures confidentiality. Trust in jobs and binaries rests on the signatures
 |---|---|---|
 | taken over a host | forge its state | influence other hosts, create jobs |
 | taken over the hub | read the inventory; trigger allowed jobs, with a reason also outside the window (ADR-0087); forge the HA display | put commands or code on hosts, choose packages, widen the scope, get around the reboot ban or the minimum interval, swap agent binaries |
-| an approved Home Assistant | trigger check and install, with a reason also outside the window, with role `admin` also reboots (12) – through the hub, so within the policies | more than the hub; reboot a host that does not need it, again after a reboot that did not take (ADR-0153), outside a window the host keeps shut (ADR-0154) or while its idle check says busy (ADR-0155) |
+| an approved Home Assistant | trigger check and install, with a reason also outside the window, with role `admin` also reboots (12) – through the hub, so within the policies; with role `admin` fetch the signed agent release for a new host, at most 4 one-time downloads per 15 minutes (10.4) | more than the hub; reboot a host that does not need it, again after a reboot that did not take (ADR-0153), outside a window the host keeps shut (ADR-0154) or while its idle check says busy (ADR-0155) |
 | the network (eavesdrop, redirect) | disturb connections | forge jobs (hub signature), slip in binaries (operator signature and SHA-256) |
 | the operator key | put code on all agents | – hence never on the hub; rotation through a new public key in the agent configuration |
 
@@ -189,16 +195,45 @@ base protocol (`inventory`, `vet`, `containers`, `image_contents`; `ack` announc
 the hub has named it; it does not try it out and does not read it from a dropped connection. So the order of the
 updates does not matter, yet the operating rule "hub before agent" stays.
 
+**Signed challenge** ([ADR-0170](../docs/adr/0170-the-hub-signs-its-challenge-and-the-agent-checks-its-key.md)):
+- The agent sends a nonce of its own, 32 random bytes in base64, in the header `Vordr-Challenge-Nonce` of the WebSocket
+  upgrade request; a new one for every connection.
+- The hub's challenge then carries `hub_sig`: the hub key's signature over `vordr/challenge/v1\0`, its nonce and the
+  agent's nonce. A signature recorded on another connection does not fit.
+- Before its `hello`, the agent checks the signature against `hub.public_key` and holds the result as the fixed code
+  `hub_key`: `matches`, `mismatch` (another key, a damaged signature, or one from another connection), `unsigned`
+  (a hub before ADR-0170) or `downgrade` (unsigned, from a hub that signed before).
+- Downgrade protection: the first `matches` goes into `state_dir/hub-signed.json` together with `hub.url` and
+  `hub.public_key`. While `agent.yaml` names that pair, an unsigned challenge is `downgrade`. Another `hub.url` or
+  `hub.public_key` starts fresh; the very first contact is not protected. A hub put back to a version before ADR-0170
+  is let in again by removing the file.
+- With `mismatch` or `downgrade` the agent sends nothing about its host: it ends the connection with the WebSocket
+  close code `4001` (`mismatch`) or `4002` (`downgrade`), logs `hub_key mismatch` or `hub_key downgrade` and asks
+  again after 10 min, as after a refusal by the hub. The hub logs the event `agent_refused_hub_key` with `hub_key` and
+  the remote address. With `unsigned` the agent logs in as before; the session's log line names the fact.
+- An older agent sends no header and gets the challenge as before. Home Assistant's challenge (`/v1/ha`) is not signed:
+  the integration does not know the hub key.
+
 ### 6.3 Commands on the host itself
 
-For operation on site. They only read and check; none of them installs anything:
+For operation on site. Apart from setting the agent itself up, they only read and check; none of them installs an
+update:
 
 ```
 vordr-agent check [--no-refresh] | identity | check-config | hub-check | version
 vordr-agent packages [--plan <location>[/<name>] | --plan-deps <location>:<name>[,<name>…]]   # 11.2, 11.4
 vordr-agent run                                                 # the service itself
+vordr-agent install --hub <wss-url> --hub-key <base64> [--node <name>] [--ca-file <path>]
+    [--operator-key <base64> [--backup-operator-key <base64>]] [--replace-config "<reason>"]   # Linux only (10.1)
 vordr-agent install-service [--replace-config "<reason>"] | uninstall-service   # Windows only (11.1)
 ```
+
+`hub-check` checks, without logging in, the stages `dns`, `connect`, `tls`, `websocket`, `challenge` and `hub_key`
+and names the first that fails. `hub_key` passes when the challenge is signed with `hub.public_key`, and also when the
+hub does not sign (an older hub; the output says "not checked"), unless `state_dir` remembers that it did (6.2).
+`hub-check` reads that record but never writes it. The exit code is the finding, for the installers: 0 ok, 1 a stage
+before `hub_key` failed, 2 `agent.yaml` not usable, 3 the hub does not sign with `hub.public_key`, or no longer signs.
+`install-agent.sh` and `install-service` refuse on 1 and on 3, each with its own reason, before they change anything.
 
 Install and reboot come only as a signed job from the hub: from HA, from the queue or from the automation (10.3),
 outside the window with a reason (6.4). There is no command on the host for it.
@@ -448,9 +483,15 @@ hub 0.6 ([ADR-0026](../docs/adr/0026-remove-mqtt.md)).
 
 - All `update` entities appear under *Settings → Updates* without further action.
 - One repair issue per host problem and the event `vordr_problem` for automations (ha-integration.md 6a).
-- Not built yet: a blueprint that turns `binary_sensor.*_problem` into a notification or a task entry with
-  `next_step` and checks all other `update` entities (from integrations) for "stuck for N days". 7.5 would then also
-  apply to devices without an agent.
+- The other `update` entities (Home Assistant itself, apps, HACS, firmware) under Vördr's rules: the integration plans
+  them with allowed kinds, a window, a minimum age and major versions by hand, and once switched on installs what is
+  ready: one at a time with Core, OS and Supervisor last, each with a backup, verified by its version, a failure kept
+  as a repair (ha-integration.md 6c).
+- Notification blueprints ship in `blueprints/automation/vordr/`: a host problem, a failed run, a reboot offer with a
+  button in the notification, and a hub that is unreachable
+  ([ADR-0173](../docs/adr/0173-notifications-are-shipped-as-blueprints-the-user-imports.md), ha-integration.md 6f).
+- Not built yet: a blueprint that checks all other `update` entities (from integrations) for "stuck for N days". 7.5
+  would then also apply to devices without an agent.
 
 ## 9. Local policy
 
@@ -496,12 +537,40 @@ install, only `check`. `vordr-agent check-config` checks the file before the ser
 
 ### 10.1 Enrollment and approval
 
-1. On first start the agent creates its identity, connects, signs the challenge and sends `hello`.
+1. On first start the agent creates its identity, connects, checks the hub's signature on the challenge against
+   `hub.public_key` (6.2), signs the challenge and sends `hello`.
 2. The hub registers the host as `pending_approval`; HA shows it under "Pending approvals" with its fingerprint.
 3. Approval happens only at the hub itself: `vordr-hub approve <node> --fingerprint <fp>`, after comparing with
    `vordr-agent identity` on the host. HA cannot admit hosts
    ([ADR-0010](../docs/adr/0010-administration-only-local.md)).
 4. Only then do the HA entities appear, and the hub accepts reports.
+
+Before step 1 the agent comes onto the host. On Linux `vordr-agent install` does that from the binary alone
+([ADR-0169](../docs/adr/0169-the-linux-agent-installs-itself-from-one-binary-and-one-command.md)); it is made to run
+unattended, for example over SSH:
+
+- It writes a minimal `agent.yaml` from its flags: `node` (default: the host name in lower case), `hub.url`,
+  `hub.public_key`, `hub.ca_file` if given, and with `--operator-key` the section `agent_update` (on, with the key and
+  the backup key if given). Everything else keeps the strict default (section 9): check only, no install, no reboot.
+  Widening the policy is the operator's edit of `agent.yaml` on the host.
+- First it checks, and until then it changes nothing: the command line, Linux, root, systemd, `apt-get`, the
+  generated `agent.yaml` as `check-config` does (each issue names its flag), a `--ca-file` only root may change (the
+  file and every folder above it root's and not writable by others; otherwise `ca_file_unsafe`, naming
+  `/etc/vordr/hub-ca.pem`), an installed `agent.yaml` that differs (replaced only with `--replace-config "<reason>"`),
+  the binary that runs, and the hub with the stages of `hub-check`.
+- Then it writes `install-agent.sh`, both units and `rollback.sh`, which the binary carries, with the generated
+  `agent.yaml` into a private folder under `/run` (never `$TMPDIR`; `/run` must be root's and not writable by others,
+  otherwise `temp_dir_unsafe`) and runs the script from there with the binary that runs. The script gets a fixed
+  environment (`PATH` of the system's folders, `LANG=C`; nothing of the caller's such as `BASH_ENV` or `SHELLOPTS`),
+  and its output goes on even if the reader went away. The folder is removed afterwards in every case.
+- SIGINT, SIGTERM or SIGHUP do not end `install` without a result: before the script it stops and refuses; while the
+  script runs it passes the signal on, the script ends once its running command has, and `install` reports
+  `interrupted`, as refused (2) when the script had changed nothing yet and as failed (1) after.
+- Outcome: exit 0 installed, 2 refused with nothing changed, 1 failed after the first change; `install-agent.sh` itself
+  answers with the same codes, also when a command fails unexpectedly or a signal ends it. The last line is for
+  programs: `result=installed node=<node> fingerprint=<hex>`, `result=refused code=<code>` (for `hub_unreachable`
+  with `stage=<stage>`) or `result=failed code=<code>`. Above it stands the approval command for the hub.
+- On Windows `install-service` keeps doing this (11.1); `install` refers to it.
 
 ### 10.2 Install run (apt)
 
@@ -728,7 +797,8 @@ Active Backup for Business was examined for this and rejected
   otherwise dpkg would hardly make progress on a host with constant disk load.
 - After the run the agent immediately sends a new report, so that the counters in HA get ahead of the result.
 - `install-agent.sh --replace-config "<reason>"` replaces a changed `agent.yaml` (backup, diff, reason into the system
-  log), as with the hub. Under Windows the same applies to `install-service` (11.1).
+  log), as with the hub; `vordr-agent install` passes the option through (10.1). Under Windows the same applies to
+  `install-service` (11.1).
 
 ### 10.3 Install automatically
 
@@ -816,6 +886,27 @@ binary next to itself, checks the hash, has the new file say `version`, swaps it
   (`agent_update.public_key` in `hub.yaml`), only to know the valid version.
 - **Job** `agent_update` carries the manifest with its signature and a one-time token. With the token the agent downloads
   its binary over `https://<hub>/v1/agent/<file>`; the token is valid for 15 minutes.
+- **For a new host** ([ADR-0167](../docs/adr/0167-home-assistant-gets-one-time-downloads-of-the-signed-agent-release.md)):
+  - A Home Assistant client with role `admin` asks over `/v1/ha` (`agent_download`, optionally for one platform). The
+    hub answers with the manifest and its signature exactly as signed, its own public key (for `hub.public_key`) and per
+    binary a path with a token of its own ([ha-integration.md](ha-integration.md#5b-the-agent-release-for-a-new-host)).
+  - The hub sends no operator key. Home Assistant checks the manifest with the key it has from the person and the
+    binary against the manifest's hash, so the hub cannot put code on a new host either.
+  - `GET https://<hub>/v1/agent-download/<file>?token=<t>`: a path of its own beside the self-update path; neither
+    takes the other's tokens. A token opens one file once, with the hash it was issued for, for 15 minutes, while its
+    client is still approved with the same key and role `admin`. Tokens live in memory; a restart of the hub ends them.
+  - Before a token is used, the hub checks the binary's size and SHA-256 against the manifest; it reads each hash once
+    per size and time of change. A download may take as long as the binary needs at 64 KiB/s plus a minute; a slower
+    reader is cut off. The self-update path has the same write window.
+  - At most 8 tokens exist at a time, at most 4 for one client, used or not until they expire. Without a release
+    `no_release`, with a binary missing on the hub or not the one signed `release_incomplete`, at a bound
+    `too_many_downloads`. A client that is not approved gets `client_not_approved` once, and its connection ends.
+  - Refusals of the download have fixed statuses (403 unknown token or client revoked, 410 expired or release changed,
+    409 used, 404 another file, 405 not a GET, 500 binary unreadable or not the one signed) and their code as the body.
+  - Event log: `agent_download_issued`, `agent_downloaded`, `agent_download_refused`, with `download_id` (the start of
+    the token's SHA-256), never with the token. Refusals of a token the hub issued are logged up to 20 times per token
+    (the last says `more_not_logged`); other refusals of the download path at most 10 times a minute, and the next one
+    says how many were left out (`suppressed`).
 - **Agent:** It checks the manifest against the key in **its own** `agent.yaml`, then hash and size. Trial run of the new
   binary: `version` must say the manifest version, `check-config` must accept the agent's own `agent.yaml`. Then it sets
   the marker `update.json`, swaps the binary (the old one stays as `.old`) and exits; systemd starts the new one. This
@@ -979,16 +1070,21 @@ Microsoft's PowerShell module `Microsoft.WinGet.Client` (the same COM interface 
 - **Service** ([ADR-0015](../docs/adr/0015-windows-service-localsystem.md)):
   `vordr-agent install-service` (as administrator) does everything in one step:
   - first checks everything that can reject, and changes nothing until then (exit 2): admin rights, `agent.yaml`, the
-    hub with `hub-check`, an already installed `agent.yaml`, the service manager and an existing service;
+    hub and its key with `hub-check` (6.3), an already installed `agent.yaml`, the service manager and an existing
+    service;
   - replaces a differing `agent.yaml` in `%ProgramData%\vordr` only with `--replace-config "<reason>"`, like
     `install-agent.sh` on Linux: old file as `agent.yaml.bak-<time>`, difference shown, reason into
     `agent.log` (on Windows the agent's log, like the system log on Linux). Without a reason it rejects and names
     both files and the next step;
   - installs PowerShell 7 (as MSI) and the module for all users, grants `%ProgramData%\vordr` and `state_dir` to SYSTEM
-    and administrators only, and backs up the old `agent.yaml` while an existing service is still running;
+    and administrators only, loads the agent's key pair from `state_dir` or creates it there (after the folder's
+    rights, before the service starts), and backs up the old `agent.yaml` while an existing service is still running;
   - only then stops the service, puts the binary into `%ProgramFiles%\Vordr` (the previous one as
     `vordr-agent.exe.old` until success) and `agent.yaml` into `%ProgramData%\vordr`;
-  - sets up the service under LocalSystem (automatic start, restart after crash) and starts it.
+  - sets up the service under LocalSystem (automatic start, restart after crash) and starts it;
+  - ends with the node, its fingerprint and the command for the hub, `vordr-hub approve <node> --fingerprint <fp>` with
+    the real value, as `install-agent.sh` does on Linux. The service loads the same key, so the fingerprint is the one
+    the hub shows.
   - **Way back:** If a step fails after the stop, it undoes the steps in reverse (service, service configuration,
     `agent.yaml`, binary) and starts the service again if it ran before. It then asks the service manager for the state
     and reports it as a fact: exit 3 if the service is as before; exit 1 only if something could not be undone (lines
@@ -1095,7 +1191,9 @@ Rationale for the decisions: [ADR-0064](../docs/adr/0064-osv-data-local-at-the-h
 [ADR-0065](../docs/adr/0065-scope-of-package-locations.md) (scope),
 [ADR-0066](../docs/adr/0066-inventory-from-metadata.md) (inventory from metadata),
 [ADR-0067](../docs/adr/0067-hub-announces-features.md) (features of the hub),
-[ADR-0079](../docs/adr/0079-detect-packages-in-msix-app-containers.md) (containers of MSIX apps).
+[ADR-0079](../docs/adr/0079-detect-packages-in-msix-app-containers.md) (containers of MSIX apps),
+[ADR-0168](../docs/adr/0168-known-exploitation-comes-from-the-kev-catalog-fetched-whole-at-the-hub.md) (known
+exploitation from the KEV catalog).
 
 The parts:
 
@@ -1236,8 +1334,8 @@ not a hard limit; the hub is never killed for it. Rationale: [ADR-0073](../docs/
   - locations with package count and code;
   - `malicious` (packages with a malware entry) and `vulnerable` (with other entries; malware not counted twice). Both
     `null` if data is missing for an ecosystem of the host;
-  - at most 50 findings, malware first, then by the source's rating (GHSA: CRITICAL … LOW), with ids, aliases (CVE,
-    GHSA), `via` and `fixed_in`;
+  - at most 50 findings, malware first, then the known exploited ones (KEV, below), then by the source's rating (GHSA:
+    CRITICAL … LOW), with ids, aliases (CVE, GHSA), `via` and `fixed_in`;
   - `fixed_in` is the smallest version that fixes all entries of the package; empty if one names no fix. For malware
     it always stays empty: The package should be removed, not updated.
   - **Where the fix lies** (`reach`, ADR-0129), per vulnerable finding. A hold (`holds`) keeps the package below
@@ -1258,6 +1356,34 @@ not a hard limit; the hub is never killed for it. Rationale: [ADR-0073](../docs/
   same reason, HA reports again. Waiting findings are on the sensor, with `reach` and `held_by`.
 - The hub's event log keeps only numbers of the inventory, no package lists.
 
+**Known exploitation (KEV, hub).** With the section `kev:` in `hub.yaml` (it needs `osv:`), the hub marks every finding
+with a CVE that CISA's catalog of Known Exploited Vulnerabilities lists
+([ADR-0168](../docs/adr/0168-known-exploitation-comes-from-the-kev-catalog-fetched-whole-at-the-hub.md)). Without the
+section it fetches nothing and marks nothing; that is the default.
+
+- **Source:** the JSON feed of the catalog (`url`, default
+  `https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json`, a mirror in the same format
+  works), CC0 1.0, about 2 MB. Read are `catalogVersion`, `dateReleased`, `count` and per entry `cveID`, `dateAdded`,
+  `knownRansomwareCampaignUse`.
+- **Fetching** like the OSV dumps: whole, every 24 h (`refresh_hours`), with the ETag and the `Last-Modified` of the
+  last answer (servers honour one or the other); unchanged means `304`. Kept as fetched in
+  `<state_dir>/kev/catalog.json`, beside `meta.json`; a restart reads both. A missing or unreadable file is fetched at
+  once, without validators.
+- **Checks:** what is not the catalog (no JSON, a field missing, `count` different from the entries) is `bad_feed`; a
+  catalog without readable entries or with less than 90 % of the entries in use is `implausible_feed` (rule of
+  ADR-0085); also `download_failed`, `store_failed`. The catalog in use stays, the next attempt follows after an hour.
+  An entry with an unreadable id or date is left out and counted in the log.
+- **State** in the hub view (`kev`): `ok`, `stale` (not confirmed for longer than `stale_hours`, default 72), `missing`,
+  with the code, the last check, `dateReleased`, `catalogVersion` and the number of CVEs. A stale catalog keeps
+  marking: its entries stay facts, only newer ones may be missing.
+- **Matching:** the CVE ids of every advisory of a finding (id, aliases, `upstream`), exactly. A listed one gives the
+  finding `known_exploited: true`, `kev_cves`, `kev_added` (the earliest `dateAdded`: when CISA added it, not when the
+  exploitation began) and `kev_ransomware` (one of them `Known`). `packages.known_exploited` counts the marked findings
+  of the host, malware included; `null` while there is no catalog or `vulnerable` is `null`.
+- **What it does not change:** the problem (`malicious_package`, `vulnerable_package` as above), the minimum ages, ring
+  delays and windows. Whether a known exploited finding should change them is decided separately. Not marked yet:
+  findings inside images (11.5) and system updates.
+
 **Cross-check of the matching:**
 
 - An inventory of just under 3000 packages gives a message of about 270 kB, far below the limit.
@@ -1267,7 +1393,9 @@ not a hard limit; the hub is never killed for it. Rationale: [ADR-0073](../docs/
 - The cross-check is itself checked: A deliberately falsified result is reported by it as a deviation.
 
 **In HA:** Sensors "Malicious packages" and "Vulnerable packages" per host, as soon as the agent sends an inventory.
-Older agents do not get them, existing ones stay. Plus the diagnostic sensor "Vulnerability data" at the hub.
+Older agents do not get them, existing ones stay. Plus the diagnostic sensor "Vulnerability data" at the hub. With
+`kev:` the findings in the attribute `findings` carry the KEV fields, "Vulnerable packages" has the attribute
+`known_exploited` (the count), "Vulnerability data" the attribute `kev` (the catalog's state).
 
 ### 11.3 Outdated packages
 
@@ -1636,15 +1764,16 @@ entry in `install.allowed_scopes`, Vördr only reports and pulls, starts or chan
 ## 12. Hub
 
 - Go, one binary, systemd service. State lives in files as in the earlier agent: registry (`registry.json`), event log
-  (`events.jsonl`, append-only), settings and rings (`hub.yaml`). No database
+  (`events.jsonl`, append-only, optionally rotated by size, see below), settings and rings (`hub.yaml`). No database
   ([ADR-0011](../docs/adr/0011-state-in-files.md); location: [ADR-0054](../docs/adr/0054-hub-in-own-container.md)).
 - Interfaces: tunnel endpoint (WebSocket over TLS, the certificate is reloaded on renewal without a restart), Home
   Assistant endpoint `/v1/ha` on the same port ([ha-integration.md](ha-integration.md)), download of the agent binaries
-  (HTTPS, one-time token). No web interface.
+  (HTTPS: with the token of an `agent_update` job at `/v1/agent/`, for a new host with a one-time token from Home
+  Assistant at `/v1/agent-download/`, 10.4). No web interface.
 - Administration only locally through a Unix socket (`admin_socket`, mode 0600 in a 0700 folder): `vordr-hub list |
-  approve <node> --fingerprint <fp> | reject <node> | forget <node> | check <node> | backup <node> | events`, for
-  Home Assistant clients (own registry `clients.json`) `clients | approve-client <name> --fingerprint <fp> |
-  reject-client <name> | forget-client <name> | client-role <name> --role <role>`. Without the socket: `key`,
+  show <node> | approve <node> --fingerprint <fp> | reject <node> | forget <node> | check <node> | backup <node> |
+  events`, for Home Assistant clients (own registry `clients.json`) `clients | approve-client <name> --fingerprint
+  <fp> | reject-client <name> | forget-client <name> | client-role <name> --role <role>`. Without the socket: `key`,
   `check-config`, `version`. Not built yet: a command for the rings (`rings`)
   ([ADR-0010](../docs/adr/0010-administration-only-local.md)).
 - **Stopping** (SIGTERM): The hub accepts nothing new, closes the connections of the agents and Home Assistant clients
@@ -1653,6 +1782,23 @@ entry in `install.allowed_scopes`, Vördr only reports and pulls, starts or chan
   ([ADR-0142](../docs/adr/0142-the-hub-waits-for-its-sessions-work-when-it-stops.md)).
 - **Viewing the backup check** (`vordr-hub backup <node>`): what the check before an install would decide now (10.2);
   it asks the backup server and sends nothing.
+- **Reading hosts** (`vordr-hub list [--json]`, `vordr-hub show <node> [--json]`,
+  [ADR-0171](../docs/adr/0171-the-hub-command-line-gives-programs-a-versioned-host-view.md)):
+  - `list` prints one line per host for people, `show` one host in full: agent and since when, system, policy,
+    updates, reboot, problem, last run, queue, backup, packages. This text may change with any release.
+  - `--json` prints one document for programs: `format`, `code`, `ha_protocol`, `hub_version`, `at` and `nodes`
+    (never null; `show`: the one host, or none when refused). Each host has what the register knows (state,
+    fingerprint, first seen and decided, agent version and since when, facts, verbs, policy, pending since, last
+    install, the counts of the last report) and, if approved, `view`: the host view exactly as Home Assistant gets it
+    (section 8, `wire.HostView`).
+  - The document is a stable interface. Within `format` 1 fields are only added; anything else raises `format`.
+    `view` changes incompatibly only together with `ha_protocol`. A program checks both numbers and ignores unknown
+    fields; absent or null means unknown or not applicable.
+  - Exit status: 0 `ok`; 1 the hub refused, with the reason in `code` (`unknown_node`, `bad_request`), or `hub.yaml`
+    has issues; 2 no usable answer: wrong command line, no `hub.yaml`, the socket does not answer, or the running hub
+    is older than the command (binary replaced, service not restarted). With 2 nothing is printed on stdout.
+  - No public keys, tokens or signatures: the fingerprint names the key. The register's bookkeeping for automatic
+    installs and the raw report stay internal.
 - **Reading the event log** (`vordr-hub events [<node>] [--event <name>] [--since <when>] [--limit <n>]`):
   - The hub reads `events.jsonl` itself and returns the matching lines through the socket. The socket decides who may
     read, not the file permissions of the state folder.
@@ -1660,10 +1806,29 @@ entry in `install.allowed_scopes`, Vördr only reports and pulls, starts or chan
   - `--since` takes a duration back (`90m`, `24h`, `7d`), a date (midnight local time) or an RFC 3339 time.
   - Reading happens without the write lock: the hub keeps writing. A line that is being written at that moment is
     incomplete and is counted and named as unreadable, not skipped silently.
+  - It reads across the rotated files too (below): it opens them and the current file under the lock, so it gets
+    one consistent set, starts with the newest file and reads an older one only while that can still add to the
+    answer.
+- **Limit of the event log** (`event_log` in `hub.yaml`,
+  [ADR-0172](../docs/adr/0172-the-event-log-is-rotated-by-size-and-keeps-a-fixed-number-of-files.md)):
+  - Without the section the file only grows, as before. With it (`max_size_mb`, default 32; `keep`, default 8), a
+    line that would take `events.jsonl` past the limit first starts a new file: the full one becomes
+    `events.jsonl.1`, the older ones move one number up, and what goes past `keep` is deleted. At most
+    (`keep` + 1) × `max_size_mb` stay on disk. `check-config` says which applies.
+  - The rotation runs under the lock of every write: no line is lost or written twice. Each move checks first that its
+    target is free and stops with `target_exists` otherwise; nothing is overwritten. A hub that stops in the middle
+    leaves the files in order (higher number, older file); its next start opens or creates `events.jsonl`, and the next
+    rotation fills a gap.
+  - The new file starts with the event `event_log_rotated`. A rotation that stops records `event_log_rotation_failed`
+    with its code (`check_failed`, `target_exists`, `remove_failed`, `rename_failed`, `reopen_failed`); the hub keeps
+    writing to the file it has and tries again after a minute. Every line also goes to the service log.
+  - Whatever copies `events.jsonl` elsewhere ([ADR-0060](../docs/adr/0060-event-log-off-host.md)) copies the numbered
+    files too.
 - **Roles of the HA clients** ([ADR-0039](../docs/adr/0039-ha-client-roles.md)):
   - `observe`: views only.
   - `operate`: check, install, agent update. This is the default.
-  - `admin`: additionally reboot.
+  - `admin`: additionally reboot, and the agent release for a new host (`agent_download`, 10.4,
+    [ADR-0167](../docs/adr/0167-home-assistant-gets-one-time-downloads-of-the-signed-agent-release.md)).
 
   The host's policy has the last word anyway. The role limits what a compromised Home Assistant can make the hub
   sign. A refusal is called `role_forbids`, and HA shows its own text for it.
@@ -1732,7 +1897,7 @@ canary, event log), no code.
 | 2 | `install` and `reboot` with policy, run journal and the codes from 7.3 | built (10.2) |
 | 3 | Self-update, rings, `install.auto: hub` | built (10.3, 10.4); `install.auto: local` not built yet |
 | 4 | Sources `winget` and `winupdate` | built (11.1); reboot on Windows not built yet |
-| 5 | Apps, HA blueprint including "stuck" for integrations | apps by button built (8.1); update entity per app and blueprint not built yet (8.5) |
+| 5 | Apps, HA blueprint including "stuck" for integrations | apps by button built (8.1); notification blueprints built (8.5); update entity per app and the "stuck" blueprint for integrations not built yet |
 | 6 | pip, pipx, npm: inventory and OSV findings, outdated packages, update by button; container images | built (11.2–11.5) |
 
 ## 16. Questions that were open earlier

@@ -5,8 +5,10 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -36,14 +38,20 @@ func usage() {
 
   run                                  serve the tunnel (TLS) and the local admin socket
   key                                  show the hub's public key for agent.yaml (hub.public_key); "run" creates it
-  list                                 all hosts: state, fingerprint, online, last report
+  list [--json]                        all hosts: state, fingerprint, online, last report
+  show <node> [--json]                 one host in full: agent, policy, updates, reboot, problem, last run
+                                       --json: one JSON document for programs, versioned by its field "format"
+                                       (design/architecture.md, section 12); the text is for people and may change.
+                                       Exit 0 ok; 1 refused, the code says why (unknown_node); 2 wrong command line
+                                       or no usable answer from the hub (nothing on stdout)
   approve <node> --fingerprint <fp>    admit a host; compare the fingerprint with "vordr-agent identity" on the host
   reject <node>                        refuse a host; its connection is closed and stays refused
   forget <node>                        remove a host; its next hello starts over as pending (new key after reinstall)
   check <node>                         send a signed check job and wait for its result
   backup <node>                        what the backup check before an install decides now (asks PBS, sends nothing)
   events [<node>] [--event <name>] [--since <when>] [--limit <n>]
-                                       the newest events of the event log (default 50, at most 5000), oldest first;
+                                       the newest events of the event log (default 50, at most 5000), oldest first,
+                                       across its rotated files (hub.yaml event_log);
                                        <when>: a duration back (90m, 24h, 7d), a date (2006-01-02) or a time (RFC 3339)
   clients                              Home Assistant clients: state, fingerprint, connected
   approve-client <name> --fingerprint <fp>
@@ -59,39 +67,61 @@ func usage() {
 `, version, hub.DefaultConfigPath)
 }
 
-func main() {
-	cfgPath := hub.DefaultConfigPath
-	var verb, node, fingerprint, role, event, since, limit string
-	args := os.Args[1:]
+// cmdLine is what the command line asks for.
+type cmdLine struct {
+	cfgPath, verb, node, fingerprint, role, event, since, limit string
+	asJSON                                                      bool
+}
+
+// parseArgs reads the command line; false: an argument or option it does not take, or --json with a verb other than
+// list and show.
+func parseArgs(args []string) (cmdLine, bool) {
+	c := cmdLine{cfgPath: hub.DefaultConfigPath}
 	for i := 0; i < len(args); i++ {
 		switch {
 		case args[i] == "--config" && i+1 < len(args):
-			cfgPath = args[i+1]
+			c.cfgPath = args[i+1]
 			i++
 		case args[i] == "--fingerprint" && i+1 < len(args):
-			fingerprint = args[i+1]
+			c.fingerprint = args[i+1]
 			i++
 		case args[i] == "--role" && i+1 < len(args):
-			role = args[i+1]
+			c.role = args[i+1]
 			i++
 		case args[i] == "--event" && i+1 < len(args):
-			event = args[i+1]
+			c.event = args[i+1]
 			i++
 		case args[i] == "--since" && i+1 < len(args):
-			since = args[i+1]
+			c.since = args[i+1]
 			i++
 		case args[i] == "--limit" && i+1 < len(args):
-			limit = args[i+1]
+			c.limit = args[i+1]
 			i++
-		case verb == "" && !strings.HasPrefix(args[i], "-"):
-			verb = args[i]
-		case node == "" && !strings.HasPrefix(args[i], "-"):
-			node = args[i]
+		case args[i] == "--json":
+			c.asJSON = true
+		case c.verb == "" && !strings.HasPrefix(args[i], "-"):
+			c.verb = args[i]
+		case c.node == "" && !strings.HasPrefix(args[i], "-"):
+			c.node = args[i]
 		default:
-			usage()
-			os.Exit(2)
+			return c, false
 		}
 	}
+	// Only list and show have a document for programs (ADR-0171); elsewhere --json would be ignored silently.
+	if c.asJSON && c.verb != "list" && c.verb != "show" {
+		return c, false
+	}
+	return c, true
+}
+
+func main() {
+	c, ok := parseArgs(os.Args[1:])
+	if !ok {
+		usage()
+		os.Exit(2)
+	}
+	cfgPath, verb, node, fingerprint, role, event, since, limit := c.cfgPath, c.verb, c.node, c.fingerprint, c.role,
+		c.event, c.since, c.limit
 	if verb == "version" {
 		fmt.Println(version)
 		return
@@ -134,12 +164,26 @@ func main() {
 		} else {
 			fmt.Printf("       package advisories: off (no osv section) - pip/npm inventories are kept, not matched\n")
 		}
+		if k := cfg.KEV; k != nil {
+			fmt.Printf("       known exploited: KEV catalog from %s every %d h, kept in %s (stale after %d h); marks "+
+				"findings, changes no problem or timing\n", k.URL, k.RefreshHours, filepath.Join(cfg.StateDir, "kev"),
+				k.StaleHours)
+		} else {
+			fmt.Printf("       known exploited: off (no kev section) - findings are not marked\n")
+		}
+		fmt.Printf("       %s\n", eventLogSummary(cfg))
 	case "run":
 		os.Exit(run(cfg))
 	case "key":
 		os.Exit(showKey(cfg))
 	case "list", "clients":
-		os.Exit(admin(cfg, hub.AdminRequest{Cmd: verb}))
+		os.Exit(adminTo(os.Stdout, cfg.AdminSocket, hub.AdminRequest{Cmd: verb}, c.asJSON))
+	case "show":
+		if node == "" {
+			usage()
+			os.Exit(2)
+		}
+		os.Exit(adminTo(os.Stdout, cfg.AdminSocket, hub.AdminRequest{Cmd: verb, Node: node}, c.asJSON))
 	case "events":
 		f, ok := eventFilter(node, event, since, limit, time.Now())
 		if !ok {
@@ -241,6 +285,9 @@ func run(cfg hub.Config) int {
 		return fail("event log", err)
 	}
 	defer events.Close()
+	if l := cfg.EventLog; l != nil {
+		events.SetRotation(l.MaxBytes(), l.Keep)
+	}
 	certs, err := hub.NewCertReloader(cfg.TLSCert, cfg.TLSKey, logger)
 	if err != nil {
 		return fail("tls", err)
@@ -274,6 +321,14 @@ func run(cfg hub.Config) int {
 	srv.Packages, err = hub.NewPackages(cfg.StateDir, cfg.OSV, time.Now, logger)
 	if err != nil {
 		return fail("packages", err)
+	}
+	if cfg.KEV != nil {
+		k, err := hub.NewKEV(cfg.StateDir, *cfg.KEV, time.Now, logger)
+		if err != nil {
+			return fail("kev", err)
+		}
+		srv.Packages.SetKEV(k)
+		go k.Run(context.Background(), srv.ViewsChanged)
 	}
 	go srv.Packages.Run(context.Background(), srv.ViewsChanged)
 
@@ -322,64 +377,90 @@ func run(cfg hub.Config) int {
 }
 
 func admin(cfg hub.Config, req hub.AdminRequest) int {
+	return adminTo(os.Stdout, cfg.AdminSocket, req, false)
+}
+
+// adminTo sends one request to the admin socket and writes the answer to w. Exit status: 0 ok, 1 the hub answered
+// with another code, 2 no usable answer (the socket does not answer, or the hub that runs is older than this command
+// and has no host view); with 2, w stays empty. asJSON: list and show print the hub's document (ADR-0171).
+func adminTo(w io.Writer, socket string, req hub.AdminRequest, asJSON bool) int {
 	timeout := 30 * time.Second
 	if req.Cmd == "check" {
 		timeout = 21 * time.Minute
 	}
-	resp, err := hub.AdminCall(cfg.AdminSocket, req, timeout)
+	resp, err := hub.AdminCall(socket, req, timeout)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "admin socket %s: %v (does vordr-hub run, and are you allowed to use the socket?)\n", cfg.AdminSocket, err)
+		fmt.Fprintf(os.Stderr, "admin socket %s: %v (does vordr-hub run, and are you allowed to use the socket?)\n", socket, err)
 		return 2
 	}
 	switch req.Cmd {
 	case "events":
 		if resp.Code == hub.AdminOK {
-			printEvents(os.Stdout, resp.Events, resp.Unreadable, time.Local)
+			printEvents(w, resp.Events, resp.Unreadable, time.Local)
 			return 0
 		}
-		fmt.Printf("events  %s\n", resp.Code)
-	case "list":
-		printList(resp.Nodes)
+		fmt.Fprintf(w, "events  %s\n", resp.Code)
+	case "list", "show":
+		doc := resp.Hosts
+		if doc == nil {
+			// The answer itself says so: a hub before ADR-0171 sends list without the document and refuses show.
+			fmt.Fprintf(os.Stderr, "the running hub has no host view (answer %s): it is older than this command - "+
+				"restart vordr-hub after the update\n", resp.Code)
+			return 2
+		}
+		switch {
+		case asJSON:
+			enc := json.NewEncoder(w)
+			enc.SetEscapeHTML(false)
+			enc.SetIndent("", "  ")
+			_ = enc.Encode(doc)
+		case req.Cmd == "list":
+			printList(w, doc.Nodes)
+		case doc.Code == hub.AdminOK && len(doc.Nodes) == 1:
+			printShow(w, doc.Nodes[0], time.Local)
+		default:
+			fmt.Fprintf(w, "%s  %s\n", req.Node, doc.Code)
+		}
 	case "clients":
-		printClients(resp.Clients)
+		printClients(w, resp.Clients)
 	case "approve-client", "reject-client", "forget-client", "client-role":
-		fmt.Printf("%s  %s\n", req.Client, resp.Code)
+		fmt.Fprintf(w, "%s  %s\n", req.Client, resp.Code)
 	case "check":
 		st := resp.JobStatus
 		if resp.Code == hub.AdminOK && st != nil {
-			fmt.Printf("%s  job %s: %s", req.Node, st.JobID, st.Code)
+			fmt.Fprintf(w, "%s  job %s: %s", req.Node, st.JobID, st.Code)
 			if st.Reason != "" {
-				fmt.Printf(" (%s)", st.Reason)
+				fmt.Fprintf(w, " (%s)", st.Reason)
 			}
-			fmt.Println()
+			fmt.Fprintln(w)
 			if st.Detail != "" {
-				fmt.Println("  " + st.Detail)
+				fmt.Fprintln(w, "  "+st.Detail)
 			}
 			return 0
 		}
-		fmt.Printf("%s  %s\n", req.Node, resp.Code)
+		fmt.Fprintf(w, "%s  %s\n", req.Node, resp.Code)
 	case "backup":
-		fmt.Printf("%s  %s", req.Node, resp.Code)
+		fmt.Fprintf(w, "%s  %s", req.Node, resp.Code)
 		if b := resp.Backup; b != nil {
-			fmt.Printf(" (state %s", b.State)
+			fmt.Fprintf(w, " (state %s", b.State)
 			if b.Group != "" {
-				fmt.Printf(", group %s", b.Group)
+				fmt.Fprintf(w, ", group %s", b.Group)
 			}
 			if b.Last != nil {
-				fmt.Printf(", last %s, %.1f h ago", b.Last.Local().Format("2006-01-02 15:04"), time.Since(*b.Last).Hours())
+				fmt.Fprintf(w, ", last %s, %.1f h ago", b.Last.Local().Format("2006-01-02 15:04"), time.Since(*b.Last).Hours())
 			}
 			if b.Exempt != "" {
-				fmt.Printf(", without: %s", b.Exempt)
+				fmt.Fprintf(w, ", without: %s", b.Exempt)
 			}
 			if b.BeforeInstall != "" {
-				fmt.Printf(", a fresh backup by %s before the install)", b.BeforeInstall)
+				fmt.Fprintf(w, ", a fresh backup by %s before the install)", b.BeforeInstall)
 			} else {
-				fmt.Printf(", limit %d h)", b.MaxAgeHours)
+				fmt.Fprintf(w, ", limit %d h)", b.MaxAgeHours)
 			}
 		}
-		fmt.Println()
+		fmt.Fprintln(w)
 	default:
-		fmt.Printf("%s  %s\n", req.Node, resp.Code)
+		fmt.Fprintf(w, "%s  %s\n", req.Node, resp.Code)
 	}
 	if resp.Code != hub.AdminOK {
 		return 1
@@ -387,9 +468,9 @@ func admin(cfg hub.Config, req hub.AdminRequest) int {
 	return 0
 }
 
-func printList(nodes []hub.NodeView) {
+func printList(w io.Writer, nodes []hub.NodeView) {
 	if len(nodes) == 0 {
-		fmt.Println("no hosts")
+		fmt.Fprintln(w, "no hosts")
 		return
 	}
 	for _, n := range nodes {
@@ -406,14 +487,14 @@ func printList(nodes []hub.NodeView) {
 			report = fmt.Sprintf("%d pending (%d security), %s, checked %s", *n.Pending, *n.Security, reboot,
 				n.ReportAt.Local().Format("2006-01-02 15:04"))
 		}
-		fmt.Printf("%-20s %-17s %-7s %s  agent %s  %s\n  fingerprint %s\n", n.Node, n.State, online, n.OS,
+		fmt.Fprintf(w, "%-20s %-17s %-7s %s  agent %s  %s\n  fingerprint %s\n", n.Node, n.State, online, n.OS,
 			n.AgentVersion, report, n.Fingerprint)
 	}
 }
 
-func printClients(clients []hub.ClientView) {
+func printClients(w io.Writer, clients []hub.ClientView) {
 	if len(clients) == 0 {
-		fmt.Println("no Home Assistant clients")
+		fmt.Fprintln(w, "no Home Assistant clients")
 		return
 	}
 	for _, c := range clients {
@@ -421,7 +502,7 @@ func printClients(clients []hub.ClientView) {
 		if c.Connected {
 			conn = "connected"
 		}
-		fmt.Printf("%-20s %-17s %-13s role %-8s integration %s  first seen %s\n  fingerprint %s\n", c.Name, c.State,
+		fmt.Fprintf(w, "%-20s %-17s %-13s role %-8s integration %s  first seen %s\n  fingerprint %s\n", c.Name, c.State,
 			conn, c.Role, c.IntegrationVersion, c.FirstSeen.Local().Format("2006-01-02 15:04"), c.Fingerprint)
 	}
 }

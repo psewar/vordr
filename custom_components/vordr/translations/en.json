@@ -17,7 +17,7 @@
       }
     },
     "progress": {
-      "approval": "Waiting for the hub's operator. Compare the fingerprint and admit this client on the hub:\n\n`{command}`\n\nFingerprint: `{fingerprint}`"
+      "approval": "Waiting for the hub's operator. Compare the fingerprint and admit this client on the hub:\n\n`{command}`\n\nFingerprint: `{fingerprint}`\n\nYou may close this dialog: Home Assistant keeps this key for the hub and the client name, and adding the integration again with the same name continues this request."
     },
     "error": {
       "invalid_url": "The address must be wss://HOST[:PORT]/v1/ha.",
@@ -32,17 +32,210 @@
     "abort": {
       "already_configured": "This hub is already set up.",
       "unreachable": "The hub could not be reached while waiting for approval.",
-      "approval_timeout": "No decision within an hour. Start again; the hub keeps the request.",
+      "approval_timeout": "No decision within an hour. Add the integration again with the same client name: Home Assistant kept its key, so it continues the request that the hub keeps.",
       "rejected": "The hub refused this client.",
-      "rejected_key_mismatch": "The hub knows this client name with another key. Choose another name or forget the client on the hub (vordr-hub forget-client).",
+      "rejected_key_mismatch": "The hub knows the client name {name} with another key. This Home Assistant's fingerprint is {fingerprint}; `vordr-hub clients` shows the one the hub knows. If the name belongs to no other Home Assistant, forget it on the hub (`vordr-hub forget-client {name}`) and add the integration again; otherwise choose another name.",
       "rejected_too_many_pending": "Too many clients are waiting for approval at the hub.",
       "rejected_rejected": "The operator rejected this client at the hub.",
       "rejected_protocol_mismatch": "The hub speaks another protocol version than this integration; update one of them.",
       "rejected_bad_hello": "The hub did not accept the login (invalid name or signature)."
     }
   },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Vördr settings",
+        "menu_options": {
+          "ha_updates": "Home Assistant updates",
+          "operator_keys": "Operator keys (for installing the agent)",
+          "install_agent": "Install the agent on a Linux host (SSH)",
+          "ai_explanations": "AI explanations of failed runs"
+        }
+      },
+      "ha_updates": {
+        "title": "Home Assistant updates",
+        "description": "Which of Home Assistant's own updates (Core, OS, apps, HACS, ESPHome, device firmware) Vördr's rules let through, and when. Nothing chosen, nothing allowed. Vördr installs what they let through only once \"Install automatically\" is on: one update at a time, inside the window, Core, OS and Supervisor last, each with a backup before it, except device firmware and the radio adapter, which a backup of Home Assistant cannot undo. Until then the sensor \"Updates ready\" of the device \"Vördr Home Assistant\" only shows what it would do. Never by Vördr: its own entities, an update that installs itself, a version skipped in Home Assistant, and a new major version (that stays by hand). Device firmware and the radio adapter wait at least {firmware_days} days, or the minimum age if that is longer. A newer release of a version line Vördr has seen before (the same first two numbers, such as 2026.11.2 after 2026.11.1) counts its age from when Vördr first saw the line, but waits at least {patch_days} days itself, or the minimum age if that is shorter.",
+        "data": {
+          "kinds": "Allowed kinds",
+          "entities": "Also allowed: single update entities",
+          "days": "Window: days",
+          "start": "Window: start",
+          "end": "Window: end",
+          "min_age_days": "Minimum age (days)",
+          "auto_install": "Install automatically"
+        },
+        "data_description": {
+          "kinds": "Every update entity of a chosen kind, told by its integration and its device. The firmware of the radio adapter is a kind of its own.",
+          "entities": "Update entities allowed besides the chosen kinds.",
+          "days": "The window belongs to the day it starts on. Needed as soon as anything is allowed.",
+          "start": "In Home Assistant's time zone. If the start is after the end, the window runs past midnight.",
+          "end": "From the end on, nothing new would start.",
+          "min_age_days": "1 to 90 days, counted from when Vördr first saw the version: Home Assistant gives no release date.",
+          "auto_install": "Off: Vördr only plans. On: Vördr installs what is ready, one at a time, inside the window, with a backup before it (the entity's own, else Home Assistant's automatic backup, no older than 26 hours; none for device firmware and the radio adapter, which a backup of Home Assistant cannot roll back). The switch \"Pause Home Assistant updates\" holds it at any time. Only one Vördr entry may install."
+        }
+      },
+      "ai_explanations": {
+        "title": "AI explanations of failed runs",
+        "description": "Optional, off while no entity is chosen. When a run on a host fails, Vördr asks the AI Task entity chosen here once for a short explanation in Home Assistant's language, a likely cause and next steps from fixed lists, and a quote from the run's log excerpt as evidence. Sent to the entity's provider: the result code, the action, the package names and the end of the log excerpt. The host names Vördr knows, IP addresses, the hub's address and the server in any address are replaced by placeholders first; the other words of the excerpt go as they are. The answer is advice only: the event `vordr_ai_explanation` and the host's sensor \"Last run\" show it, and it never changes windows, minimum ages, scopes, buttons or repairs. An answer whose quote is not part of what was sent counts as unverified, and nothing of it is shown.",
+        "data": {
+          "entity_id": "AI Task entity",
+          "data_ack": "Package names and log excerpts of failed runs may go to this entity's provider"
+        },
+        "data_description": {
+          "entity_id": "An AI Task entity that can generate data, e.g. of a local model or of a cloud service. Empty: off.",
+          "data_ack": "Needed with an entity. The provider may be a cloud service, also behind an integration for local models: check where the entity sends its data."
+        }
+      },
+      "operator_keys": {
+        "title": "Operator keys",
+        "description": "The public keys the agent release must be signed with (base64, as `vordr-release public-key` prints them). Before anything reaches a new host, Home Assistant checks the release the hub hands out against these keys; it never takes a key from the hub. The new host gets them for its self-update. Public keys, no secret. Empty: no install from Home Assistant.",
+        "data": {
+          "operator_key": "Operator key",
+          "backup_operator_key": "Backup operator key"
+        },
+        "data_description": {
+          "operator_key": "Ed25519 public key in base64, as `vordr-release public-key` prints it.",
+          "backup_operator_key": "Optional: the key that takes over if the first one is lost. A release signed with either is accepted."
+        }
+      },
+      "install_agent": {
+        "title": "Install the agent on a host",
+        "description": "For Linux with systemd and apt only (Debian, Ubuntu, Raspberry Pi OS). Home Assistant reaches the host once over SSH, has it fetch the signed agent release from the hub, checks size and SHA-256 against the manifest signed with your operator key, and runs `vordr-agent install`. Nothing of the SSH access is stored: no password, no key, no host key. Afterwards the host waits for approval at the hub, like any new host.\n\nNext you check the host key, before you enter a password.",
+        "data": {
+          "host": "Host",
+          "port": "SSH port",
+          "username": "User",
+          "node": "Node name"
+        },
+        "data_description": {
+          "host": "Name or address of the new host, as Home Assistant reaches it (IPv6 without brackets).",
+          "port": "Usually 22.",
+          "username": "root, or a user that may use sudo.",
+          "node": "Its name at the hub. Empty: the host's own name in lower case."
+        }
+      },
+      "install_host_key": {
+        "title": "Check the host key",
+        "description": "{host}:{port} presents this host key ({algorithm}):\n\n`{fingerprint}`\n\nCompare it with the host's own, on its console: `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` (for another type, its file in /etc/ssh). Go on only if they are the same: otherwise someone may sit between Home Assistant and the host. The login accepts only this key; nothing is written to a known_hosts file.",
+        "menu_options": {
+          "install_login": "They are the same: log in",
+          "install_host_key_rejected": "They differ: stop"
+        }
+      },
+      "install_login": {
+        "title": "Log in",
+        "description": "Log in as {username} on {host}: with a password or a private key. If {username} is not root, sudo needs its password unless it asks for none; empty, the login password is used. All of it serves this install only: Home Assistant holds it in memory until the install ends and stores it nowhere. If you can, use a key or a password made for this purpose.",
+        "data": {
+          "password": "Password",
+          "ssh_key": "Private key",
+          "ssh_key_passphrase": "Passphrase of the key",
+          "sudo_password": "sudo password"
+        },
+        "data_description": {
+          "password": "Of the user, for the SSH login.",
+          "ssh_key": "Paste the whole key (OpenSSH or PEM), from its first to its last line.",
+          "ssh_key_passphrase": "Only for a key with a passphrase.",
+          "sudo_password": "Empty: the login password, or none if sudo asks for none."
+        }
+      }
+    },
+    "progress": {
+      "install_run": "Installing the agent on {host}: the signed release from the hub, checked against your operator key; downloaded on the host, its size and SHA-256 compared; then `vordr-agent install`. This may take a few minutes. Closing this dialog stops waiting for the result; the host finishes or stops on its own and removes its temporary folder."
+    },
+    "error": {
+      "invalid_kind": "Unknown kind.",
+      "invalid_entity": "Only update entities.",
+      "invalid_day": "Unknown day.",
+      "invalid_time": "A time of day, HH:MM.",
+      "window_empty": "Start and end are equal: the window would have no length.",
+      "window_needs_days": "Choose at least one day: otherwise the window never opens, and nothing allowed would ever be installed.",
+      "min_age_days": "A whole number of days from 1 to 90.",
+      "invalid_auto_install": "On or off.",
+      "auto_install_other_entry": "Another Vördr entry already installs Home Assistant's updates. Switch it off there first: two would install the same updates.",
+      "invalid_operator_key": "Not an Ed25519 public key in base64 (32 bytes), as `vordr-release public-key` prints it.",
+      "invalid_backup_operator_key": "Not an Ed25519 public key in base64 (32 bytes), as `vordr-release public-key` prints it.",
+      "backup_without_operator_key": "A backup key needs the operator key.",
+      "backup_equals_operator_key": "The backup key is the same as the operator key.",
+      "invalid_host": "A host name or an IP address (IPv6 without brackets).",
+      "invalid_port": "A port from 1 to 65535.",
+      "invalid_username": "A user name: letters, digits, dot, underscore and hyphen, at most 32.",
+      "invalid_node": "A node name as the hub takes it: lower case letters, digits, dot and hyphen, at most 63.",
+      "credentials_missing": "A password or a private key.",
+      "ssh_key_invalid": "This private key cannot be read: paste all of it, from its first to its last line; for a key with a passphrase, enter the passphrase.",
+      "sudo_password_invalid": "A password on one line.",
+      "ssh_unreachable": "The host is not reachable: check the name, the address and the port.",
+      "ssh_timeout": "The host does not answer in time.",
+      "ssh_failed": "The other side does not speak SSH as expected.",
+      "ssh_no_host_key": "The host presented no host key.",
+      "ssh_auth_failed": "The login was refused: user, password or key wrong, or the host does not allow this way of logging in.",
+      "ssh_lost": "The connection to the host ended. Nothing was changed.",
+      "sudo_failed": "sudo refused: the password is wrong, or the user may not use sudo.",
+      "sudo_needs_password": "sudo asks for a password: enter it here (or log in with a password).",
+      "ai_entity_invalid": "Choose an AI Task entity.",
+      "ai_entity_missing": "This entity does not exist or is unavailable.",
+      "ai_entity_unsupported": "This entity cannot generate data, or AI Task is not set up.",
+      "ai_data_ack_missing": "Confirm what goes to the provider, or leave the entity empty."
+    },
+    "abort": {
+      "entry_not_loaded": "The integration is not running: reload it, then try again.",
+      "install_needs_operator_key": "First enter the operator key under \"Operator keys\". Home Assistant checks the agent release against it before anything runs on the host, and never takes a key from the hub: otherwise a hub that was taken over could hand out a binary of its own.",
+      "install_needs_ssh_library": "The SSH library this item needs (`asyncssh`) is not installed; Home Assistant installs it with the integration: restart Home Assistant, or set the agent up on the host by hand with `vordr-agent install` (deploy/README.md). Everything else of the integration works without it.",
+      "hub_not_connected": "Home Assistant is not connected to the hub or not approved there; the install needs the hub for the signed agent release.",
+      "hub_without_download": "This hub does not hand out the agent release for a new host yet: update the hub, then try again.",
+      "install_cancelled": "The dialog was closed while logging in: the connection to the host is closed, nothing was asked of the hub and nothing was changed on the host.",
+      "host_output_too_long": "The host printed more than Home Assistant reads from it, so Home Assistant stopped reading and closed the connection. The install's commands print a few lines: check the host. If this happened during the install, its state is unknown: on the host, `systemctl status vordr-agent` and `vordr-agent identity` tell.",
+      "host_key_rejected": "Stopped: the host key of {host} was not confirmed, and nothing was sent to the host. If the keys differ, find out why before you log in there.",
+      "ssh_host_key_changed": "Stopped: {host} now presents another host key than the one you confirmed. Nothing secret was sent. Someone may sit between Home Assistant and the host: find out why.",
+      "probe_failed": "The host does not answer as a Linux shell does. Nothing was changed on the host.",
+      "not_linux": "The host runs `{os}`, not Linux. Installing from Home Assistant is for Linux with systemd and apt; on Windows, `vordr-agent install-service` sets the agent up. Nothing was changed on the host.",
+      "unknown_arch": "There is no agent build for the processor `{machine}` (there are builds for x86_64, aarch64 and armv7). Nothing was changed on the host.",
+      "no_systemd": "systemd does not run on this host: the agent runs as its service. Nothing was changed on the host.",
+      "no_apt": "There is no apt-get on this host: the agent knows the apt source only (Debian, Ubuntu, Raspberry Pi OS). Nothing was changed on the host.",
+      "no_download_tool": "Neither curl nor wget is on this host: install one of them, then try again. Nothing was changed on the host.",
+      "missing_tools": "Missing on the host: {tools}. Nothing was changed on the host.",
+      "no_sudo": "The user is not root, and there is no sudo: log in as root, or install sudo. Nothing was changed on the host.",
+      "role_forbids": "The hub hands out the agent release only to a client with role admin. At the hub: `vordr-hub client-role {client} --role admin`, then try again. Nothing was changed on the host.",
+      "client_not_approved": "The hub no longer counts this Home Assistant as approved. Nothing was changed on the host.",
+      "no_release": "The hub has no agent release: sign one with `vordr-release` and put it on the hub. Nothing was changed on the host.",
+      "no_binary_for_platform": "The agent release has no build for this host's processor. Nothing was changed on the host.",
+      "release_incomplete": "A binary of the agent release is missing on the hub or has another size: put the release on the hub again. Nothing was changed on the host.",
+      "too_many_downloads": "The hub has handed out as many downloads as it allows for now: try again in 15 minutes. Nothing was changed on the host.",
+      "bad_request": "The hub did not take the request. Nothing was changed on the host.",
+      "hub_refused": "The hub refused with `{code}`. Nothing was changed on the host.",
+      "no_answer": "The hub did not answer in time. Nothing was changed on the host.",
+      "manifest_invalid": "The hub's answer holds no readable manifest. Nothing was changed on the host.",
+      "manifest_signature_invalid": "The agent release is not signed with your operator key, so it is not run. Compare the key under \"Operator keys\" with `vordr-release public-key`; if it is right, the hub hands out a release you did not sign. Nothing was changed on the host.",
+      "release_too_old": "The hub hands out agent release {version}, older than release {newest}, which an earlier install from Home Assistant took. Every release you signed stays valid, so an older one is not taken again: a hub that was taken over could hand out an old release with a known weakness. Publish the current release at the hub (`vordr-release`); going back means publishing the old code under a new version. Nothing was changed on the host.",
+      "download_invalid": "The hub's answer has no valid download for this host. Nothing was changed on the host.",
+      "bad_input": "The host did not receive what Home Assistant sent (with sudo: did it read more than its password?). Nothing was changed on the host.",
+      "temp_failed": "There is no private temporary folder on the host (mktemp). Nothing was changed on the host.",
+      "temp_noexec": "Nothing may run from the host's temporary folder (mounted noexec?): set the agent up on the host by hand with `vordr-agent install` (deploy/README.md). Nothing was changed on the host.",
+      "ca_failed": "The hub's CA certificate could not be put on the host. Nothing was installed.",
+      "ca_differs": "`{ca_path}` is on the host already and differs from this hub's CA certificate: compare them there. Nothing was changed on the host.",
+      "download_failed": "The host could not download the agent from the hub (`{tool}`, exit {exit}): does it reach the hub at the address Home Assistant uses? Nothing was installed.",
+      "download_refused": "The hub refused the download (HTTP {http}, `{reason}`): try again. Nothing was installed.",
+      "download_too_large": "The hub sent more than the signed size of the agent (`{tool}`): the host stopped the download at that size and deleted it. Nothing was installed.",
+      "size_mismatch": "The downloaded agent does not have the size the signed manifest names: it was not run and is deleted. Nothing was installed.",
+      "hash_mismatch": "The downloaded agent does not match the SHA-256 the signed manifest names: it was not run and is deleted. Nothing was installed.",
+      "ssh_lost": "The connection to the host ended during the install. Its state is unknown: on the host, `systemctl status vordr-agent` and `vordr-agent identity` tell.",
+      "ssh_timeout": "The install did not end in time. Its state is unknown: on the host, `systemctl status vordr-agent` and `vordr-agent identity` tell.",
+      "install_no_result": "The install on the host gave no result Home Assistant can read. Its state is unknown: on the host, `systemctl status vordr-agent` and `vordr-agent identity` tell.",
+      "agent_installed": "The agent {version} is installed on `{node}` and waits for approval at the hub. Its fingerprint:\n\n`{fingerprint}`\n\nAs soon as the hub lists the host, Home Assistant shows a repair with the command that approves it: compare the fingerprint there with this one, then run the command at the hub. Nothing of the SSH access was stored.",
+      "agent_config_invalid": "`vordr-agent install` refused: the agent.yaml for these values has issues; run it on the host to see them. Nothing was changed on the host.",
+      "agent_config_differs": "`vordr-agent install` refused: there is an /etc/vordr/agent.yaml on the host already, and it differs. Compare it there; to replace it, run `vordr-agent install` on the host with `--replace-config` and your reason. Nothing was changed on the host.",
+      "agent_hub_unreachable": "`vordr-agent install` refused: the host does not reach the hub at `{hub}` (stage `{stage}`). Nothing was changed on the host.",
+      "agent_installer_refused": "`vordr-agent install` refused: its installer found something it does not change by itself, e.g. a proxy instance whose policy the new binary does not take; run it on the host to see it. Nothing was changed on the host.",
+      "agent_prepare_failed": "`vordr-agent install` could not prepare the install (its binary, bash or its private folder). Nothing was changed on the host.",
+      "agent_refused": "`vordr-agent install` refused with `{code}`. Nothing was changed on the host.",
+      "agent_install_failed": "The install failed after it had started to change the host. Check there: `systemctl status vordr-agent`, `journalctl -u vordr-agent`.",
+      "agent_identity_unreadable": "The agent is installed and started, but its fingerprint could not be read: on the host, `vordr-agent identity` shows it.",
+      "agent_failed": "`vordr-agent install` failed with `{code}` after it had started to change the host. Check there: `systemctl status vordr-agent`.",
+      "agent_no_result": "The agent from the hub gave no result Home Assistant can read (exit {exit}). Is the release on the hub older than `vordr-agent install`? Its state is unknown: on the host, `systemctl status vordr-agent` and `vordr-agent identity` tell."
+    }
+  },
   "device": {
-    "hub": { "name": "Vördr hub" }
+    "hub": { "name": "Vördr hub" },
+    "home_assistant": { "name": "Vördr Home Assistant" }
   },
   "entity": {
     "binary_sensor": {
@@ -259,7 +452,54 @@
           "packages": { "name": "Package list" },
           "seconds": { "name": "Duration (s)" },
           "log_file": { "name": "Log on the host" },
-          "outdated_services": { "name": "Services on old libraries" }
+          "outdated_services": { "name": "Services on old libraries" },
+          "ai_code": {
+            "name": "AI explanation",
+            "state": {
+              "ok": "Explained",
+              "unverified": "Unverified: the quote is not in the log",
+              "invalid_answer": "Answer not in the expected form",
+              "no_answer": "No answer",
+              "no_excerpt": "No log excerpt to explain",
+              "unsupported": "The entity cannot generate data",
+              "entity_missing": "AI Task entity missing or unavailable",
+              "not_configured": "Settings not valid"
+            }
+          },
+          "ai_entity_id": { "name": "AI Task entity" },
+          "ai_likely_cause": {
+            "name": "Likely cause (AI)",
+            "state": {
+              "package_conflict": "Package conflict",
+              "package_source": "Package source",
+              "disk_space": "Disk space",
+              "package_lock": "Package manager busy (lock)",
+              "network": "Network",
+              "configuration": "Configuration",
+              "service": "Service after the update",
+              "credentials": "Login or permission",
+              "interrupted": "Run interrupted",
+              "other": "Other",
+              "unknown": "Unknown"
+            }
+          },
+          "ai_next_steps": {
+            "name": "Next steps (AI)",
+            "state": {
+              "retry_later": "Try again later",
+              "free_disk_space": "Free disk space",
+              "check_package_sources": "Check the package sources",
+              "repair_package_manager": "Repair the package manager's state",
+              "resolve_conflict_by_hand": "Resolve the conflict by hand",
+              "check_service": "Check the service",
+              "check_configuration": "Check the configuration",
+              "check_credentials": "Check login and permissions",
+              "check_network": "Check the network",
+              "read_run_log": "Read the run log on the host"
+            }
+          },
+          "ai_explanation": { "name": "Explanation (AI, not checked)" },
+          "ai_quote": { "name": "Quote from the log" }
         }
       },
       "pending_updates": { "name": "Pending updates" },
@@ -281,6 +521,59 @@
           "approved": "Connected",
           "rejected": "Rejected"
         }
+      },
+      "ha_updates_ready": {
+        "name": "Updates ready",
+        "state_attributes": {
+          "ready": { "name": "Ready: allowed, old enough, in the window" },
+          "not_allowed": { "name": "Not allowed in the options" },
+          "outside_window": { "name": "Waiting for the window" },
+          "too_new": { "name": "Waiting for the minimum age" },
+          "major": { "name": "New major version: by hand" },
+          "last_failed": { "name": "Install failed: waits for a newer version or for you" },
+          "skipped": { "name": "Skipped in Home Assistant" },
+          "self_updating": { "name": "Installs its updates itself" },
+          "in_progress": { "name": "Installing now" },
+          "no_install": { "name": "Cannot be installed from Home Assistant" },
+          "min_age_days": { "name": "Minimum age (days)" },
+          "min_age_days_firmware": { "name": "Minimum age of device firmware and radio (days)" },
+          "updates": { "name": "Updates" }
+        }
+      },
+      "ha_updates_last_run": {
+        "name": "Last run",
+        "state": {
+          "backing_up": "Backing up",
+          "installing": "Installing",
+          "verifying": "Checking the version",
+          "ok": "OK",
+          "failed": "Failed",
+          "not_reached": "Version not reached",
+          "timeout": "Did not end in time",
+          "backup_failed": "Backup failed: nothing installed",
+          "skipped_paused": "Paused: nothing installed",
+          "skipped_not_ready": "No longer ready: nothing installed"
+        },
+        "state_attributes": {
+          "installer": {
+            "name": "Installing",
+            "state": { "off": "Off (options)", "paused": "Paused", "other_entry": "Off: another Vördr entry installs too", "idle": "On, waiting", "running": "Running" }
+          },
+          "backup": {
+            "name": "Backup",
+            "state": { "entity": "By the entity itself", "existing": "Home Assistant's automatic backup (existing)", "created": "Home Assistant's automatic backup (made for this)", "exempt": "None: device firmware, which a backup of Home Assistant cannot roll back" }
+          },
+          "entity_id": { "name": "Update entity" },
+          "kind": { "name": "Kind" },
+          "from_version": { "name": "From version" },
+          "to_version": { "name": "To version" },
+          "installed_version": { "name": "Installed version" },
+          "reason": { "name": "Reason" },
+          "started": { "name": "Started" },
+          "finished": { "name": "Finished" },
+          "restarted": { "name": "Home Assistant restarted" },
+          "queue": { "name": "Queue" }
+        }
       }
     },
     "update": {
@@ -294,6 +587,9 @@
       "install_security": { "name": "Install security updates" },
       "reboot": { "name": "Reboot" },
       "install_app": { "name": "Install {app}" }
+    },
+    "switch": {
+      "ha_updates_paused": { "name": "Pause Home Assistant updates" }
     }
   },
   "exceptions": {
@@ -550,6 +846,77 @@
     "client_rejected": {
       "title": "Vördr: the hub refuses this Home Assistant",
       "description": "The hub refuses the client {name} ({reason}). Check on the hub with `vordr-hub clients`; fingerprint of this client: `{fingerprint}`."
+    },
+    "waiting_host": {
+      "title": "Vördr: host {node} waits for approval",
+      "description": "A host asks the hub to admit it as {node} (system `{os}`). The hub saw its key with this fingerprint:\n\n`{fingerprint}`\n\nApproval stays at the hub. If you expect this host, run `vordr-agent identity` on the host itself (for a device behind a proxy agent, with the `--config` of its instance) and compare. Only if both fingerprints are the same, run on the hub:\n\n`{command}`\n\nIf they differ, do not approve: another key asks under this name, and `vordr-hub reject {node}` keeps it out. This hint goes away once the host is approved, rejected or forgotten."
+    },
+    "ha_update_failed": {
+      "title": "Vördr: installing {entity_id} failed",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Install {entity_id} again now?",
+            "description": "Vördr's install of {entity_id} from {from_version} to {to_version} failed on {at}: Home Assistant or the entity's integration refused it or reported an error (see the log). Vördr does not try this version again by itself; a newer version is tried in its window. Once the cause is fixed, confirm here: Vördr installs it at once, outside the window but under all its other rules, with the backup before it where one is needed; if another install is running or a rule stops it, it says why and installs nothing. You can also install it by hand. This repair goes once an install of it goes through, and comes back if the next try fails."
+          }
+        },
+        "abort": {
+          "no_longer_needed": "{entity_id} has no failed install any more.",
+          "entry_not_loaded": "The Vördr integration is not loaded right now. Try again once it is.",
+          "busy": "Another update is being installed right now, or Home Assistant is making a backup. Vördr installs one at a time and queues nothing: try again once it has finished.",
+          "paused": "Home Assistant updates are paused (switch \"Pause Home Assistant updates\"). Switch the pause off, then try again.",
+          "auto_install_off": "Installing Home Assistant updates is switched off in Vördr's options. Switch \"Install automatically\" on, or install {entity_id} by hand.",
+          "other_entry": "Another Vördr entry installs Home Assistant updates too, so neither does. Switch it off in one of them, then try again.",
+          "backup_held": "Home Assistant's last backup failed, and {entity_id} needs one before it is installed. Try again once Home Assistant shows a newer backup.",
+          "not_ready": "Vördr's rules do not let {entity_id} through now, apart from the window: the sensor \"Updates ready\" says why."
+        }
+      }
+    },
+    "ha_update_not_reached": {
+      "title": "Vördr: {entity_id} did not reach {to_version}",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Install {entity_id} again now?",
+            "description": "Vördr installed {entity_id} from {from_version} to {to_version}, but on {at} it still did not report {to_version}. Vördr does not try this version again by itself; a newer version is tried in its window. Once the cause is fixed, confirm here: Vördr installs it at once, outside the window but under all its other rules, with the backup before it where one is needed; if another install is running or a rule stops it, it says why and installs nothing. You can also install it by hand. This repair goes once an install of it goes through, and comes back if the next try fails."
+          }
+        },
+        "abort": {
+          "no_longer_needed": "{entity_id} has no failed install any more.",
+          "entry_not_loaded": "The Vördr integration is not loaded right now. Try again once it is.",
+          "busy": "Another update is being installed right now, or Home Assistant is making a backup. Vördr installs one at a time and queues nothing: try again once it has finished.",
+          "paused": "Home Assistant updates are paused (switch \"Pause Home Assistant updates\"). Switch the pause off, then try again.",
+          "auto_install_off": "Installing Home Assistant updates is switched off in Vördr's options. Switch \"Install automatically\" on, or install {entity_id} by hand.",
+          "other_entry": "Another Vördr entry installs Home Assistant updates too, so neither does. Switch it off in one of them, then try again.",
+          "backup_held": "Home Assistant's last backup failed, and {entity_id} needs one before it is installed. Try again once Home Assistant shows a newer backup.",
+          "not_ready": "Vördr's rules do not let {entity_id} through now, apart from the window: the sensor \"Updates ready\" says why."
+        }
+      }
+    },
+    "ha_update_timeout": {
+      "title": "Vördr: installing {entity_id} did not end",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Install {entity_id} again now?",
+            "description": "Vördr's install of {entity_id} from {from_version} to {to_version} did not end in time; Vördr stopped waiting on {at}. It may still be running: see the entity. Vördr does not try this version again by itself; a newer version is tried in its window. Once the cause is fixed, confirm here: Vördr installs it at once, outside the window but under all its other rules, with the backup before it where one is needed; if another install is running or a rule stops it, it says why and installs nothing. You can also install it by hand. This repair goes once an install of it goes through, and comes back if the next try fails."
+          }
+        },
+        "abort": {
+          "no_longer_needed": "{entity_id} has no failed install any more.",
+          "entry_not_loaded": "The Vördr integration is not loaded right now. Try again once it is.",
+          "busy": "Another update is being installed right now, or Home Assistant is making a backup. Vördr installs one at a time and queues nothing: try again once it has finished.",
+          "paused": "Home Assistant updates are paused (switch \"Pause Home Assistant updates\"). Switch the pause off, then try again.",
+          "auto_install_off": "Installing Home Assistant updates is switched off in Vördr's options. Switch \"Install automatically\" on, or install {entity_id} by hand.",
+          "other_entry": "Another Vördr entry installs Home Assistant updates too, so neither does. Switch it off in one of them, then try again.",
+          "backup_held": "Home Assistant's last backup failed, and {entity_id} needs one before it is installed. Try again once Home Assistant shows a newer backup.",
+          "not_ready": "Vördr's rules do not let {entity_id} through now, apart from the window: the sensor \"Updates ready\" says why."
+        }
+      }
+    },
+    "ha_updates_backup_failed": {
+      "title": "Vördr: Home Assistant's backup before an update failed",
+      "description": "Before it installs an update that cannot back itself up, Vördr needs Home Assistant's automatic backup from the last 26 hours. On {at} there was none, and none could be made (see Settings, System, Backups, and the log). Until a newer automatic backup shows up, Vördr installs only updates that make their own backup, and it tries to make one again after 24 hours. This notice goes away once Home Assistant has a newer automatic backup."
     }
   },
   "common": {
@@ -633,6 +1000,32 @@
           "name": "Reason (outside the window)",
           "description": "Optional: why now, outside the host's maintenance window. Without one, the hub notes that it was started in Home Assistant. Stays with the run, in the agent log and in the hub's event log."
         }
+      }
+    }
+  },
+  "selector": {
+    "ha_update_kind": {
+      "options": {
+        "core": "Home Assistant Core",
+        "os": "Home Assistant OS",
+        "supervisor": "Supervisor",
+        "app": "Apps (add-ons)",
+        "hacs": "HACS",
+        "esphome": "ESPHome devices",
+        "firmware": "Device firmware (Zigbee, Matter, Z-Wave, Wi-Fi devices and others)",
+        "radio": "Radio adapter firmware (Zigbee, Thread)",
+        "other": "Other"
+      }
+    },
+    "weekday": {
+      "options": {
+        "mon": "Monday",
+        "tue": "Tuesday",
+        "wed": "Wednesday",
+        "thu": "Thursday",
+        "fri": "Friday",
+        "sat": "Saturday",
+        "sun": "Sunday"
       }
     }
   }

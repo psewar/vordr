@@ -1,0 +1,171 @@
+blueprint:
+  name: Vördr - offer a reboot with a button in the notification
+  description: >-
+    When an install went through and the host needs a reboot (result `ok_reboot_required`), or a needed reboot has
+    waited too long (problem `reboot_pending`), sends a notification. Where Vördr may reboot the host (the host has a
+    reboot button), the notification carries the action "Reboot now"; tapping it presses that button, and only then
+    does anything happen. A host that does not allow reboots through Vördr gets the plain notice without the action.
+    The action needs the Home Assistant Companion app (a `notify.mobile_app_*` service); other notify services show
+    the text only.
+  domain: automation
+  author: Vördr
+  homeassistant:
+    min_version: 2024.10.0
+  input:
+    notify_service:
+      name: Notify service
+      description: The notify action to call, for example `notify.mobile_app_<device>`.
+      selector:
+        text:
+    language:
+      name: Language of the message
+      description: >-
+        The language of the text. Vördr sends it in every language it ships; a language it does not have falls back
+        to English.
+      default: en
+      selector:
+        select:
+          options:
+            - en
+            - de
+          custom_value: true
+    hosts:
+      name: Hosts
+      description: Only these hosts (devices of Vördr). Leave empty for every host.
+      default: []
+      selector:
+        device:
+          multiple: true
+          filter:
+            - integration: vordr
+    wait_hours:
+      name: Hours the action stays valid
+      description: After this long a tap does nothing; the notification stays, but the offer has expired.
+      default: 12
+      selector:
+        number:
+          min: 1
+          max: 72
+          step: 1
+          unit_of_measurement: h
+          mode: box
+    notify_without_button:
+      name: Notify also where Vördr cannot reboot
+      description: For a host that does not allow reboots through Vördr, send the text (reboot by hand) without an action.
+      default: true
+      selector:
+        boolean:
+
+# Every offer waits for its own tap; offers of different hosts must not cancel each other.
+mode: parallel
+max: 20
+max_exceeded: warning
+
+triggers:
+  - trigger: event
+    event_type: vordr_run_finished
+    id: run
+  - trigger: event
+    event_type: vordr_problem
+    id: pending
+
+variables:
+  notify_service: !input notify_service
+  language: !input language
+  hosts: !input hosts
+  wait_hours: !input wait_hours
+  notify_without_button: !input notify_without_button
+  node: "{{ trigger.event.data.node }}"
+  # The reboot button and the reboot sensor of this host are found through its device, not named here. The button
+  # exists only where the hub offers the reboot (capability and local policy).
+  button_id: >-
+    {% set ns = namespace(e='') %}
+    {% for e in integration_entities('vordr') if e.startswith('button.') and e.endswith('_reboot') and ('vordr', 'host:' ~ node) in (device_attr(e, 'identifiers') or []) %}{% set ns.e = e %}{% endfor %}
+    {{ ns.e }}
+  sensor_id: >-
+    {% set ns = namespace(e='') %}
+    {% for e in integration_entities('vordr') if e.startswith('binary_sensor.') and e.endswith('_reboot_required') and ('vordr', 'host:' ~ node) in (device_attr(e, 'identifiers') or []) %}{% set ns.e = e %}{% endfor %}
+    {{ ns.e }}
+  # One id per offer: a tap on an older notification does not start a newer offer's reboot.
+  action_id: "VORDR_REBOOT_{{ node }}_{{ now().timestamp() | int }}"
+  texts:
+    en:
+      reboot: "Reboot now"
+      gone: "The reboot of {node} is no longer needed or offered; nothing was done."
+    de:
+      reboot: "Jetzt neu starten"
+      gone: "Der Neustart von {node} ist nicht mehr nötig oder angeboten; es wurde nichts getan."
+  text: "{{ texts.get(language, texts.en) }}"
+  body: >-
+    {% set m = trigger.event.data.message or {} %}{{ m.get(language) or m.get('en') or node }}
+
+conditions:
+  - alias: A reboot is needed
+    condition: template
+    value_template: >-
+      {{ (trigger.id == 'run' and trigger.event.data.state == 'ok_reboot_required')
+         or (trigger.id == 'pending' and trigger.event.data.active | bool(false)
+             and 'reboot_pending' in (trigger.event.data.reasons or [trigger.event.data.reason])) }}
+  - alias: Only the chosen hosts
+    condition: template
+    value_template: >-
+      {% set ns = namespace(ok=hosts | count == 0) %}
+      {% for d in hosts %}{% if ('vordr', 'host:' ~ node) in (device_attr(d, 'identifiers') or []) %}{% set ns.ok = true %}{% endif %}{% endfor %}
+      {{ ns.ok }}
+
+actions:
+  - choose:
+      - alias: The host offers the reboot
+        conditions:
+          - condition: template
+            value_template: "{{ button_id != '' and states(button_id) != 'unavailable' }}"
+        sequence:
+          - action: "{{ notify_service }}"
+            data:
+              title: "Vördr {{ node }}"
+              message: "{{ body }}"
+              data:
+                tag: "vordr_reboot_{{ node }}"
+                actions:
+                  - action: "{{ action_id }}"
+                    title: "{{ text.reboot }}"
+          - alias: Wait for the tap of a person
+            wait_for_trigger:
+              - trigger: event
+                event_type: mobile_app_notification_action
+                event_data:
+                  action: "{{ action_id }}"
+            timeout:
+              hours: "{{ wait_hours | float(12) }}"
+            continue_on_timeout: true
+          - alias: Nobody tapped
+            condition: template
+            value_template: "{{ wait.trigger is not none }}"
+          - if:
+              - alias: The host still needs the reboot and still offers it
+                condition: template
+                value_template: >-
+                  {{ sensor_id != '' and is_state(sensor_id, 'on')
+                     and states(button_id) != 'unavailable' }}
+            then:
+              - action: button.press
+                target:
+                  entity_id: "{{ button_id }}"
+            else:
+              - action: "{{ notify_service }}"
+                data:
+                  title: "Vördr {{ node }}"
+                  message: "{{ text.gone.format(node=node) }}"
+                  data:
+                    tag: "vordr_reboot_{{ node }}"
+      - alias: The host does not allow reboots through Vördr
+        conditions:
+          - condition: template
+            value_template: "{{ notify_without_button }}"
+        sequence:
+          - action: "{{ notify_service }}"
+            data:
+              title: "Vördr {{ node }}"
+              message: "{{ body }}"
+              data:
+                tag: "vordr_reboot_{{ node }}"

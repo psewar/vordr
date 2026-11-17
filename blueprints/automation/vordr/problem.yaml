@@ -1,0 +1,160 @@
+blueprint:
+  name: Vördr - notify about a host problem
+  description: >-
+    Sends a notification when Vördr reports a new or changed problem on a host (the event `vordr_problem`), with the
+    reason and the next step in the language you choose. Optionally waits first and stays silent when the problem
+    ends by itself, and tells when it ends. It only notifies; it never installs or reboots anything.
+  domain: automation
+  author: Vördr
+  homeassistant:
+    min_version: 2024.10.0
+  input:
+    notify_service:
+      name: Notify service
+      description: The notify action to call, for example `notify.mobile_app_<device>` or a notify group.
+      selector:
+        text:
+    language:
+      name: Language of the message
+      description: >-
+        The language of the problem text. Vördr sends it in every language it ships; a language it does not have
+        falls back to English.
+      default: en
+      selector:
+        select:
+          options:
+            - en
+            - de
+          custom_value: true
+    hosts:
+      name: Hosts
+      description: Only these hosts (devices of Vördr). Leave empty for every host.
+      default: []
+      selector:
+        device:
+          multiple: true
+          filter:
+            - integration: vordr
+    ignored_reasons:
+      name: Reasons to ignore
+      description: >-
+        A problem whose reasons are all in this list raises no notification. Example: `reboot_pending`, if the reboot
+        offer blueprint takes care of it.
+      default: []
+      selector:
+        select:
+          multiple: true
+          custom_value: true
+          options:
+            - offline
+            - stale
+            - check_failed
+            - reboot_pending
+            - no_report
+            - malicious_package
+            - vulnerable_package
+    delay_minutes:
+      name: Wait before notifying (minutes)
+      description: >-
+        0 notifies at once. Otherwise the notification comes only if the host has no other news about its problem
+        for this long: a problem that ends or changes in the meantime is dropped (a change starts its own wait).
+      default: 0
+      selector:
+        number:
+          min: 0
+          max: 1440
+          step: 1
+          unit_of_measurement: min
+          mode: box
+    notify_when_ended:
+      name: Tell when the problem ends
+      description: >-
+        Only without a wait. With a wait the blueprint cannot know whether the problem was announced.
+      default: false
+      selector:
+        boolean:
+
+# One run per problem event; every host waits for itself. A wait ends its run when the next event of the same host
+# comes, so runs of different hosts must not cancel each other: parallel, not restart.
+mode: parallel
+max: 50
+max_exceeded: warning
+
+triggers:
+  - trigger: event
+    event_type: vordr_problem
+
+variables:
+  notify_service: !input notify_service
+  language: !input language
+  hosts: !input hosts
+  ignored_reasons: !input ignored_reasons
+  delay_minutes: !input delay_minutes
+  notify_when_ended: !input notify_when_ended
+  node: "{{ trigger.event.data.node }}"
+  active: "{{ trigger.event.data.active | bool(false) }}"
+  reasons: >-
+    {{ (trigger.event.data.reasons or [trigger.event.data.reason]) | reject('none') | list }}
+  texts:
+    en:
+      ended: "Vördr {node}: problem ended"
+      ended_body: "The problem on {node} is gone."
+    de:
+      ended: "Vördr {node}: Problem behoben"
+      ended_body: "Das Problem auf {node} ist behoben."
+  text: "{{ texts.get(language, texts.en) }}"
+  body: >-
+    {% set m = trigger.event.data.message or {} %}{{ m.get(language) or m.get('en') or reasons | join(', ') }}
+
+conditions:
+  - alias: Only the chosen hosts
+    condition: template
+    value_template: >-
+      {% set ns = namespace(ok=hosts | count == 0) %}
+      {% for d in hosts %}{% if ('vordr', 'host:' ~ node) in (device_attr(d, 'identifiers') or []) %}{% set ns.ok = true %}{% endif %}{% endfor %}
+      {{ ns.ok }}
+
+actions:
+  - choose:
+      - alias: A problem begins or changes
+        conditions:
+          - condition: template
+            value_template: "{{ active and (reasons | reject('in', ignored_reasons) | list | count > 0) }}"
+        sequence:
+          - if:
+              - condition: template
+                value_template: "{{ delay_minutes | float(0) > 0 }}"
+            then:
+              - alias: Wait for the next news of this host
+                wait_for_trigger:
+                  - trigger: event
+                    event_type: vordr_problem
+                    event_data:
+                      node: "{{ node }}"
+                timeout:
+                  minutes: "{{ delay_minutes | float(0) }}"
+                continue_on_timeout: true
+              # stop, not condition: a condition inside "then" would end only this branch and the run would go on
+              - alias: News came - it has its own run
+                if:
+                  - condition: template
+                    value_template: "{{ wait.trigger is not none }}"
+                then:
+                  - stop: The host has news; its own run takes over
+          - action: "{{ notify_service }}"
+            data:
+              title: "Vördr {{ node }}"
+              message: "{{ body }}"
+              data:
+                tag: "vordr_problem_{{ node }}"
+      - alias: The problem ended
+        conditions:
+          - condition: template
+            value_template: "{{ not active and notify_when_ended and delay_minutes | float(0) == 0 }}"
+        sequence:
+          - action: "{{ notify_service }}"
+            data:
+              title: "{{ text.ended.format(node=node) }}"
+              message: "{{ text.ended_body.format(node=node) }}"
+              data:
+                tag: "vordr_problem_{{ node }}"

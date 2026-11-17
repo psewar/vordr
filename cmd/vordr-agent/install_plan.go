@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/psewar/vordr/internal/identity"
 )
 
 // What install-service decides and how it changes things, apart from the Windows service manager, so that it is tested
@@ -150,6 +152,32 @@ func apply(steps []step, out, errOut io.Writer) applied {
 		return res
 	}
 	return applied{}
+}
+
+// identityStep loads the agent's key pair from state_dir, or creates it there, and hands it to the caller through id.
+// install-service runs it after state_dir is restricted to SYSTEM and administrators (DPAPI's machine scope does not
+// keep local users from the key, the folder's ACL does) and before the service starts. The service then loads this
+// key, so the fingerprint install-service prints is the one the hub will show; left to the service, the key would only
+// appear once it runs, after install-service has printed its hint. A key created here stays if a later step fails, as
+// it stays on uninstall-service: it is no change to the service.
+func identityStep(stateDir string, id **identity.Identity) step {
+	return step{what: "identity in " + stateDir,
+		do: func() error {
+			got, _, err := identity.LoadOrCreate(stateDir)
+			if err != nil {
+				return err
+			}
+			*id = got
+			return nil
+		}}
+}
+
+// approvalHint: the lines install-service ends with, this agent's fingerprint and the command to run at the hub, as
+// install-agent.sh ends on Linux.
+func approvalHint(node, fingerprint string) string {
+	return fmt.Sprintf("       node %s, fingerprint %s\n"+
+		"A new host waits for approval; at the hub, after comparing (an approved host keeps its approval):\n"+
+		"  vordr-hub approve %s --fingerprint %s\n", node, fingerprint, node, fingerprint)
 }
 
 // logLine appends one line to <state_dir>\agent.log, the agent's log on Windows, and says whether it got there.

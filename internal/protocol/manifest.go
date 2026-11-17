@@ -121,5 +121,8 @@ func (m Manifest) Has(file string) (ManifestBinary, bool) {
 	return ManifestBinary{}, false
 }
 
-// ValidToken: the one-time download token of an agent_update job.
+// ValidToken: the form of a download token, of an agent_update job or of a download for a new host.
 func ValidToken(t string) bool { return tokenPattern.MatchString(t) }
+
+// ValidFileName: the form a manifest gives the name of a binary.
+func ValidFileName(f string) bool { return fileNamePattern.MatchString(f) }

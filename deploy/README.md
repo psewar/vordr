@@ -23,6 +23,11 @@ user.
 
 The hub reloads a renewed certificate by itself at the next connection setup; no restart needed.
 
+The event log `events.jsonl` only grows unless `hub.yaml` has the section `event_log` (as `hub.example.yaml` does):
+then the hub starts a new file at `max_size_mb` and keeps `keep` full ones (`events.jsonl.1` …). An existing hub keeps
+its whole log until the section is added; `check-config` says which applies. Whatever copies `events.jsonl` elsewhere
+copies the numbered files too.
+
 `install-hub.sh` replaces a changed `hub.yaml` only with a reason: `--replace-config "<reason>"`. The old file stays
 as `hub.yaml.bak-<time>`, the difference is shown and the reason is noted in the system log.
 
@@ -37,15 +42,54 @@ vordr-hub clients                                        # waiting and approved 
 vordr-hub approve-client <name> --fingerprint <fp>       # after comparing with what HA shows
 ```
 
+The short way to an agent on a new Linux host (systemd, apt) then starts in Home Assistant: with role `admin`
+(`vordr-hub client-role <name> --role admin`), a signed agent release on the hub (below, "Signing agent releases") and
+the operator key entered in the integration's options, *Configure → Install the agent on a Linux host (SSH)* reaches
+the host once over SSH, checks the release and runs `vordr-agent install` there; nothing of the SSH access is stored
+([ha/README.md](../ha/README.md),
+[ADR-0161](../docs/adr/0161-home-assistant-installs-the-agent-once-over-ssh-and-keeps-no-credentials.md)). The host
+then waits for approval at the hub, as below.
+
 ## Agent
+
+The short way needs only the binary for the host's architecture. Before it runs as root, compare its SHA-256 with the
+one the release you signed names: `sha256sum vordr-agent-linux-<arch>` on the host, and the `sha256` of
+`linux/<arch>` in `manifest.json` of that release on your machine (`release-<version>/manifest.json`, see "Signing
+agent releases"). A binary that differs is not yours: do not run it. Then, on the host, as root:
+
+```bash
+sudo ./vordr-agent-linux-<arch> install --hub wss://hub.example.org:8443/v1/tunnel --hub-key "<vordr-hub key>" \
+  --operator-key "<vordr-release public-key>"     # optional: self-update with releases signed by this key
+```
+
+`install` writes a minimal `/etc/vordr/agent.yaml`: the node (default: the host name, or `--node <name>`), the hub
+and, with `--operator-key` (and `--backup-operator-key`), self-update. Everything else keeps the strict default: the
+agent checks and reports, but installs no updates and never reboots until `agent.yaml` on the host allows it (the
+keys are in `agent.example.yaml`). For a hub with a CA of its own: put the CA where only root may change it, e.g.
+`sudo install -D -m 0644 hub-ca.pem /etc/vordr/hub-ca.pem`, and give `--ca-file /etc/vordr/hub-ca.pem`; the file
+stays there. A CA file that others could change or remove (in a home folder, under `/tmp`) is refused with
+`ca_file_unsafe`. Before it changes anything, `install` checks root, systemd, apt, the generated `agent.yaml` as
+`check-config` does, an `agent.yaml` that is already installed (a different one only with
+`--replace-config "<reason>"`) and whether this host reaches the hub. Then it installs with `install-agent.sh`, which
+the binary carries ([ADR-0169](../docs/adr/0169-the-linux-agent-installs-itself-from-one-binary-and-one-command.md)),
+from a private folder under `/run` and with a fixed environment. Exit 0 installed, 2 refused (nothing changed), 1
+failed after the first change; the last line says the same for a program, e.g.
+`result=installed node=web-01 fingerprint=<hex>` or `result=refused code=hub_unreachable stage=tls`. Ctrl-C or
+SIGTERM ends it with `code=interrupted`, as refused or failed depending on whether the host had changed yet.
+
+With an `agent.yaml` of your own, from the repository:
 
 ```bash
 sudo deploy/install-agent.sh dist/vordr-agent-linux-<arch> agent.yaml
 ```
 
 `install-agent.sh` first runs `check-config` and, with `vordr-agent hub-check`, checks whether this host reaches the
-hub: name resolution, connection, TLS chain, tunnel, challenge. If a stage fails, nothing is installed. At the end it
-prints the approval command for the hub:
+hub: name resolution, connection, TLS chain, tunnel, challenge, and whether the hub signs its challenge with
+`hub.public_key` from `agent.yaml`. If a stage fails, nothing is installed; a wrong hub key is named as such, with the
+next step: take the key from `vordr-hub key` on the hub. An older hub that does not sign its challenge passes, and
+`hub-check` says that the key was not checked, unless this host has seen that hub sign before: then it is refused as
+a downgrade (design 6.2). Its exit codes are those of `install`. At the end both print the approval command for the
+hub:
 
 ```bash
 vordr-hub approve <node> --fingerprint <fp>              # at the hub, after comparing with the host
@@ -75,8 +119,8 @@ In a PowerShell **as Administrator**:
 .\vordr-agent-windows-amd64.exe install-service --config .\agent.yaml
 ```
 
-`install-service` first checks `agent.yaml`, the hub and an `agent.yaml` that is already installed; until then it
-changes nothing. After that it does everything else in one step:
+`install-service` first checks `agent.yaml`, the hub and its key (as `install-agent.sh` does) and an `agent.yaml` that
+is already installed; until then it changes nothing. After that it does everything else in one step:
 binary to `%ProgramFiles%\Vordr`, `agent.yaml` to `%ProgramData%\vordr` (SYSTEM and Administrators only),
 PowerShell 7 and the PowerShell module `Microsoft.WinGet.Client` for all users, service `vordr-agent` under
 LocalSystem. The service needs PowerShell 7 because the module runs as LocalSystem only there; the Store version in
@@ -85,6 +129,7 @@ the user profile does not count, so `install-service` installs the MSI through w
 `install-service --config .\agent.yaml --replace-config "<reason>"`. The old file stays as
 `agent.yaml.bak-<time>`, the difference is shown and the reason is noted in `agent.log`. If a step fails after the
 service is stopped, the service runs again afterwards with the previous binary and `agent.yaml` (exit 3).
+At the end it prints this PC's fingerprint and the command to approve it at the hub, as `install-agent.sh` does.
 Remove with `vordr-agent uninstall-service`; identity and `agent.yaml` stay.
 
 Self-update (ADR-0084): with `agent_update` in `agent.yaml` (as on Linux) the service fetches new versions through the

@@ -17,7 +17,7 @@
       }
     },
     "progress": {
-      "approval": "Warte auf die Freigabe an der Leitstelle. Fingerprint vergleichen und dort freigeben:\n\n`{command}`\n\nFingerprint: `{fingerprint}`"
+      "approval": "Warte auf die Freigabe an der Leitstelle. Fingerprint vergleichen und dort freigeben:\n\n`{command}`\n\nFingerprint: `{fingerprint}`\n\nDer Dialog darf geschlossen werden: Home Assistant behält diesen Schlüssel für die Leitstelle und den Namen des Clients, und die Integration mit demselben Namen erneut hinzuzufügen setzt diese Anfrage fort."
     },
     "error": {
       "invalid_url": "Die Adresse muss wss://HOST[:PORT]/v1/ha lauten.",
@@ -32,17 +32,210 @@
     "abort": {
       "already_configured": "Diese Leitstelle ist schon eingerichtet.",
       "unreachable": "Die Leitstelle war während des Wartens auf die Freigabe nicht erreichbar.",
-      "approval_timeout": "Innerhalb einer Stunde keine Entscheidung. Neu starten; die Leitstelle behält die Anfrage.",
+      "approval_timeout": "Innerhalb einer Stunde keine Entscheidung. Die Integration mit demselben Namen des Clients erneut hinzufügen: Home Assistant hat seinen Schlüssel behalten und setzt so die Anfrage fort, die die Leitstelle behält.",
       "rejected": "Die Leitstelle lehnt diesen Client ab.",
-      "rejected_key_mismatch": "Die Leitstelle kennt diesen Namen mit einem anderen Schlüssel. Anderen Namen wählen oder den Client an der Leitstelle vergessen (vordr-hub forget-client).",
+      "rejected_key_mismatch": "Die Leitstelle kennt den Namen {name} mit einem anderen Schlüssel. Der Fingerprint dieses Home Assistant ist {fingerprint}; `vordr-hub clients` zeigt den, den die Leitstelle kennt. Gehört der Name keinem anderen Home Assistant, ihn an der Leitstelle vergessen (`vordr-hub forget-client {name}`) und die Integration erneut hinzufügen; sonst einen anderen Namen wählen.",
       "rejected_too_many_pending": "An der Leitstelle warten zu viele Clients auf Freigabe.",
       "rejected_rejected": "Der Betreiber hat diesen Client an der Leitstelle abgelehnt.",
       "rejected_protocol_mismatch": "Die Leitstelle spricht eine andere Protokollversion als diese Integration; eine von beiden aktualisieren.",
       "rejected_bad_hello": "Die Leitstelle hat die Anmeldung nicht angenommen (Name oder Signatur ungültig)."
     }
   },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Vördr-Einstellungen",
+        "menu_options": {
+          "ha_updates": "Home-Assistant-Updates",
+          "operator_keys": "Betreiberschlüssel (für das Installieren des Agenten)",
+          "install_agent": "Agent auf einem Linux-Host installieren (SSH)",
+          "ai_explanations": "KI-Erklärungen gescheiterter Läufe"
+        }
+      },
+      "ha_updates": {
+        "title": "Home-Assistant-Updates",
+        "description": "Welche Updates von Home Assistant selbst (Core, OS, Apps, HACS, ESPHome, Geräte-Firmware) die Regeln von Vördr durchlassen, und wann. Nichts gewählt, nichts erlaubt. Installiert wird erst, wenn „Automatisch installieren“ an ist: ein Update nach dem anderen, im Fenster, Core, OS und Supervisor zuletzt, jedes mit einem Backup davor, ausser Geräte-Firmware und Funkadapter, die ein Backup von Home Assistant nicht rückgängig machen kann. Bis dahin zeigt der Sensor „Updates bereit“ des Geräts „Vördr Home Assistant“ nur, was Vördr tun würde. Nie durch Vördr: seine eigenen Entitäten, ein Update, das sich selbst installiert, eine in Home Assistant übersprungene Version und eine neue Hauptversion (die bleibt Handarbeit). Geräte-Firmware und der Funkadapter warten mindestens {firmware_days} Tage, oder das Mindestalter, wenn es länger ist. Eine neuere Version einer Versionslinie, die Vördr schon gesehen hat (die gleichen ersten zwei Zahlen, etwa 2026.11.2 nach 2026.11.1), zählt ihr Alter ab dem Zeitpunkt, an dem Vördr die Linie zum ersten Mal gesehen hat, wartet aber selbst mindestens {patch_days} Tage, oder das Mindestalter, wenn es kürzer ist.",
+        "data": {
+          "kinds": "Erlaubte Arten",
+          "entities": "Zusätzlich erlaubt: einzelne Update-Entitäten",
+          "days": "Fenster: Tage",
+          "start": "Fenster: Beginn",
+          "end": "Fenster: Ende",
+          "min_age_days": "Mindestalter (Tage)",
+          "auto_install": "Automatisch installieren"
+        },
+        "data_description": {
+          "kinds": "Jede Update-Entität einer gewählten Art, erkannt an ihrer Integration und ihrem Gerät. Die Firmware des Funkadapters ist eine eigene Art.",
+          "entities": "Update-Entitäten, die zusätzlich zu den gewählten Arten erlaubt sind.",
+          "days": "Das Fenster gehört zum Tag, an dem es beginnt. Nötig, sobald etwas erlaubt ist.",
+          "start": "In der Zeitzone von Home Assistant. Liegt der Beginn nach dem Ende, läuft das Fenster über Mitternacht.",
+          "end": "Ab dem Ende würde nichts Neues mehr beginnen.",
+          "min_age_days": "1 bis 90 Tage, gezählt ab dem Zeitpunkt, an dem Vördr die Version zum ersten Mal gesehen hat: Home Assistant nennt kein Erscheinungsdatum.",
+          "auto_install": "Aus: Vördr plant nur. An: Vördr installiert, was bereit ist, eines nach dem anderen, im Fenster, mit einem Backup davor (dem eigenen der Entität, sonst dem automatischen Backup von Home Assistant, höchstens 26 Stunden alt; keines für Geräte-Firmware und Funkadapter, die ein Backup von Home Assistant nicht zurückholen kann). Der Schalter „Home-Assistant-Updates pausieren“ hält es jederzeit an. Nur ein Vördr-Eintrag darf installieren."
+        }
+      },
+      "ai_explanations": {
+        "title": "KI-Erklärungen gescheiterter Läufe",
+        "description": "Freiwillig, aus, solange keine Entität gewählt ist. Scheitert ein Lauf auf einem Host, fragt Vördr die hier gewählte AI-Task-Entität einmal nach einer kurzen Erklärung in der Sprache von Home Assistant, einer wahrscheinlichen Ursache und nächsten Schritten aus festen Listen und einem Zitat aus dem Logauszug des Laufs als Beleg. An den Anbieter der Entität geht: der Ergebniscode, die Aktion, die Paketnamen und das Ende des Logauszugs. Die Hostnamen, die Vördr kennt, IP-Adressen, die Adresse der Leitstelle und der Server in jeder Adresse werden vorher durch Platzhalter ersetzt; die übrigen Wörter des Auszugs gehen unverändert. Die Antwort ist nur ein Rat: das Ereignis `vordr_ai_explanation` und der Sensor „Letzter Lauf“ des Hosts zeigen sie, und sie ändert nie Fenster, Mindestalter, Umfang, Knöpfe oder Reparaturen. Eine Antwort, deren Zitat nicht im Gesendeten steht, gilt als ungeprüft, und nichts von ihr wird gezeigt.",
+        "data": {
+          "entity_id": "AI-Task-Entität",
+          "data_ack": "Paketnamen und Logauszüge gescheiterter Läufe dürfen an den Anbieter dieser Entität gehen"
+        },
+        "data_description": {
+          "entity_id": "Eine AI-Task-Entität, die Daten erzeugen kann, z. B. eines lokalen Modells oder eines Cloud-Dienstes. Leer: aus.",
+          "data_ack": "Nötig mit einer Entität. Der Anbieter kann ein Cloud-Dienst sein, auch hinter einer Integration für lokale Modelle: prüfen, wohin die Entität ihre Daten schickt."
+        }
+      },
+      "operator_keys": {
+        "title": "Betreiberschlüssel",
+        "description": "Die öffentlichen Schlüssel, mit denen das Agenten-Release signiert sein muss (Base64, wie `vordr-release public-key` sie ausgibt). Bevor etwas einen neuen Host erreicht, prüft Home Assistant das Release, das die Leitstelle herausgibt, gegen diese Schlüssel; einen Schlüssel von der Leitstelle nimmt es nie. Der neue Host erhält sie für sein Selbst-Update. Öffentliche Schlüssel, kein Geheimnis. Leer: keine Installation aus Home Assistant.",
+        "data": {
+          "operator_key": "Betreiberschlüssel",
+          "backup_operator_key": "Ersatz-Betreiberschlüssel"
+        },
+        "data_description": {
+          "operator_key": "Öffentlicher Ed25519-Schlüssel in Base64, wie `vordr-release public-key` ihn ausgibt.",
+          "backup_operator_key": "Optional: der Schlüssel, der übernimmt, wenn der erste verloren geht. Ein Release, das mit einem der beiden signiert ist, wird angenommen."
+        }
+      },
+      "install_agent": {
+        "title": "Agent auf einem Host installieren",
+        "description": "Nur für Linux mit systemd und apt (Debian, Ubuntu, Raspberry Pi OS). Home Assistant erreicht den Host einmal über SSH, lässt ihn das signierte Agenten-Release von der Leitstelle holen, prüft Grösse und SHA-256 gegen das mit deinem Betreiberschlüssel signierte Manifest und führt `vordr-agent install` aus. Vom SSH-Zugang wird nichts gespeichert: kein Passwort, kein Schlüssel, kein Host-Schlüssel. Danach wartet der Host wie jeder neue Host auf die Freigabe an der Leitstelle.\n\nAls Nächstes prüfst du den Host-Schlüssel, bevor du ein Passwort eingibst.",
+        "data": {
+          "host": "Host",
+          "port": "SSH-Port",
+          "username": "Benutzer",
+          "node": "Name des Knotens"
+        },
+        "data_description": {
+          "host": "Name oder Adresse des neuen Hosts, so wie Home Assistant ihn erreicht (IPv6 ohne Klammern).",
+          "port": "Meist 22.",
+          "username": "root oder ein Benutzer, der sudo verwenden darf.",
+          "node": "Sein Name an der Leitstelle. Leer: der eigene Name des Hosts in Kleinbuchstaben."
+        }
+      },
+      "install_host_key": {
+        "title": "Host-Schlüssel prüfen",
+        "description": "{host}:{port} zeigt diesen Host-Schlüssel ({algorithm}):\n\n`{fingerprint}`\n\nMit dem des Hosts selbst vergleichen, an seiner Konsole: `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` (für einen anderen Typ seine Datei in /etc/ssh). Nur weiter, wenn beide gleich sind: Sonst sitzt womöglich jemand zwischen Home Assistant und dem Host. Die Anmeldung nimmt nur diesen Schlüssel an; in eine known_hosts-Datei wird nichts geschrieben.",
+        "menu_options": {
+          "install_login": "Sie sind gleich: anmelden",
+          "install_host_key_rejected": "Sie weichen ab: abbrechen"
+        }
+      },
+      "install_login": {
+        "title": "Anmelden",
+        "description": "Als {username} auf {host} anmelden: mit einem Passwort oder einem privaten Schlüssel. Ist {username} nicht root, braucht sudo sein Passwort, ausser es verlangt keines; leer gilt das Passwort der Anmeldung. All das dient nur dieser Installation: Home Assistant hält es im Speicher, bis die Installation endet, und speichert es nirgends. Wenn möglich, einen Schlüssel oder ein Passwort eigens dafür verwenden.",
+        "data": {
+          "password": "Passwort",
+          "ssh_key": "Privater Schlüssel",
+          "ssh_key_passphrase": "Passphrase des Schlüssels",
+          "sudo_password": "sudo-Passwort"
+        },
+        "data_description": {
+          "password": "Des Benutzers, für die SSH-Anmeldung.",
+          "ssh_key": "Den ganzen Schlüssel einfügen (OpenSSH oder PEM), von der ersten bis zur letzten Zeile.",
+          "ssh_key_passphrase": "Nur für einen Schlüssel mit Passphrase.",
+          "sudo_password": "Leer: das Passwort der Anmeldung, oder keines, wenn sudo keines verlangt."
+        }
+      }
+    },
+    "progress": {
+      "install_run": "Der Agent wird auf {host} installiert: das signierte Release der Leitstelle, geprüft gegen deinen Betreiberschlüssel; auf dem Host heruntergeladen, Grösse und SHA-256 verglichen; dann `vordr-agent install`. Das kann einige Minuten dauern. Wird dieser Dialog geschlossen, wartet Home Assistant nicht mehr auf das Ergebnis; der Host macht von sich aus fertig oder hört auf und entfernt seinen temporären Ordner."
+    },
+    "error": {
+      "invalid_kind": "Unbekannte Art.",
+      "invalid_entity": "Nur Update-Entitäten.",
+      "invalid_day": "Unbekannter Tag.",
+      "invalid_time": "Eine Uhrzeit, HH:MM.",
+      "window_empty": "Beginn und Ende sind gleich: Das Fenster hätte keine Länge.",
+      "window_needs_days": "Mindestens einen Tag wählen: Sonst öffnet sich das Fenster nie, und nichts Erlaubtes würde je installiert.",
+      "min_age_days": "Eine ganze Zahl von Tagen, 1 bis 90.",
+      "invalid_auto_install": "An oder aus.",
+      "auto_install_other_entry": "Ein anderer Vördr-Eintrag installiert die Updates von Home Assistant schon. Dort zuerst ausschalten: Zwei würden dieselben Updates installieren.",
+      "invalid_operator_key": "Kein öffentlicher Ed25519-Schlüssel in Base64 (32 Bytes), wie `vordr-release public-key` ihn ausgibt.",
+      "invalid_backup_operator_key": "Kein öffentlicher Ed25519-Schlüssel in Base64 (32 Bytes), wie `vordr-release public-key` ihn ausgibt.",
+      "backup_without_operator_key": "Ein Ersatzschlüssel braucht den Betreiberschlüssel.",
+      "backup_equals_operator_key": "Der Ersatzschlüssel ist derselbe wie der Betreiberschlüssel.",
+      "invalid_host": "Ein Hostname oder eine IP-Adresse (IPv6 ohne Klammern).",
+      "invalid_port": "Ein Port von 1 bis 65535.",
+      "invalid_username": "Ein Benutzername: Buchstaben, Ziffern, Punkt, Unterstrich und Bindestrich, höchstens 32.",
+      "invalid_node": "Ein Name des Knotens, wie die Leitstelle ihn annimmt: Kleinbuchstaben, Ziffern, Punkt und Bindestrich, höchstens 63.",
+      "credentials_missing": "Ein Passwort oder ein privater Schlüssel.",
+      "ssh_key_invalid": "Dieser private Schlüssel lässt sich nicht lesen: ganz einfügen, von der ersten bis zur letzten Zeile; für einen Schlüssel mit Passphrase die Passphrase angeben.",
+      "sudo_password_invalid": "Ein Passwort auf einer Zeile.",
+      "ssh_unreachable": "Der Host ist nicht erreichbar: Name, Adresse und Port prüfen.",
+      "ssh_timeout": "Der Host antwortet nicht rechtzeitig.",
+      "ssh_failed": "Die Gegenseite spricht nicht SSH wie erwartet.",
+      "ssh_no_host_key": "Der Host hat keinen Host-Schlüssel gezeigt.",
+      "ssh_auth_failed": "Die Anmeldung wurde abgelehnt: Benutzer, Passwort oder Schlüssel falsch, oder der Host erlaubt diese Art der Anmeldung nicht.",
+      "ssh_lost": "Die Verbindung zum Host ist abgebrochen. Nichts wurde geändert.",
+      "sudo_failed": "sudo lehnt ab: Das Passwort ist falsch, oder der Benutzer darf sudo nicht verwenden.",
+      "sudo_needs_password": "sudo verlangt ein Passwort: hier eingeben (oder mit einem Passwort anmelden).",
+      "ai_entity_invalid": "Eine AI-Task-Entität wählen.",
+      "ai_entity_missing": "Diese Entität gibt es nicht, oder sie ist nicht verfügbar.",
+      "ai_entity_unsupported": "Diese Entität kann keine Daten erzeugen, oder AI Task ist nicht eingerichtet.",
+      "ai_data_ack_missing": "Bestätigen, was an den Anbieter geht, oder die Entität leer lassen."
+    },
+    "abort": {
+      "entry_not_loaded": "Die Integration läuft nicht: neu laden, dann noch einmal versuchen.",
+      "install_needs_operator_key": "Zuerst unter „Betreiberschlüssel“ den Betreiberschlüssel eingeben. Home Assistant prüft das Agenten-Release dagegen, bevor auf dem Host etwas läuft, und nimmt nie einen Schlüssel von der Leitstelle: Sonst könnte eine übernommene Leitstelle ein eigenes Binary herausgeben.",
+      "install_needs_ssh_library": "Die SSH-Bibliothek, die dieser Punkt braucht (`asyncssh`), ist nicht installiert; Home Assistant installiert sie mit der Integration: Home Assistant neu starten, oder den Agenten auf dem Host von Hand mit `vordr-agent install` einrichten (deploy/README.de.md). Alles andere der Integration funktioniert ohne sie.",
+      "hub_not_connected": "Home Assistant ist nicht mit der Leitstelle verbunden oder dort nicht freigegeben; die Installation braucht die Leitstelle für das signierte Agenten-Release.",
+      "hub_without_download": "Diese Leitstelle gibt das Agenten-Release für einen neuen Host noch nicht heraus: die Leitstelle aktualisieren, dann noch einmal versuchen.",
+      "install_cancelled": "Der Dialog wurde während der Anmeldung geschlossen: Die Verbindung zum Host ist geschlossen, bei der Leitstelle wurde nichts angefragt und auf dem Host nichts geändert.",
+      "host_output_too_long": "Der Host hat mehr ausgegeben, als Home Assistant von ihm liest; Home Assistant hat aufgehört zu lesen und die Verbindung geschlossen. Die Befehle der Installation geben wenige Zeilen aus: den Host prüfen. Geschah das während der Installation, ist ihr Zustand unbekannt: Auf dem Host geben `systemctl status vordr-agent` und `vordr-agent identity` Auskunft.",
+      "host_key_rejected": "Abgebrochen: Der Host-Schlüssel von {host} wurde nicht bestätigt, und an den Host wurde nichts gesendet. Weichen die Schlüssel ab, zuerst den Grund finden, bevor du dich dort anmeldest.",
+      "ssh_host_key_changed": "Abgebrochen: {host} zeigt jetzt einen anderen Host-Schlüssel als den bestätigten. Nichts Geheimes wurde gesendet. Womöglich sitzt jemand zwischen Home Assistant und dem Host: den Grund finden.",
+      "probe_failed": "Der Host antwortet nicht wie eine Linux-Shell. Auf dem Host wurde nichts geändert.",
+      "not_linux": "Auf dem Host läuft `{os}`, nicht Linux. Die Installation aus Home Assistant ist für Linux mit systemd und apt; unter Windows richtet `vordr-agent install-service` den Agenten ein. Auf dem Host wurde nichts geändert.",
+      "unknown_arch": "Für den Prozessor `{machine}` gibt es keinen Build des Agenten (es gibt Builds für x86_64, aarch64 und armv7). Auf dem Host wurde nichts geändert.",
+      "no_systemd": "Auf diesem Host läuft kein systemd: Der Agent läuft als dessen Dienst. Auf dem Host wurde nichts geändert.",
+      "no_apt": "Auf diesem Host gibt es kein apt-get: Der Agent kennt nur die Quelle apt (Debian, Ubuntu, Raspberry Pi OS). Auf dem Host wurde nichts geändert.",
+      "no_download_tool": "Auf diesem Host gibt es weder curl noch wget: eines davon installieren, dann noch einmal versuchen. Auf dem Host wurde nichts geändert.",
+      "missing_tools": "Auf dem Host fehlt: {tools}. Auf dem Host wurde nichts geändert.",
+      "no_sudo": "Der Benutzer ist nicht root, und es gibt kein sudo: als root anmelden oder sudo installieren. Auf dem Host wurde nichts geändert.",
+      "role_forbids": "Die Leitstelle gibt das Agenten-Release nur einem Client mit der Rolle admin heraus. An der Leitstelle: `vordr-hub client-role {client} --role admin`, dann noch einmal versuchen. Auf dem Host wurde nichts geändert.",
+      "client_not_approved": "Die Leitstelle zählt dieses Home Assistant nicht mehr als freigegeben. Auf dem Host wurde nichts geändert.",
+      "no_release": "Die Leitstelle hat kein Agenten-Release: eines mit `vordr-release` signieren und auf die Leitstelle legen. Auf dem Host wurde nichts geändert.",
+      "no_binary_for_platform": "Das Agenten-Release hat keinen Build für den Prozessor dieses Hosts. Auf dem Host wurde nichts geändert.",
+      "release_incomplete": "Ein Binary des Agenten-Releases fehlt auf der Leitstelle oder hat eine andere Grösse: das Release noch einmal auf die Leitstelle legen. Auf dem Host wurde nichts geändert.",
+      "too_many_downloads": "Die Leitstelle hat vorerst so viele Downloads herausgegeben, wie sie erlaubt: in 15 Minuten noch einmal versuchen. Auf dem Host wurde nichts geändert.",
+      "bad_request": "Die Leitstelle hat die Anfrage nicht angenommen. Auf dem Host wurde nichts geändert.",
+      "hub_refused": "Die Leitstelle lehnt mit `{code}` ab. Auf dem Host wurde nichts geändert.",
+      "no_answer": "Die Leitstelle hat nicht rechtzeitig geantwortet. Auf dem Host wurde nichts geändert.",
+      "manifest_invalid": "Die Antwort der Leitstelle enthält kein lesbares Manifest. Auf dem Host wurde nichts geändert.",
+      "manifest_signature_invalid": "Das Agenten-Release ist nicht mit deinem Betreiberschlüssel signiert und läuft deshalb nicht. Den Schlüssel unter „Betreiberschlüssel“ mit `vordr-release public-key` vergleichen; stimmt er, gibt die Leitstelle ein Release heraus, das du nicht signiert hast. Auf dem Host wurde nichts geändert.",
+      "release_too_old": "Die Leitstelle gibt das Agenten-Release {version} heraus, älter als das Release {newest}, das eine frühere Installation aus Home Assistant genommen hat. Jedes Release, das du signiert hast, bleibt gültig; ein älteres wird deshalb nicht wieder genommen: Eine übernommene Leitstelle könnte ein altes Release mit bekannter Schwäche herausgeben. Das aktuelle Release bei der Leitstelle veröffentlichen (`vordr-release`); zurück geht es, indem der alte Code unter einer neuen Version veröffentlicht wird. Auf dem Host wurde nichts geändert.",
+      "download_invalid": "Die Antwort der Leitstelle enthält keinen gültigen Download für diesen Host. Auf dem Host wurde nichts geändert.",
+      "bad_input": "Der Host hat nicht erhalten, was Home Assistant gesendet hat (mit sudo: Hat es mehr als sein Passwort gelesen?). Auf dem Host wurde nichts geändert.",
+      "temp_failed": "Auf dem Host gibt es keinen privaten temporären Ordner (mktemp). Auf dem Host wurde nichts geändert.",
+      "temp_noexec": "Aus dem temporären Ordner des Hosts darf nichts laufen (mit noexec eingehängt?): den Agenten auf dem Host von Hand mit `vordr-agent install` einrichten (deploy/README.de.md). Auf dem Host wurde nichts geändert.",
+      "ca_failed": "Das CA-Zertifikat der Leitstelle liess sich nicht auf den Host legen. Nichts wurde installiert.",
+      "ca_differs": "`{ca_path}` liegt schon auf dem Host und unterscheidet sich vom CA-Zertifikat dieser Leitstelle: dort vergleichen. Auf dem Host wurde nichts geändert.",
+      "download_failed": "Der Host konnte den Agenten nicht von der Leitstelle herunterladen (`{tool}`, Exit {exit}): Erreicht er die Leitstelle unter der Adresse, die Home Assistant verwendet? Nichts wurde installiert.",
+      "download_refused": "Die Leitstelle hat den Download abgelehnt (HTTP {http}, `{reason}`): noch einmal versuchen. Nichts wurde installiert.",
+      "download_too_large": "Die Leitstelle hat mehr geschickt als die signierte Grösse des Agenten (`{tool}`): Der Host hat den Download bei dieser Grösse angehalten und gelöscht. Nichts wurde installiert.",
+      "size_mismatch": "Der heruntergeladene Agent hat nicht die Grösse, die das signierte Manifest nennt: Er wurde nicht ausgeführt und ist gelöscht. Nichts wurde installiert.",
+      "hash_mismatch": "Der heruntergeladene Agent passt nicht zum SHA-256, den das signierte Manifest nennt: Er wurde nicht ausgeführt und ist gelöscht. Nichts wurde installiert.",
+      "ssh_lost": "Die Verbindung zum Host ist während der Installation abgebrochen. Sein Zustand ist unbekannt: Auf dem Host geben `systemctl status vordr-agent` und `vordr-agent identity` Auskunft.",
+      "ssh_timeout": "Die Installation ist nicht rechtzeitig zu Ende gegangen. Sein Zustand ist unbekannt: Auf dem Host geben `systemctl status vordr-agent` und `vordr-agent identity` Auskunft.",
+      "install_no_result": "Die Installation auf dem Host hat kein Ergebnis geliefert, das Home Assistant lesen kann. Sein Zustand ist unbekannt: Auf dem Host geben `systemctl status vordr-agent` und `vordr-agent identity` Auskunft.",
+      "agent_installed": "Der Agent {version} ist auf `{node}` installiert und wartet auf die Freigabe an der Leitstelle. Sein Fingerprint:\n\n`{fingerprint}`\n\nSobald die Leitstelle den Host aufführt, zeigt Home Assistant eine Reparatur mit dem Befehl, der ihn freigibt: den Fingerprint dort mit diesem vergleichen, dann den Befehl an der Leitstelle ausführen. Vom SSH-Zugang wurde nichts gespeichert.",
+      "agent_config_invalid": "`vordr-agent install` lehnt ab: Die agent.yaml für diese Werte hat Mängel; auf dem Host ausführen, um sie zu sehen. Auf dem Host wurde nichts geändert.",
+      "agent_config_differs": "`vordr-agent install` lehnt ab: Auf dem Host liegt schon eine /etc/vordr/agent.yaml, und sie weicht ab. Dort vergleichen; um sie zu ersetzen, `vordr-agent install` auf dem Host mit `--replace-config` und deinem Grund ausführen. Auf dem Host wurde nichts geändert.",
+      "agent_hub_unreachable": "`vordr-agent install` lehnt ab: Der Host erreicht die Leitstelle unter `{hub}` nicht (Stufe `{stage}`). Auf dem Host wurde nichts geändert.",
+      "agent_installer_refused": "`vordr-agent install` lehnt ab: Sein Installer hat etwas gefunden, das er nicht von sich aus ändert, z. B. eine Stellvertreter-Instanz, deren Richtlinie das neue Binary nicht annimmt; auf dem Host ausführen, um es zu sehen. Auf dem Host wurde nichts geändert.",
+      "agent_prepare_failed": "`vordr-agent install` konnte die Installation nicht vorbereiten (sein Binary, bash oder sein privater Ordner). Auf dem Host wurde nichts geändert.",
+      "agent_refused": "`vordr-agent install` lehnt mit `{code}` ab. Auf dem Host wurde nichts geändert.",
+      "agent_install_failed": "Die Installation ist fehlgeschlagen, nachdem sie begonnen hatte, den Host zu ändern. Dort prüfen: `systemctl status vordr-agent`, `journalctl -u vordr-agent`.",
+      "agent_identity_unreadable": "Der Agent ist installiert und gestartet, aber sein Fingerprint liess sich nicht lesen: Auf dem Host zeigt ihn `vordr-agent identity`.",
+      "agent_failed": "`vordr-agent install` ist mit `{code}` fehlgeschlagen, nachdem es begonnen hatte, den Host zu ändern. Dort prüfen: `systemctl status vordr-agent`.",
+      "agent_no_result": "Der Agent von der Leitstelle hat kein Ergebnis geliefert, das Home Assistant lesen kann (Exit {exit}). Ist das Release auf der Leitstelle älter als `vordr-agent install`? Sein Zustand ist unbekannt: Auf dem Host geben `systemctl status vordr-agent` und `vordr-agent identity` Auskunft."
+    }
+  },
   "device": {
-    "hub": { "name": "Vördr-Leitstelle" }
+    "hub": { "name": "Vördr-Leitstelle" },
+    "home_assistant": { "name": "Vördr Home Assistant" }
   },
   "entity": {
     "binary_sensor": {
@@ -259,7 +452,54 @@
           "packages": { "name": "Paketliste" },
           "seconds": { "name": "Dauer (s)" },
           "log_file": { "name": "Protokoll am Host" },
-          "outdated_services": { "name": "Dienste mit alten Bibliotheken" }
+          "outdated_services": { "name": "Dienste mit alten Bibliotheken" },
+          "ai_code": {
+            "name": "KI-Erklärung",
+            "state": {
+              "ok": "Erklärt",
+              "unverified": "Ungeprüft: das Zitat steht nicht im Log",
+              "invalid_answer": "Antwort nicht in der erwarteten Form",
+              "no_answer": "Keine Antwort",
+              "no_excerpt": "Kein Logauszug zum Erklären",
+              "unsupported": "Die Entität kann keine Daten erzeugen",
+              "entity_missing": "AI-Task-Entität fehlt oder ist nicht verfügbar",
+              "not_configured": "Einstellungen nicht gültig"
+            }
+          },
+          "ai_entity_id": { "name": "AI-Task-Entität" },
+          "ai_likely_cause": {
+            "name": "Wahrscheinliche Ursache (KI)",
+            "state": {
+              "package_conflict": "Paketkonflikt",
+              "package_source": "Paketquelle",
+              "disk_space": "Speicherplatz",
+              "package_lock": "Paketverwaltung belegt (Sperre)",
+              "network": "Netzwerk",
+              "configuration": "Konfiguration",
+              "service": "Dienst nach dem Update",
+              "credentials": "Anmeldung oder Berechtigung",
+              "interrupted": "Lauf unterbrochen",
+              "other": "Anderes",
+              "unknown": "Unbekannt"
+            }
+          },
+          "ai_next_steps": {
+            "name": "Nächste Schritte (KI)",
+            "state": {
+              "retry_later": "Später erneut versuchen",
+              "free_disk_space": "Speicherplatz freigeben",
+              "check_package_sources": "Paketquellen prüfen",
+              "repair_package_manager": "Zustand der Paketverwaltung reparieren",
+              "resolve_conflict_by_hand": "Konflikt von Hand lösen",
+              "check_service": "Dienst prüfen",
+              "check_configuration": "Konfiguration prüfen",
+              "check_credentials": "Anmeldung und Berechtigungen prüfen",
+              "check_network": "Netzwerk prüfen",
+              "read_run_log": "Laufprotokoll auf dem Host lesen"
+            }
+          },
+          "ai_explanation": { "name": "Erklärung (KI, ungeprüft)" },
+          "ai_quote": { "name": "Zitat aus dem Log" }
         }
       },
       "pending_updates": { "name": "Ausstehende Updates" },
@@ -281,6 +521,59 @@
           "approved": "Verbunden",
           "rejected": "Abgelehnt"
         }
+      },
+      "ha_updates_ready": {
+        "name": "Updates bereit",
+        "state_attributes": {
+          "ready": { "name": "Bereit: erlaubt, alt genug, im Fenster" },
+          "not_allowed": { "name": "In den Optionen nicht erlaubt" },
+          "outside_window": { "name": "Wartet auf das Fenster" },
+          "too_new": { "name": "Wartet auf das Mindestalter" },
+          "major": { "name": "Neue Hauptversion: von Hand" },
+          "last_failed": { "name": "Installation gescheitert: wartet auf eine neuere Version oder auf dich" },
+          "skipped": { "name": "In Home Assistant übersprungen" },
+          "self_updating": { "name": "Installiert seine Updates selbst" },
+          "in_progress": { "name": "Wird gerade installiert" },
+          "no_install": { "name": "Lässt sich nicht aus Home Assistant installieren" },
+          "min_age_days": { "name": "Mindestalter (Tage)" },
+          "min_age_days_firmware": { "name": "Mindestalter von Geräte-Firmware und Funkadapter (Tage)" },
+          "updates": { "name": "Updates" }
+        }
+      },
+      "ha_updates_last_run": {
+        "name": "Letzter Lauf",
+        "state": {
+          "backing_up": "Sichert",
+          "installing": "Installiert",
+          "verifying": "Prüft die Version",
+          "ok": "OK",
+          "failed": "Gescheitert",
+          "not_reached": "Version nicht erreicht",
+          "timeout": "Nicht rechtzeitig fertig",
+          "backup_failed": "Backup gescheitert: nichts installiert",
+          "skipped_paused": "Pausiert: nichts installiert",
+          "skipped_not_ready": "Nicht mehr bereit: nichts installiert"
+        },
+        "state_attributes": {
+          "installer": {
+            "name": "Installieren",
+            "state": { "off": "Aus (Optionen)", "paused": "Pausiert", "other_entry": "Aus: ein anderer Vördr-Eintrag installiert auch", "idle": "An, wartet", "running": "Läuft" }
+          },
+          "backup": {
+            "name": "Backup",
+            "state": { "entity": "Durch die Entität selbst", "existing": "Automatisches Backup von Home Assistant (vorhanden)", "created": "Automatisches Backup von Home Assistant (dafür erstellt)", "exempt": "Keines: Geräte-Firmware, die ein Backup von Home Assistant nicht zurückholen kann" }
+          },
+          "entity_id": { "name": "Update-Entität" },
+          "kind": { "name": "Art" },
+          "from_version": { "name": "Von Version" },
+          "to_version": { "name": "Auf Version" },
+          "installed_version": { "name": "Installierte Version" },
+          "reason": { "name": "Grund" },
+          "started": { "name": "Begonnen" },
+          "finished": { "name": "Beendet" },
+          "restarted": { "name": "Home Assistant neu gestartet" },
+          "queue": { "name": "Warteschlange" }
+        }
       }
     },
     "update": {
@@ -294,6 +587,9 @@
       "install_security": { "name": "Sicherheitsupdates installieren" },
       "reboot": { "name": "Neu starten" },
       "install_app": { "name": "{app} installieren" }
+    },
+    "switch": {
+      "ha_updates_paused": { "name": "Home-Assistant-Updates pausieren" }
     }
   },
   "exceptions": {
@@ -550,6 +846,77 @@
     "client_rejected": {
       "title": "Vördr: Die Leitstelle lehnt dieses Home Assistant ab",
       "description": "Die Leitstelle lehnt den Client {name} ab ({reason}). An der Leitstelle mit `vordr-hub clients` prüfen; Fingerprint dieses Clients: `{fingerprint}`."
+    },
+    "waiting_host": {
+      "title": "Vördr: Host {node} wartet auf Freigabe",
+      "description": "Ein Host möchte an der Leitstelle als {node} zugelassen werden (System `{os}`). Die Leitstelle hat seinen Schlüssel mit diesem Fingerprint gesehen:\n\n`{fingerprint}`\n\nFreigegeben wird nur an der Leitstelle. Wird dieser Host erwartet, auf dem Host selbst `vordr-agent identity` ausführen (für ein Gerät hinter einem Stellvertreter-Agenten mit dem `--config` seiner Instanz) und vergleichen. Nur wenn beide Fingerprints gleich sind, an der Leitstelle ausführen:\n\n`{command}`\n\nWeichen sie ab, nicht freigeben: Dann fragt ein anderer Schlüssel unter diesem Namen, und `vordr-hub reject {node}` hält ihn draussen. Dieser Hinweis verschwindet, sobald der Host freigegeben, abgelehnt oder vergessen ist."
+    },
+    "ha_update_failed": {
+      "title": "Vördr: Installation von {entity_id} gescheitert",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "{entity_id} jetzt erneut installieren?",
+            "description": "Die Installation von {entity_id} von {from_version} auf {to_version} durch Vördr ist am {at} gescheitert: Home Assistant oder die Integration der Entität hat sie abgelehnt oder einen Fehler gemeldet (siehe Log). Vördr versucht diese Version nicht von selbst wieder; eine neuere Version wird in ihrem Fenster versucht. Ist die Ursache behoben, hier bestätigen: Vördr installiert sofort, ausserhalb des Fensters, aber unter allen anderen Regeln, mit dem Backup davor, wo eines nötig ist; läuft gerade eine andere Installation oder hält eine Regel es auf, sagt es warum und installiert nichts. Von Hand installieren geht auch. Diese Reparatur verschwindet, sobald eine Installation durchläuft, und kommt wieder, wenn der nächste Versuch scheitert."
+          }
+        },
+        "abort": {
+          "no_longer_needed": "{entity_id} hat keine gescheiterte Installation mehr.",
+          "entry_not_loaded": "Die Vördr-Integration ist gerade nicht geladen. Bitte später noch einmal versuchen.",
+          "busy": "Gerade wird ein anderes Update installiert, oder Home Assistant macht ein Backup. Vördr installiert eines nach dem anderen und stellt nichts in eine Warteschlange: Bitte erneut versuchen, wenn es fertig ist.",
+          "paused": "Die Home-Assistant-Updates sind pausiert (Schalter „Home-Assistant-Updates pausieren“). Pause ausschalten, dann erneut versuchen.",
+          "auto_install_off": "Das Installieren von Home-Assistant-Updates ist in den Optionen von Vördr ausgeschaltet. „Automatisch installieren“ einschalten oder {entity_id} von Hand installieren.",
+          "other_entry": "Ein anderer Vördr-Eintrag installiert Home-Assistant-Updates ebenfalls, darum tut es keiner. In einem der beiden ausschalten, dann erneut versuchen.",
+          "backup_held": "Das letzte Backup von Home Assistant ist gescheitert, und {entity_id} braucht vor der Installation eines. Erneut versuchen, sobald Home Assistant ein neueres Backup zeigt.",
+          "not_ready": "Die Regeln von Vördr lassen {entity_id} gerade nicht durch, abgesehen vom Fenster: Der Sensor „Updates bereit“ sagt, warum."
+        }
+      }
+    },
+    "ha_update_not_reached": {
+      "title": "Vördr: {entity_id} hat {to_version} nicht erreicht",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "{entity_id} jetzt erneut installieren?",
+            "description": "Vördr hat {entity_id} von {from_version} auf {to_version} installiert, aber am {at} meldete die Entität {to_version} noch immer nicht. Vördr versucht diese Version nicht von selbst wieder; eine neuere Version wird in ihrem Fenster versucht. Ist die Ursache behoben, hier bestätigen: Vördr installiert sofort, ausserhalb des Fensters, aber unter allen anderen Regeln, mit dem Backup davor, wo eines nötig ist; läuft gerade eine andere Installation oder hält eine Regel es auf, sagt es warum und installiert nichts. Von Hand installieren geht auch. Diese Reparatur verschwindet, sobald eine Installation durchläuft, und kommt wieder, wenn der nächste Versuch scheitert."
+          }
+        },
+        "abort": {
+          "no_longer_needed": "{entity_id} hat keine gescheiterte Installation mehr.",
+          "entry_not_loaded": "Die Vördr-Integration ist gerade nicht geladen. Bitte später noch einmal versuchen.",
+          "busy": "Gerade wird ein anderes Update installiert, oder Home Assistant macht ein Backup. Vördr installiert eines nach dem anderen und stellt nichts in eine Warteschlange: Bitte erneut versuchen, wenn es fertig ist.",
+          "paused": "Die Home-Assistant-Updates sind pausiert (Schalter „Home-Assistant-Updates pausieren“). Pause ausschalten, dann erneut versuchen.",
+          "auto_install_off": "Das Installieren von Home-Assistant-Updates ist in den Optionen von Vördr ausgeschaltet. „Automatisch installieren“ einschalten oder {entity_id} von Hand installieren.",
+          "other_entry": "Ein anderer Vördr-Eintrag installiert Home-Assistant-Updates ebenfalls, darum tut es keiner. In einem der beiden ausschalten, dann erneut versuchen.",
+          "backup_held": "Das letzte Backup von Home Assistant ist gescheitert, und {entity_id} braucht vor der Installation eines. Erneut versuchen, sobald Home Assistant ein neueres Backup zeigt.",
+          "not_ready": "Die Regeln von Vördr lassen {entity_id} gerade nicht durch, abgesehen vom Fenster: Der Sensor „Updates bereit“ sagt, warum."
+        }
+      }
+    },
+    "ha_update_timeout": {
+      "title": "Vördr: Installation von {entity_id} nicht fertig geworden",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "{entity_id} jetzt erneut installieren?",
+            "description": "Die Installation von {entity_id} von {from_version} auf {to_version} durch Vördr ist nicht rechtzeitig fertig geworden; Vördr hat am {at} aufgehört zu warten. Vielleicht läuft sie noch: siehe die Entität. Vördr versucht diese Version nicht von selbst wieder; eine neuere Version wird in ihrem Fenster versucht. Ist die Ursache behoben, hier bestätigen: Vördr installiert sofort, ausserhalb des Fensters, aber unter allen anderen Regeln, mit dem Backup davor, wo eines nötig ist; läuft gerade eine andere Installation oder hält eine Regel es auf, sagt es warum und installiert nichts. Von Hand installieren geht auch. Diese Reparatur verschwindet, sobald eine Installation durchläuft, und kommt wieder, wenn der nächste Versuch scheitert."
+          }
+        },
+        "abort": {
+          "no_longer_needed": "{entity_id} hat keine gescheiterte Installation mehr.",
+          "entry_not_loaded": "Die Vördr-Integration ist gerade nicht geladen. Bitte später noch einmal versuchen.",
+          "busy": "Gerade wird ein anderes Update installiert, oder Home Assistant macht ein Backup. Vördr installiert eines nach dem anderen und stellt nichts in eine Warteschlange: Bitte erneut versuchen, wenn es fertig ist.",
+          "paused": "Die Home-Assistant-Updates sind pausiert (Schalter „Home-Assistant-Updates pausieren“). Pause ausschalten, dann erneut versuchen.",
+          "auto_install_off": "Das Installieren von Home-Assistant-Updates ist in den Optionen von Vördr ausgeschaltet. „Automatisch installieren“ einschalten oder {entity_id} von Hand installieren.",
+          "other_entry": "Ein anderer Vördr-Eintrag installiert Home-Assistant-Updates ebenfalls, darum tut es keiner. In einem der beiden ausschalten, dann erneut versuchen.",
+          "backup_held": "Das letzte Backup von Home Assistant ist gescheitert, und {entity_id} braucht vor der Installation eines. Erneut versuchen, sobald Home Assistant ein neueres Backup zeigt.",
+          "not_ready": "Die Regeln von Vördr lassen {entity_id} gerade nicht durch, abgesehen vom Fenster: Der Sensor „Updates bereit“ sagt, warum."
+        }
+      }
+    },
+    "ha_updates_backup_failed": {
+      "title": "Vördr: Backup von Home Assistant vor einem Update gescheitert",
+      "description": "Bevor Vördr ein Update installiert, das sich nicht selbst sichern kann, braucht es ein automatisches Backup von Home Assistant aus den letzten 26 Stunden. Am {at} gab es keins, und es liess sich keins erstellen (siehe Einstellungen, System, Backups, und das Log). Bis ein neueres automatisches Backup da ist, installiert Vördr nur Updates, die ihr eigenes Backup machen, und versucht nach 24 Stunden wieder, eins zu erstellen. Dieser Hinweis verschwindet, sobald Home Assistant ein neueres automatisches Backup hat."
     }
   },
   "common": {
@@ -633,6 +1000,32 @@
           "name": "Grund (ausserhalb des Fensters)",
           "description": "Freiwillig: warum jetzt, ausserhalb des Wartungsfensters des Hosts. Ohne Grund vermerkt die Leitstelle, dass es in Home Assistant gestartet wurde. Steht beim Lauf, im Agent-Log und im Ereignisprotokoll der Leitstelle."
         }
+      }
+    }
+  },
+  "selector": {
+    "ha_update_kind": {
+      "options": {
+        "core": "Home Assistant Core",
+        "os": "Home Assistant OS",
+        "supervisor": "Supervisor",
+        "app": "Apps (Add-ons)",
+        "hacs": "HACS",
+        "esphome": "ESPHome-Geräte",
+        "firmware": "Geräte-Firmware (Zigbee, Matter, Z-Wave, WLAN-Geräte und andere)",
+        "radio": "Firmware des Funkadapters (Zigbee, Thread)",
+        "other": "Andere"
+      }
+    },
+    "weekday": {
+      "options": {
+        "mon": "Montag",
+        "tue": "Dienstag",
+        "wed": "Mittwoch",
+        "thu": "Donnerstag",
+        "fri": "Freitag",
+        "sat": "Samstag",
+        "sun": "Sonntag"
       }
     }
   }

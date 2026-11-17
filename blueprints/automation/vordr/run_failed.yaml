@@ -1,0 +1,112 @@
+blueprint:
+  name: Vördr - notify about a failed run
+  description: >-
+    Sends a notification when a run of Vördr (install, reboot, agent update ...) ends with a result other than `ok`
+    (the event `vordr_run_finished`), with what it means and what to do, in the language you choose. It only notifies.
+  domain: automation
+  author: Vördr
+  homeassistant:
+    min_version: 2024.10.0
+  input:
+    notify_service:
+      name: Notify service
+      description: The notify action to call, for example `notify.mobile_app_<device>` or a notify group.
+      selector:
+        text:
+    language:
+      name: Language of the message
+      description: >-
+        The language of the text. Vördr sends it in every language it ships; a language it does not have falls back
+        to English.
+      default: en
+      selector:
+        select:
+          options:
+            - en
+            - de
+          custom_value: true
+    hosts:
+      name: Hosts
+      description: Only these hosts (devices of Vördr). Leave empty for every host.
+      default: []
+      selector:
+        device:
+          multiple: true
+          filter:
+            - integration: vordr
+    verbs:
+      name: Kinds of run
+      description: Only runs of these kinds. Leave empty for every kind.
+      default:
+        - install
+        - reboot
+        - agent_update
+      selector:
+        select:
+          multiple: true
+          custom_value: true
+          options:
+            - check
+            - install
+            - reboot
+            - agent_update
+            - backup
+    ignored_codes:
+      name: Results to ignore
+      description: >-
+        `ok` never notifies. `ok_reboot_required` (the install went through, a reboot is needed) is no failure and is
+        ignored by default; the reboot offer blueprint handles it.
+      default:
+        - ok_reboot_required
+      selector:
+        select:
+          multiple: true
+          custom_value: true
+          options:
+            - ok_reboot_required
+            - rejected_outside_window
+            - rejected_rate_limited
+            - rejected_busy
+            - rejected_not_idle
+
+# Runs end independently and a notification is instant; none waits.
+mode: queued
+max: 20
+
+triggers:
+  - trigger: event
+    event_type: vordr_run_finished
+
+variables:
+  notify_service: !input notify_service
+  language: !input language
+  hosts: !input hosts
+  verbs: !input verbs
+  ignored_codes: !input ignored_codes
+  node: "{{ trigger.event.data.node }}"
+  verb: "{{ trigger.event.data.verb }}"
+  state: "{{ trigger.event.data.state }}"
+  body: >-
+    {% set m = trigger.event.data.message or {} %}{{ m.get(language) or m.get('en') or state }}
+
+conditions:
+  - alias: A failure, not a success
+    condition: template
+    value_template: "{{ state != 'ok' and state not in ignored_codes }}"
+  - alias: Only the chosen kinds of run
+    condition: template
+    value_template: "{{ verbs | count == 0 or verb in verbs }}"
+  - alias: Only the chosen hosts
+    condition: template
+    value_template: >-
+      {% set ns = namespace(ok=hosts | count == 0) %}
+      {% for d in hosts %}{% if ('vordr', 'host:' ~ node) in (device_attr(d, 'identifiers') or []) %}{% set ns.ok = true %}{% endif %}{% endfor %}
+      {{ ns.ok }}
+
+actions:
+  - action: "{{ notify_service }}"
+    data:
+      title: "Vördr {{ node }}: {{ verb }} - {{ state }}"
+      message: "{{ body }}"
+      data:
+        tag: "vordr_run_{{ node }}"

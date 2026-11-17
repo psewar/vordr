@@ -23,6 +23,11 @@ erzeugter Schlüssel gehörte dem falschen Benutzer.
 
 Ein erneuertes Zertifikat lädt die Leitstelle beim nächsten Verbindungsaufbau selbst nach; kein Neustart nötig.
 
+Das Ereignisprotokoll `events.jsonl` wächst nur, solange `hub.yaml` keinen Abschnitt `event_log` hat (`hub.example.yaml`
+hat ihn): Dann beginnt die Leitstelle bei `max_size_mb` eine neue Datei und behält `keep` volle (`events.jsonl.1` …).
+Eine bestehende Leitstelle behält ihr ganzes Protokoll, bis der Abschnitt dazukommt; `check-config` sagt, was gilt. Was
+`events.jsonl` anderswohin kopiert, kopiert die nummerierten Dateien mit.
+
 Eine geänderte `hub.yaml` ersetzt `install-hub.sh` nur mit Begründung: `--replace-config "<grund>"`. Die alte Datei
 bleibt als `hub.yaml.bak-<zeit>` liegen, die Abweichung wird angezeigt und der Grund im Systemlog vermerkt.
 
@@ -37,15 +42,55 @@ vordr-hub clients                                        # wartende und freigege
 vordr-hub approve-client <name> --fingerprint <fp>       # nach Abgleich mit dem, was HA zeigt
 ```
 
+Der kurze Weg zu einem Agenten auf einem neuen Linux-Host (systemd, apt) beginnt dann in Home Assistant: Mit der Rolle
+`admin` (`vordr-hub client-role <name> --role admin`), einem signierten Agenten-Release auf der Leitstelle (unten,
+„Agent-Releases signieren“) und dem in den Optionen der Integration eingegebenen Betreiberschlüssel erreicht
+*Konfigurieren → Agent auf einem Linux-Host installieren (SSH)* den Host einmal über SSH, prüft das Release und führt
+dort `vordr-agent install` aus; vom SSH-Zugang wird nichts gespeichert ([ha/README.de.md](../ha/README.de.md),
+[ADR-0161](../docs/adr/0161-home-assistant-installs-the-agent-once-over-ssh-and-keeps-no-credentials.md)). Danach
+wartet der Host wie unten auf die Freigabe an der Leitstelle.
+
 ## Agent
+
+Der kurze Weg braucht nur die Binary für die Architektur des Hosts. Bevor sie als root läuft, ihren SHA-256 mit dem
+vergleichen, den das signierte Release nennt: `sha256sum vordr-agent-linux-<arch>` auf dem Host, und den `sha256` von
+`linux/<arch>` in `manifest.json` dieses Releases auf deinem Rechner (`release-<version>/manifest.json`, siehe
+„Agent-Releases signieren“). Eine Binary, die abweicht, ist nicht deine: nicht ausführen. Dann auf dem Host, als root:
+
+```bash
+sudo ./vordr-agent-linux-<arch> install --hub wss://hub.example.org:8443/v1/tunnel --hub-key "<vordr-hub key>" \
+  --operator-key "<vordr-release public-key>"     # optional: Selbst-Update mit Releases, die dieser Schlüssel signiert
+```
+
+`install` schreibt eine minimale `/etc/vordr/agent.yaml`: den Node (Vorgabe: der Hostname, sonst `--node <name>`),
+die Leitstelle und mit `--operator-key` (und `--backup-operator-key`) das Selbst-Update. Alles andere behält die
+strenge Vorgabe: Der Agent prüft und meldet, installiert aber keine Updates und startet nie neu, bis die `agent.yaml`
+auf dem Host das erlaubt (die Schlüssel stehen in `agent.example.yaml`). Für eine Leitstelle mit eigener CA: die CA
+dorthin legen, wo nur root sie ändern kann, z. B. `sudo install -D -m 0644 hub-ca.pem /etc/vordr/hub-ca.pem`, und
+`--ca-file /etc/vordr/hub-ca.pem` angeben; die Datei bleibt dort. Eine CA-Datei, die andere ändern oder entfernen
+könnten (in einem Home-Ordner, unter `/tmp`), wird mit `ca_file_unsafe` abgelehnt. Bevor `install` etwas ändert,
+prüft es root, systemd, apt, die erzeugte `agent.yaml` wie `check-config`, eine schon installierte `agent.yaml` (eine
+abweichende nur mit `--replace-config "<grund>"`) und ob dieser Host die Leitstelle erreicht. Dann installiert es mit
+`install-agent.sh`, das die Binary mitbringt
+([ADR-0169](../docs/adr/0169-the-linux-agent-installs-itself-from-one-binary-and-one-command.md)), aus einem privaten
+Ordner unter `/run` und mit einer festen Umgebung. Exit 0 installiert, 2 abgelehnt (nichts geändert), 1 gescheitert
+nach der ersten Änderung; die letzte Zeile sagt dasselbe für ein Programm, z. B.
+`result=installed node=web-01 fingerprint=<hex>` oder `result=refused code=hub_unreachable stage=tls`. Ctrl-C oder
+SIGTERM beenden es mit `code=interrupted`, als abgelehnt oder gescheitert, je nachdem, ob der Host schon verändert war.
+
+Mit einer eigenen `agent.yaml`, aus dem Repository:
 
 ```bash
 sudo deploy/install-agent.sh dist/vordr-agent-linux-<arch> agent.yaml
 ```
 
 `install-agent.sh` prüft vorher `check-config` und mit `vordr-agent hub-check`, ob dieser Host die Leitstelle erreicht:
-Namensauflösung, Verbindung, TLS-Kette, Tunnel, Challenge. Scheitert eine Stufe, wird nichts installiert. Zum Schluss
-gibt es den Freigabe-Befehl für die Leitstelle aus:
+Namensauflösung, Verbindung, TLS-Kette, Tunnel, Challenge, und ob die Leitstelle ihre Challenge mit `hub.public_key`
+aus der `agent.yaml` signiert. Scheitert eine Stufe, wird nichts installiert; ein falscher Hub-Schlüssel wird als solcher
+benannt, mit dem nächsten Schritt: den Schlüssel von `vordr-hub key` an der Leitstelle übernehmen. Eine ältere
+Leitstelle, die ihre Challenge nicht signiert, besteht, und `hub-check` sagt, dass der Schlüssel nicht geprüft ist,
+ausser dieser Host hat diese Leitstelle schon signieren sehen: dann wird sie als Downgrade abgelehnt (Design 6.2). Seine
+Exit-Codes sind die von `install`. Zum Schluss geben beide den Freigabe-Befehl für die Leitstelle aus:
 
 ```bash
 vordr-hub approve <node> --fingerprint <fp>              # an der Leitstelle, nach Abgleich mit dem Host
@@ -75,8 +120,8 @@ In einer PowerShell **als Administrator**:
 .\vordr-agent-windows-amd64.exe install-service --config .\agent.yaml
 ```
 
-`install-service` prüft zuerst `agent.yaml`, die Leitstelle und eine schon installierte `agent.yaml`; bis dahin ändert
-es nichts. Danach erledigt es alles Weitere in einem Schritt:
+`install-service` prüft zuerst `agent.yaml`, die Leitstelle und ihren Schlüssel (wie `install-agent.sh`) und eine schon
+installierte `agent.yaml`; bis dahin ändert es nichts. Danach erledigt es alles Weitere in einem Schritt:
 Binary nach `%ProgramFiles%\Vordr`, `agent.yaml` nach `%ProgramData%\vordr` (nur SYSTEM und Administratoren),
 PowerShell 7 und das PowerShell-Modul `Microsoft.WinGet.Client` für alle Benutzer, Dienst `vordr-agent` unter
 LocalSystem. PowerShell 7 braucht der Dienst, weil das Modul als LocalSystem nur dort läuft; die Store-Fassung im
@@ -85,6 +130,7 @@ Benutzerprofil zählt nicht, `install-service` installiert deshalb das MSI über
 `install-service --config .\agent.yaml --replace-config "<grund>"`. Die alte Datei bleibt als
 `agent.yaml.bak-<zeit>` liegen, die Abweichung wird angezeigt und der Grund im `agent.log` vermerkt. Scheitert ein
 Schritt, nachdem der Dienst angehalten ist, läuft er danach wieder mit der vorigen Binary und `agent.yaml` (Exit 3).
+Am Ende druckt es den Fingerabdruck dieses PCs und den Befehl, ihn an der Leitstelle freizugeben, wie `install-agent.sh`.
 Entfernen mit `vordr-agent uninstall-service`; Identität und `agent.yaml` bleiben.
 
 Selbst-Update (ADR-0084): Mit `agent_update` in `agent.yaml` (wie unter Linux) holt sich der Dienst neue Versionen

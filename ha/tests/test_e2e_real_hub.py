@@ -1,7 +1,8 @@
 """End to end with the real binaries: vordr-hub, a vordr-agent checking this machine, and the integration.
 
-Proves that Go and Python agree on the protocol (hello signature, fingerprints, messages) and that a button in
-Home Assistant ends as a signed job at the agent. Needs dist/vordr-hub-linux-amd64 and dist/vordr-agent-linux-amd64
+Proves that Go and Python agree on the protocol (hello signature, fingerprints, messages), that a button in
+Home Assistant ends as a signed job at the agent, and that the repair of a waiting host names the command the hub
+takes. Needs dist/vordr-hub-linux-amd64 and dist/vordr-agent-linux-amd64
 (./build.sh); skipped without them.
 """
 
@@ -15,6 +16,7 @@ import time
 from typing import Any
 
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import issue_registry as ir
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 import pytest_socket
@@ -68,8 +70,10 @@ class Stack:
             f"state_dir: {tmp / 'state'}\nadmin_socket: {self.sock}\nmax_pending: 5\n"
         )
         self.procs: list[subprocess.Popen[bytes]] = []
+        self.agent_config = tmp / "agent.yaml"
 
-    def start(self) -> None:
+    def start(self, approve: bool = True) -> None:
+        """Hub and agent; the agent is admitted at once unless approve is False, then it stays waiting."""
         self.procs.append(subprocess.Popen([HUB_BIN, "run", "--config", self.config], stderr=subprocess.DEVNULL))
         deadline = time.monotonic() + 10
         while not self.sock.exists():
@@ -78,7 +82,7 @@ class Stack:
             time.sleep(0.05)
         key = subprocess.run([HUB_BIN, "key", "--config", self.config], capture_output=True, text=True, check=True)
         pub = key.stdout.split()[1]  # "public_key <b64>\nfingerprint <hex>"
-        agent = self.tmp / "agent.yaml"
+        agent = self.agent_config
         agent.write_text(
             f"node: e2e-host\nstate_dir: {self.tmp / 'agent'}\nhub:\n  url: wss://127.0.0.1:{self.port}/v1/tunnel\n"
             f"  public_key: {pub}\n  ca_file: {self.tmp / 'tls.crt'}\n"
@@ -86,14 +90,26 @@ class Stack:
         self.procs.append(subprocess.Popen([AGENT_BIN, "run", "--config", agent], stderr=subprocess.DEVNULL))
         deadline = time.monotonic() + 20
         while True:
-            nodes = admin(self.sock, {"cmd": "list"}).get("nodes") or []
-            if nodes:
+            # The document for programs (ADR-0171), as an operator's script reads it.
+            status, doc = self.hub_json("list")
+            assert status == 0 and doc["format"] == 1 and doc["code"] == "ok", doc
+            if doc["nodes"]:
                 break
             if time.monotonic() > deadline:
                 raise TimeoutError("agent did not register")
             time.sleep(0.1)
-        resp = admin(self.sock, {"cmd": "approve", "node": "e2e-host", "fingerprint": nodes[0]["fingerprint"]})
-        assert resp["code"] == "ok", resp
+        waiting = doc["nodes"][0]
+        assert waiting["state"] == "pending_approval" and "view" not in waiting, waiting
+        if approve:
+            resp = admin(self.sock, {"cmd": "approve", "node": "e2e-host", "fingerprint": waiting["fingerprint"]})
+            assert resp["code"] == "ok", resp
+
+    def hub_json(self, *args: str) -> tuple[int, dict[str, Any]]:
+        """vordr-hub <args> --json: the exit status and the one JSON document on stdout."""
+        cli = subprocess.run(
+            [HUB_BIN, *args, "--json", "--config", self.config], capture_output=True, text=True, check=False
+        )
+        return cli.returncode, json.loads(cli.stdout)
 
     def stop(self) -> None:
         for proc in reversed(self.procs):
@@ -111,10 +127,18 @@ def stack(tmp_path: Path, socket_enabled: None) -> Stack:
     s.stop()
 
 
-async def test_real_hub_and_agent(hass: HomeAssistant, stack: Stack) -> None:
-    key = p.new_private_key()
-    fp = p.fingerprint(p.public_key(p.load_private_key(key)))
-    entry = MockConfigEntry(
+@pytest.fixture
+def waiting_stack(tmp_path: Path, socket_enabled: None) -> Stack:
+    """Like stack, but the agent stays waiting for approval."""
+    pytest_socket.socket_allow_hosts(["127.0.0.1"], allow_unix_socket=True)
+    s = Stack(tmp_path)
+    s.start(approve=False)
+    yield s
+    s.stop()
+
+
+def entry_for(stack: Stack, key: str) -> MockConfigEntry:
+    return MockConfigEntry(
         domain=DOMAIN,
         title="Vördr (e2e)",
         unique_id=f"127.0.0.1:{stack.port}",
@@ -125,6 +149,53 @@ async def test_real_hub_and_agent(hass: HomeAssistant, stack: Stack) -> None:
             CONF_PRIVATE_KEY: key,
         },
     )
+
+
+async def test_waiting_host_repair_names_the_real_command(hass: HomeAssistant, waiting_stack: Stack) -> None:
+    """ADR-0157 against the real hub and agent: the repair of the waiting host shows the agent's own fingerprint, as
+    `vordr-agent identity` prints it on the host, and its command, run as it stands at the hub, admits the host. The
+    repair then goes, and the host comes."""
+    stack = waiting_stack
+    key = p.new_private_key()
+    entry = entry_for(stack, key)
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await wait_until(lambda: hass.states.get("sensor.vordr_hub_connection").state == "pending_approval", 10)
+    fp = p.fingerprint(p.public_key(p.load_private_key(key)))
+    resp = await hass.async_add_executor_job(
+        admin, stack.sock, {"cmd": "approve-client", "client": "e2e-ha", "fingerprint": fp}
+    )
+    assert resp["code"] == "ok", resp
+    await wait_until(lambda: entry.runtime_data.connected, 10)
+
+    def repair() -> ir.IssueEntry | None:
+        return ir.async_get(hass).async_get_issue(DOMAIN, "waiting_e2e-host")
+
+    await wait_until(lambda: repair() is not None, 10)
+    names = repair().translation_placeholders
+    assert names["node"] == "e2e-host" and names["os"] not in ("", "?")
+    ident = await hass.async_add_executor_job(
+        lambda: subprocess.run(
+            [AGENT_BIN, "identity", "--config", stack.agent_config], capture_output=True, text=True, check=True
+        )
+    )
+    assert f"fingerprint {names['fingerprint']}\n" in ident.stdout, ident.stdout
+    argv = names["command"].split()
+    assert argv[:2] == ["vordr-hub", "approve"], argv
+    cli = await hass.async_add_executor_job(
+        lambda: subprocess.run([HUB_BIN, *argv[1:], "--config", stack.config], capture_output=True, text=True)
+    )
+    assert cli.returncode == 0, cli.stdout + cli.stderr
+    await wait_until(
+        lambda: repair() is None and hass.states.get("binary_sensor.vordr_e2e_host_online") is not None, 30
+    )
+    await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_real_hub_and_agent(hass: HomeAssistant, stack: Stack) -> None:
+    key = p.new_private_key()
+    fp = p.fingerprint(p.public_key(p.load_private_key(key)))
+    entry = entry_for(stack, key)
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await wait_until(lambda: hass.states.get("sensor.vordr_hub_connection").state == "pending_approval", 10)
@@ -181,6 +252,14 @@ async def test_real_hub_and_agent(hass: HomeAssistant, stack: Stack) -> None:
         describe=last_run,
     )
     assert run.attributes["job_id"]
+
+    # The hub's command line shows the host as Home Assistant got it; a host it does not know is a code, not text.
+    status, doc = await hass.async_add_executor_job(stack.hub_json, "show", "e2e-host")
+    host = doc["nodes"][0]
+    assert status == 0 and host["state"] == "approved" and host["fingerprint"], doc
+    assert host["view"]["last_run"]["job_id"] == run.attributes["job_id"], host["view"]
+    status, doc = await hass.async_add_executor_job(stack.hub_json, "show", "no-such-host")
+    assert (status, doc["code"], doc["nodes"]) == (1, "unknown_node", []), doc
 
     # Revoked at the hub: the integration shows it as a fact and raises a repair.
     await hass.async_add_executor_job(admin, stack.sock, {"cmd": "reject-client", "client": "e2e-ha"})

@@ -25,6 +25,10 @@ const (
 	StageTLS       ProbeStage = "tls"       // certificate not trusted (chain, name, ca_file)
 	StageWebSocket ProbeStage = "websocket" // TLS fine, but no vordr tunnel at that path
 	StageChallenge ProbeStage = "challenge" // tunnel opened, but no valid challenge: not a vordr hub
+	// StageHubKey: the hub signs its challenge, but not with hub.public_key over this connection, or it does not sign
+	// although state_dir remembers that it did (ADR-0170). A hub that does not sign and never did passes, with HubKey
+	// unsigned.
+	StageHubKey ProbeStage = "hub_key"
 )
 
 // ProbeResult: Failed is empty when every stage passed. Detail is for humans only.
@@ -33,9 +37,12 @@ type ProbeResult struct {
 	Detail    string     `json:"detail,omitempty"`
 	Addresses []string   `json:"addresses,omitempty"`
 	Chain     []string   `json:"chain,omitempty"` // subjects of the verified chain, leaf first
+	// HubKey: what the challenge says about hub.public_key, once the challenge stage passed (ADR-0170).
+	HubKey wire.HubKeyCheck `json:"hub_key,omitempty"`
 }
 
-// Probe checks whether this host can reach its hub, stage by stage, without logging in.
+// Probe checks whether this host can reach its hub, stage by stage, without logging in. The last stage checks
+// hub.public_key against the hub's signature on its challenge.
 func Probe(ctx context.Context, cfg policy.Config) ProbeResult {
 	var r ProbeResult
 	fail := func(s ProbeStage, err error) ProbeResult {
@@ -80,8 +87,9 @@ func Probe(ctx context.Context, cfg policy.Config) ProbeResult {
 	}
 	tc.Close()
 
+	nonce, header := wire.NewChallengeNonce()
 	tlsCfg, _ = TLSConfig(cfg.Hub.CAFile)
-	ws, _, err := (&websocket.Dialer{TLSClientConfig: tlsCfg, HandshakeTimeout: 15 * time.Second}).DialContext(ctx, cfg.Hub.URL, nil)
+	ws, _, err := (&websocket.Dialer{TLSClientConfig: tlsCfg, HandshakeTimeout: 15 * time.Second}).DialContext(ctx, cfg.Hub.URL, header)
 	if err != nil {
 		return fail(StageWebSocket, err)
 	}
@@ -91,6 +99,17 @@ func Probe(ctx context.Context, cfg policy.Config) ProbeResult {
 	var ch wire.Challenge
 	if err != nil || t != wire.TChallenge || json.Unmarshal(raw, &ch) != nil || len(ch.Nonce) != wire.NonceSize {
 		return fail(StageChallenge, err)
+	}
+	// What state_dir remembers counts here as at login, so that hub-check finds a downgrade too. Read only: hub-check
+	// changes nothing, the record is written by the agent's own login.
+	rec := readHubSigned(cfg)
+	if r.HubKey = judgeHubKey(ch.CheckHubKey(nonce, cfg.HubKey()), rec); r.HubKey.Refused() {
+		_ = c.CloseWith(r.HubKey.CloseCode()) // the hub logs the refusal, as at login
+		r.Failed = StageHubKey
+		if r.HubKey == wire.HubKeyDowngrade {
+			r.Detail = hubSignedNote(cfg, rec)
+		}
+		return r
 	}
 	return r
 }

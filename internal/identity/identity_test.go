@@ -49,6 +49,22 @@ func TestLoadAtNeverCreates(t *testing.T) {
 	}
 }
 
+// Load finds the agent's key in its state folder, the one LoadOrCreate made, and never makes one itself.
+func TestLoadNeverCreates(t *testing.T) {
+	dir := t.TempDir()
+	if id, found, err := Load(dir); id != nil || found || err != nil {
+		t.Fatalf("empty folder: %v %v %v", id, found, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, keyFile)); err == nil {
+		t.Fatal("Load created a key")
+	}
+	created, _, _ := LoadOrCreate(dir)
+	loaded, found, err := Load(dir)
+	if !found || err != nil || loaded.Fingerprint() != created.Fingerprint() {
+		t.Fatalf("existing key: %v %v", found, err)
+	}
+}
+
 func TestLoadRejectsDamagedKey(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, keyFile), []byte("short"), 0o600); err != nil {

@@ -89,6 +89,7 @@ type Client struct {
 	update      *updateMarker             // a self-update to confirm or report (settleUpdate)
 	confirmed   chan struct{}             // closed when this agent, freshly installed, reached an approved session
 	features    []string                  // what the hub of the current session announced (wire.Feature*)
+	hubKey      wire.HubKeyCheck          // what the last challenge said about hub.public_key (ADR-0170)
 	running     map[string]bool           // jobs being carried out now, named in the hello (ADR-0114)
 	rebooting   bool                      // this agent asked for the host's reboot; it reports the reboot after the boot
 	unsent      map[string]wire.JobStatus // final statuses without a journal that no session took (answer)
@@ -133,6 +134,18 @@ func (c *Client) Run(ctx context.Context) {
 		end := c.session(ctx)
 		wait := backoff
 		switch {
+		case end.hubKey == wire.HubKeyMismatch:
+			// Not the hub whose key agent.yaml pins: nothing about this host goes to it (ADR-0170). Its jobs would be
+			// refused anyway; a changed hub key needs agent.yaml changed, so asking often changes nothing.
+			c.Log.Printf("hub_key %s: the hub at %s does not sign its challenge with hub.public_key - not logging in, "+
+				"asking again in %s", end.hubKey, c.Cfg.Hub.URL, refusedRetry)
+			wait = refusedRetry
+		case end.hubKey == wire.HubKeyDowngrade:
+			// The hub at this URL signed before and does not now: whoever answers may have left the signature out.
+			c.Log.Printf("hub_key %s: the hub at %s does not sign its challenge, but did before - not logging in, "+
+				"asking again in %s: %s", end.hubKey, c.Cfg.Hub.URL, refusedRetry,
+				hubSignedNote(c.Cfg, readHubSigned(c.Cfg)))
+			wait = refusedRetry
 		case end.refused != wire.ReasonNone:
 			c.Log.Printf("hub refused this agent: %s - asking again in %s", end.refused, refusedRetry)
 			wait = refusedRetry
@@ -154,6 +167,7 @@ func (c *Client) Run(ctx context.Context) {
 type sessionEnd struct {
 	established bool              // the hub accepted the hello (pending or approved)
 	refused     wire.StatusReason // the hub refused the hello
+	hubKey      wire.HubKeyCheck  // HubKeyMismatch or HubKeyDowngrade: the agent did not log in (ADR-0170)
 	err         error
 }
 
@@ -162,8 +176,10 @@ func (c *Client) session(ctx context.Context) sessionEnd {
 	if err != nil {
 		return sessionEnd{err: err}
 	}
+	// The agent's own nonce, which the hub signs with its challenge (ADR-0170).
+	nonce, header := wire.NewChallengeNonce()
 	dialer := websocket.Dialer{TLSClientConfig: tlsCfg, HandshakeTimeout: 15 * time.Second}
-	ws, _, err := dialer.DialContext(ctx, c.Cfg.Hub.URL, nil)
+	ws, _, err := dialer.DialContext(ctx, c.Cfg.Hub.URL, header)
 	if err != nil {
 		return sessionEnd{err: err}
 	}
@@ -172,14 +188,17 @@ func (c *Client) session(ctx context.Context) sessionEnd {
 	defer cancel()
 	go func() { <-sctx.Done(); conn.Close() }()
 
-	status, err := c.login(conn)
-	if err != nil {
+	status, hubKey, err := c.login(conn, nonce)
+	switch {
+	case err != nil:
 		return sessionEnd{err: err}
-	}
-	if status.State == wire.StateRejected {
+	case hubKey.Refused():
+		return sessionEnd{hubKey: hubKey}
+	case status.State == wire.StateRejected:
 		return sessionEnd{refused: status.Reason}
 	}
-	c.Log.Printf("hub: %s (fingerprint %s)", status.State, status.Fingerprint)
+	// unsigned: a hub before ADR-0170, which the agent works with as before; its jobs are checked as always.
+	c.Log.Printf("hub: %s (fingerprint %s, hub_key %s)", status.State, status.Fingerprint, hubKey)
 	c.setFeatures(status.Features)
 	approved := status.State == wire.StateApproved
 	defer c.setSender(nil)
@@ -275,14 +294,34 @@ func receive(ctx context.Context, conn *wire.Conn, out chan<- received) {
 	}
 }
 
-func (c *Client) login(conn *wire.Conn) (wire.Status, error) {
+// login answers the challenge with the hello and returns the hub's status. Before anything about this host goes out it
+// checks the challenge's signature against hub.public_key and what state_dir remembers of this hub (ADR-0170): with
+// HubKeyMismatch or HubKeyDowngrade it sends nothing but the close code of the refusal and returns no status. The first
+// matches is remembered.
+func (c *Client) login(conn *wire.Conn, agentNonce []byte) (wire.Status, wire.HubKeyCheck, error) {
 	t, raw, err := conn.Receive(wire.HelloTimeout)
 	if err != nil {
-		return wire.Status{}, err
+		return wire.Status{}, "", err
 	}
 	var ch wire.Challenge
 	if t != wire.TChallenge || json.Unmarshal(raw, &ch) != nil || len(ch.Nonce) != wire.NonceSize {
-		return wire.Status{}, errors.New("no valid challenge from the hub")
+		return wire.Status{}, "", errors.New("no valid challenge from the hub")
+	}
+	rec := readHubSigned(c.Cfg)
+	hubKey := judgeHubKey(ch.CheckHubKey(agentNonce, c.Cfg.HubKey()), rec)
+	c.stateMu.Lock()
+	c.hubKey = hubKey
+	c.stateMu.Unlock()
+	if hubKey.Refused() {
+		// Said as a fixed close code, so that the hub logs the refusal instead of a connection that just ended.
+		_ = conn.CloseWith(hubKey.CloseCode())
+		return wire.Status{}, hubKey, nil
+	}
+	if hubKey == wire.HubKeyMatches && rec != HubSignedSeen {
+		// From now on an unsigned challenge from this hub is a downgrade. Not kept: the next login tries again.
+		if err := rememberHubSigned(c.Cfg, c.Now()); err != nil {
+			c.Log.Printf("hub_key: the hub signs, but %s could not be written: %v", hubSignedPath(c.Cfg.StateDir), err)
+		}
 	}
 	pub := c.ID.Public()
 	hello := wire.Hello{T: wire.THello, Node: c.Cfg.Node, PublicKey: pub,
@@ -294,17 +333,24 @@ func (c *Client) login(conn *wire.Conn) (wire.Status, error) {
 		hello.Runs = &runs
 	}
 	if err := conn.Send(hello); err != nil {
-		return wire.Status{}, err
+		return wire.Status{}, hubKey, err
 	}
 	t, raw, err = conn.Receive(wire.HelloTimeout)
 	if err != nil {
-		return wire.Status{}, err
+		return wire.Status{}, hubKey, err
 	}
 	var st wire.Status
 	if t != wire.TStatus || json.Unmarshal(raw, &st) != nil {
-		return wire.Status{}, errors.New("no status after hello")
+		return wire.Status{}, hubKey, errors.New("no status after hello")
 	}
-	return st, nil
+	return st, hubKey, nil
+}
+
+// hubKeyState: what the challenge of the last connection said about hub.public_key; "" before the first.
+func (c *Client) hubKeyState() wire.HubKeyCheck {
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+	return c.hubKey
 }
 
 func (c *Client) heartbeats(ctx context.Context, conn *wire.Conn) {

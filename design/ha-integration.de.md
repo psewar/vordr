@@ -4,7 +4,8 @@
 
 > **Stand:** Gebaut (Abschnitt 10). Home Assistant spricht nur noch über die Integration mit der Leitstelle; MQTT gibt
 > es seit Leitstelle 0.6 nicht mehr ([ADR-0026](../docs/adr/0026-remove-mqtt.md)). Einzelheiten aus dem Bau stehen in
-> den Abschnitten 5a, 6a und 6b. Ergänzt [architecture.de.md](architecture.de.md), Abschnitt 8 (HA-Entitäten). Technische
+> den Abschnitten 5a, 6a und 6b; die Updates von Home Assistant selbst unter den Regeln von Vördr, geplant und,
+> sobald eingeschaltet, installiert, in 6c. Ergänzt [architecture.de.md](architecture.de.md), Abschnitt 8 (HA-Entitäten). Technische
 > Namen englisch, Anzeigenamen über die Übersetzungen der Integration (de/en, folgen der Systemsprache von HA).
 
 ## 1. Anlass
@@ -48,15 +49,22 @@ Leitstelle braucht keinen Weg zu HA. MQTT ist ganz entfallen (Abschnitt 8).
 
 ## 4. Vertrauen und Rechte
 
-- Die Integration erzeugt beim Einrichten ein eigenes Ed25519-Schlüsselpaar (gespeichert im Config-Entry).
+- Die Integration erzeugt beim Einrichten ein eigenes Ed25519-Schlüsselpaar (gespeichert im Config-Entry). Bis der
+  Entry besteht, wartet der Schlüssel in der Speicherdatei `vordr.pending_keys` der Integration (Modus 0600), je
+  Leitstelle und Name des Clients: Erneutes Einrichten nach Zeitablauf, geschlossenem Dialog oder Neustart nimmt
+  denselben Schlüssel und setzt so die Anfrage fort, die die Leitstelle behält; der Entry übernimmt den Schlüssel, und
+  die Datei vergisst diese Leitstelle
+  ([ADR-0156](../docs/adr/0156-the-config-flow-keeps-its-key-until-the-client-is-set-up.md)).
 - Freigegeben wird sie **nur an der Leitstelle**, wie ein Host: `vordr-hub clients` zeigt wartende Clients,
   `vordr-hub approve-client <name> --fingerprint <fp>` gibt frei, `reject-client` / `forget-client` widerrufen.
   Der Config-Flow zeigt Fingerprint und Befehl und wartet, bis die Freigabe da ist.
 - Ein freigegebener HA-Client darf:
   - den Zustand aller freigegebenen Hosts und die Liste wartender Hosts (Name, Fingerprint, OS) lesen,
   - Befehle aus der festen Liste anfragen (`check`, `install`, `install_security`, `install_app:<id>`, `reboot`,
-    `agent_update`); die Leitstelle prüft sie wie heute gegen Verben und Richtlinie des Hosts und signiert erst dann.
-- Er darf nicht: Hosts freigeben, ablehnen oder vergessen, Richtlinien ändern, selbst signieren, andere Clients sehen.
+    `agent_update`); die Leitstelle prüft sie wie heute gegen Verben und Richtlinie des Hosts und signiert erst dann,
+  - mit Rolle `admin`: die signierte Agent-Release holen, um einen neuen Host einzurichten (`agent_download`, 5b).
+- Er darf nicht: Hosts freigeben, ablehnen oder vergessen, Richtlinien ändern, selbst signieren, andere Clients sehen,
+  den Betreiberschlüssel von der Leitstelle beziehen (er hat ihn von der Person, die ihn einrichtet, 5b).
 - Mehrere HA-Clients sind möglich (z. B. ein Test-HA), jeder einzeln freigegeben und widerrufbar.
 
 Änderung am Bedrohungsmodell (architecture.de.md, 5): Ein übernommenes HA kann wie bisher nur erlaubte Aufträge anstossen.
@@ -70,12 +78,14 @@ JSON-Nachrichten über WebSocket, wie der Agenten-Tunnel; `protocol: 1` im Hello
 |---|---|---|
 | Hub → HA | `challenge` | Nonce |
 | HA → Hub | `hello` | `role: "ha"`, Name, öffentlicher Schlüssel, Signatur (Kontext `vordr/ha-hello/v1`), Integrationsversion, `protocol` |
-| Hub → HA | `status` | `pending_approval` / `approved` / `rejected` mit Grund; erneut bei Änderung |
+| Hub → HA | `status` | `pending_approval` / `approved` / `rejected` mit Grund; erneut bei Änderung; `features`: was die Leitstelle über das Grundprotokoll hinaus annimmt (`agent_download`) |
 | Hub → HA | `snapshot` | Leitstelle (Version, `protocol`, wartende Hosts) und alle Hosts als `HostView`; nach jeder Freigabe und jedem Verbindungsaufbau |
 | Hub → HA | `host` / `host_removed` | ein `HostView` bei jeder Änderung / Host vergessen oder abgelehnt |
 | Hub → HA | `hub` | Leitstellen-Zustand bei Änderung (wartende Hosts) |
 | HA → Hub | `command` | `request_id`, `node`, `command`; `reason` für einen Lauf ausserhalb des Fensters (architecture.de.md 6.4) |
 | Hub → HA | `command_result` | `request_id`, `code` (`ok` = Auftrag signiert und gesendet, wartet auf den laufenden Lauf, oder ist dieser Lauf schon, dann mit dessen `job_id`; sonst fester Grund wie `verb_unsupported_by_agent`, `not_allowed_by_host_policy`, `not_connected`), `job_id`; das Ergebnis des Laufs kommt später im `HostView` (`last_run`) |
+| HA → Hub | `agent_download` | `request_id`, wahlweise `os` und `arch` eines neuen Hosts (5b); nur an eine Leitstelle, deren `status` `agent_download` nannte |
+| Hub → HA | `agent_download_result` | `request_id`, `code`; mit `ok` das signierte Manifest, seine Signatur, der Schlüssel der Leitstelle und je Binary ein Download-Pfad (5b) |
 | beide | `heartbeat` | alle 30 s; 90 s Stille = Verbindung tot |
 
 `HostView` ist die transportneutrale Fassung des früheren MQTT-Zustands: Gerät (Name, Modell, Agent-Version),
@@ -123,15 +133,81 @@ Reparaturhinweis („Leitstelle zu alt/zu neu“) statt halb zu funktionieren.
   Knopf, wenn Sicherheit schon der Standardumfang der update-Entität ist. Ein Test prüft das für alle 96
   Kombinationen aus Verben und Richtlinien.
 
+### 5b. Die Agent-Release für einen neuen Host
+
+In der Leitstelle gebaut; die Integration sendet die Anfrage noch nicht
+([ADR-0167](../docs/adr/0167-home-assistant-gets-one-time-downloads-of-the-signed-agent-release.md)). Gedacht ist sie
+für das Einrichten eines Hosts aus Home Assistant: Home Assistant erreicht das neue Gerät einmal per SSH, holt dort den
+Agenten und ruft `vordr-agent install` auf. Die Leitstelle hat mit SSH nichts zu tun und sieht die Zugangsdaten des
+Geräts nie.
+
+- **Anfrage:** `agent_download` mit `request_id` (wie bei `command`; eine ungültige beendet die Verbindung) und
+  wahlweise `os` und `arch`, wie das Manifest die Plattform nennt (`linux`/`amd64`, `arm64`, `arm`;
+  `windows`/`amd64`), beide oder keins. Keins: jedes Binary der Release. Nur an eine Leitstelle, deren `status`
+  `agent_download` in `features` trägt; eine ältere beendet die Verbindung bei einer Nachricht, die sie nicht kennt.
+- **Antwort** mit `ok` (andere Codes tragen nur `request_id` und `code`):
+
+  ```json
+  {"t": "agent_download_result", "request_id": "add-1", "code": "ok", "version": "1.4.0",
+   "manifest": "<base64 von manifest.json>", "manifest_sig": "<base64 von manifest.sig>", "hub_key": "<base64>",
+   "expires_at": "2030-01-01T12:15:00Z",
+   "downloads": [{"file": "vordr-agent-linux-arm64",
+                  "path": "/v1/agent-download/vordr-agent-linux-arm64?token=<hex>"}]}
+  ```
+
+  `manifest` und `manifest_sig` sind genau die Bytes, die der Betreiber signiert hat. `hub_key` ist der öffentliche
+  Schlüssel der Leitstelle, der jeden Auftrag signiert, in der Form von `hub.public_key` in `agent.yaml` und von
+  `--hub-key`. Jeder Pfad öffnet seine Datei einmal, bis `expires_at` (15 Minuten).
+- **Codes:** `ok`, `client_not_approved` (und die Leitstelle beendet die Verbindung), `role_forbids` (nur Rolle
+  `admin`), `bad_request` (nur eins von `os`/`arch`, oder nicht `[a-z0-9]{1,16}`), `no_release`,
+  `no_binary_for_platform`, `release_incomplete` (ein Binary des Manifests fehlt auf der Leitstelle, hat eine andere
+  Grösse oder andere Bytes als sein Hash), `too_many_downloads` (8 Pfade bestehen, oder 4 dieses Clients; ein Pfad
+  zählt, bis er abläuft, benutzt oder nicht).
+- **Was die Integration mit der Antwort tut**, bevor etwas den neuen Host erreicht:
+  1. Sie prüft `manifest_sig` über `vordr/agent-manifest/v1`, ein Null-Byte und `manifest` mit dem Betreiberschlüssel
+     (und dem Ersatzschlüssel), den die Person eingegeben hat. Nie mit einem Schlüssel der Leitstelle: Die sendet
+     keinen. Ohne einen solchen Schlüssel keine Installation.
+  2. Plattform, `sha256` und `size` liest sie nur aus dem geprüften Manifest; aus `downloads` nimmt sie nur den `path`
+     dieser `file`.
+  3. Auf dem neuen Host holt sie die Adresse der Leitstelle (Schema `https`, Host und Port ihrer `wss://`-Adresse),
+     gefolgt von `path`, einmal, vergleicht Grösse und SHA-256, bevor das Binary läuft, und ruft dann
+     `vordr-agent install --hub wss://<host>:<port>/v1/tunnel --hub-key <hub_key> --operator-key <Schlüssel der Person>`
+     auf.
+  4. Die Pfade hält sie aus Logs, Diagnose und Config-Entry heraus: Jeder trägt sein Token.
+- **Download** `GET /v1/agent-download/<file>?token=<hex>`: das Binary als `application/octet-stream` mit seiner
+  Länge. Jede Ablehnung hat einen festen Status und ihren Code als Inhalt und lässt das Token, wie es war:
+
+  | Code | Status | Wann |
+  |---|---|---|
+  | `bad_method` | 405 | kein GET |
+  | `unknown_token` | 403 | kein Token, ein ungültiges oder unbekanntes, oder eines, das vor über einer Stunde ablief |
+  | `token_expired` | 410 | die 15 Minuten sind vorbei |
+  | `token_used` | 409 | sein Download hat schon begonnen |
+  | `wrong_file` | 404 | das Token öffnet eine andere Datei |
+  | `client_revoked` | 403 | der Client, für den der Pfad ausgestellt wurde, ist nicht mehr mit diesem Schlüssel und Rolle `admin` freigegeben |
+  | `release_changed` | 410 | die aktuelle Release nennt die Datei nicht mehr mit dem Hash, für den das Token ausgestellt wurde |
+  | `binary_unreadable` | 500 | die Datei auf der Leitstelle ist nicht lesbar oder hat eine andere Grösse |
+  | `binary_mismatch` | 500 | die Datei auf der Leitstelle hat andere Bytes als der Hash im Manifest |
+
+  Bei `token_used` oder `release_changed` fragt Home Assistant neu; ein abgebrochener Download, oder einer, der
+  abgeschnitten wurde, weil er langsamer als 64 KiB/s las, hat sein Token verbraucht.
+- **Ereignisprotokoll:** `agent_download_issued`, `agent_downloaded`, `agent_download_refused`, mit `download_id`
+  statt des Tokens (architecture.de.md 10.4).
+
 ## 6. Die Integration `custom_components/vordr`
 
 - **Config-Flow:** Adresse (z. B. `wss://vordr-hub.example:8443/v1/ha`), optional eigenes CA-Zertifikat (PEM),
-  Name des Clients. Erzeugt den Schlüssel, zeigt Fingerprint und Freigabe-Befehl, wartet als Fortschrittsschritt.
-  Prüft vorher selbst die Erreichbarkeit (gleiche Stufen wie `vordr-agent hub-check`) und nennt die scheiternde Stufe.
+  Name des Clients. Erzeugt den Schlüssel, zeigt Fingerprint und Freigabe-Befehl, wartet als Fortschrittsschritt
+  (höchstens eine Stunde). Prüft vorher selbst die Erreichbarkeit (die Stufen von `vordr-agent hub-check` bis zur
+  Challenge; den Hub-Schlüssel kennt sie nicht, eine Stufe `hub_key` gibt es darum nicht) und nennt die scheiternde
+  Stufe. Ein späterer Versuch für dieselbe Leitstelle und denselben Namen nimmt den behaltenen Schlüssel (Abschnitt 4).
+  Eine Ablehnung nennt den Client und den Fingerprint dieses Home Assistant; `key_mismatch` nennt dazu
+  `vordr-hub forget-client <name>` als Ausweg, für einen Namen, der keinem anderen Home Assistant gehört.
 - **Verbindung:** ein Hintergrund-Task je Config-Entry, Backoff 1–30 s, Push statt Polling
   (`DataUpdateCoordinator` ohne Intervall, `async_set_updated_data`). Ohne Verbindung sind alle Entitäten nicht
   verfügbar.
-- **Geräte:** Hub-Gerät „Vördr-Leitstelle“, je Host „Vördr <node>“ mit `via_device` auf das Hub-Gerät.
+- **Geräte:** Hub-Gerät „Vördr-Leitstelle“, je Host „Vördr <node>“ mit `via_device` auf das Hub-Gerät; „Vördr Home
+  Assistant“ für die Updates von Home Assistant selbst (6c), ohne `via_device`, weil es die Leitstelle nicht braucht.
 - **Entitäten** (gleiche Bedeutung wie architecture.de.md 8.1/8.2, jetzt nativ):
 
 | Entität | Plattform | Neu gegenüber MQTT |
@@ -152,7 +228,9 @@ Reparaturhinweis („Leitstelle zu alt/zu neu“) statt halb zu funktionieren.
   verschwindet, sobald das Problem weg ist.
 - **Diagnose-Download:** Verbindung, Versionen, Hostliste – ohne Schlüssel.
 - **Übersetzungen:** en und de für Config-Flow, Entitäten und Hinweise.
-- **Abhängigkeiten:** nur, was HA mitbringt (`aiohttp` für den WebSocket, `cryptography` für Ed25519).
+- **Abhängigkeiten:** was HA mitbringt (`aiohttp` für den WebSocket, `cryptography` für Ed25519), und `asyncssh` für
+  das Installieren des Agenten über SSH (6d), als Bereich (`>=2.24.0,<3`), der die Version enthält, die HA für seine
+  eigene Integration `sftp_storage` festlegt. Nur der Installationspunkt importiert es; alles andere lädt ohne.
 
 ### 6a. Festgelegt im Bau von H2
 
@@ -189,12 +267,30 @@ Reparaturhinweis („Leitstelle zu alt/zu neu“) statt halb zu funktionieren.
     wieder, bleibt beides;
   - besteht das Problem nur aus dem festgehaltenen Install, entfällt dafür `problem_<node>` (Problem-Sensor und
     `vordr_problem` bleiben); ohne angebotenen Install bleibt `problem_<node>` wie bisher.
+- **Wartender Host als Reparaturhinweis** `waiting_<node>`, solange die Leitstelle den Host als wartend auf Freigabe
+  führt ([ADR-0157](../docs/adr/0157-a-waiting-host-is-a-repair-that-names-the-approval-command.md)):
+  - nicht behebbar, eine Warnung: Freigegeben wird nur an der Leitstelle (Abschnitt 4); ein neuer Host ist eine
+    Nachricht, kein Alarm;
+  - der Text nennt den Knoten, das System, das der Host meldet, den Fingerprint, den die Leitstelle gesehen hat, und
+    `vordr-hub approve <node> --fingerprint <fp>`, und verlangt zuerst den Vergleich mit `vordr-agent identity` auf dem
+    Host selbst; weichen sie ab, nicht freigeben (`vordr-hub reject <node>`);
+  - er folgt der eigenen Sicht der Leitstelle (Snapshot und `hub`): weg, sobald der Host freigegeben, abgelehnt oder
+    vergessen ist;
+  - nur für einen Knoten, der ein Host-Name ist, und einen Fingerprint aus 64 Hex-Ziffern; das System ist das eigene
+    Wort des Hosts und erscheint als eine Zeile Code, höchstens 64 Zeichen, ohne Backticks.
+    `sensor.vordr_hub_pending_approvals` führt weiterhin jeden wartenden Host so, wie die Leitstelle ihn geschickt hat.
 - **Knöpfe** heben eine Ablehnung der Leitstelle als Fehler ins UI; die Dialoge der Reparaturhinweise für Neustart
   und erneutes Installieren enden mit demselben Text. Ein Code, den die Integration kennt, sagt den Grund:
   `role_forbids`, `outside_window`, `rate_limited` mit der Uhrzeit aus `HostView.next_install`, die Backup-Prüfung mit
   dem, was fehlt. Jeder andere nennt seinen Code (`command_refused`). Ein Dialog sagt den Grund nur für die Codes, die
   die Leitstelle für seinen Befehl schicken kann, der Neustart nur für `role_forbids`. Die update-Entität hat `INSTALL`
   nur mit der Fähigkeit `install`.
+- **Bekannte Ausnutzung** ([ADR-0168](../docs/adr/0168-known-exploitation-comes-from-the-kev-catalog-fetched-whole-at-the-hub.md)):
+  Die KEV-Felder jedes Funds (`known_exploited`, `kev_cves`, `kev_added`, `kev_ransomware`) gehen im Attribut
+  `findings` von `_vulnerable_packages` und `_malicious_packages` durch; `_vulnerable_packages` hat die Zahl des Hosts
+  als `known_exploited`, `sensor.vordr_hub_vulnerability_data` den Zustand des Katalogs als `kev`. Jedes fehlt, solange
+  die Leitstelle es nicht schickt (kein Abschnitt `kev:` oder noch kein Katalog). Die Integration entscheidet daraus
+  nichts: keine Reparatur, kein Ereignis, kein neuer Text.
 
 ### 6b. Sprachen (H5, Protokoll 2)
 
@@ -223,12 +319,252 @@ aus ihren Übersetzungsdateien ([ADR-0027](../docs/adr/0027-protocol-2-codes-and
   Home Assistant selbst, verlangt: nur Abschnitte, die Home Assistant kennt, und kein Text, der wie ein HTML-Tag
   aussieht.
 
+### 6c. Updates von Home Assistant selbst unter den Regeln von Vördr
+
+Home Assistant bietet Update-Entitäten für Core, OS, Supervisor, Apps, HACS, ESPHome und Geräte-Firmware an und
+installiert sie ohne eigene Regeln. Die Integration plant sie unter den Regeln von Vördr ([ADR-0158](../docs/adr/0158-home-assistants-own-updates-follow-vordrs-rules-in-the-integration.md)) und
+installiert, was bereit ist, sobald ihre Optionen das einschalten ([ADR-0162](../docs/adr/0162-home-assistants-own-updates-install-only-when-switched-on-and-a-pause-holds-them.md)).
+
+- **Regeln in den Optionen der Integration** (Options-Flow als Menü, Punkt „Home-Assistant-Updates“, Schlüssel
+  `ha_updates`): erlaubte Arten (`core`, `os`, `supervisor`, `app`, `hacs`, `esphome`, `firmware`, `radio`, `other`)
+  und einzelne Update-Entitäten; ein Fenster (Tage, Beginn, Ende in der Zeitzone von Home Assistant, über Mitternacht
+  wie das `install.window` des Agenten); ein Mindestalter in Tagen (Standard 7, 1–90; Geräte-Firmware und Funkadapter
+  mindestens 14, siehe unten); „Automatisch installieren“
+  (`auto_install`, standardmässig aus; Optionen, die ohne es gespeichert sind, gelten als aus). Standardmässig
+  geschlossen: nichts gewählt, nichts erlaubt, nichts installiert. Mit Text abgelehnt: etwas erlaubt ohne Tag, Beginn gleich Ende, ein Mindestalter, das
+  keine ganze Zahl ist; unbekannte Auswahlen, andere Domänen und die Entitäten von Vördr selbst lehnt schon das
+  Formular ab. Die Leitstelle hat nichts zu sagen: kein Feld, keine Nachricht.
+- **Arten aus den Registern,** nie aus Entitäts-IDs: Core, OS und Supervisor an ihrem Gerät der Supervisor-Integration,
+  deren übrige Geräte sind Apps; HACS und ESPHome an ihrer Integration; die Firmware der Funkadapter an deren
+  Integration (`radio`, eine eigene Art); andere Firmware an der Geräteklasse `firmware`; der Rest ist `other`.
+- **Der Plan** (`custom_components/vordr/ha_updates.py`, reine Funktionen): je Update-Entität mit offener oder
+  übersprungener Version ein Code, in dieser Reihenfolge: `in_progress`, `self_updating` (`auto_update` der Entität:
+  gemeldet, nie installiert), `no_install` (ohne Installationsfunktion), `not_allowed`, `major`
+  ([ADR-0160](../docs/adr/0160-a-new-major-version-of-a-home-assistant-update-stays-manual.md)), `last_failed`
+  (die Installation dieser Version durch Vördr ist gescheitert und gesperrt, [ADR-0165](../docs/adr/0165-a-failed-home-assistant-update-stays-until-an-install-of-it-goes-through.md)), `too_new`
+  ([ADR-0159](../docs/adr/0159-the-minimum-age-of-a-home-assistant-update-counts-from-its-first-sight.md)),
+  `outside_window`, `ready`; `skipped` für eine in Home Assistant übersprungene Version. `too_new` und `outside_window`
+  tragen den frühesten Zeitpunkt, an dem es bereit wäre. Die Update-Entitäten von Vördr selbst fehlen, erkannt an der
+  Plattform `vordr` im Register. Nicht verfügbare oder unbekannte Entitäten stehen nicht in der Liste.
+- **Erste Sicht:** Home Assistant nennt kein Erscheinungsdatum, also zählt das Alter ab dem Zeitpunkt, an dem die
+  Integration die Version zum ersten Mal gesehen hat, je Update-Entität in `.storage/vordr.ha_updates.<entry_id>`
+  (geschrieben 10 s nach einer Änderung und beim Entladen, entfernt mit dem Eintrag). Eine neuere Version beginnt ihr
+  eigenes Alter; mit einer installierten Version oder einer aus dem Register verschwundenen Entität fällt die erste
+  Sicht weg; eine nicht verfügbare Entität behält sie.
+- **Linie** ([ADR-0179](../docs/adr/0179-a-newer-release-of-a-version-line-inherits-the-lines-age-with-two-days-of-its-own.md)):
+  Haupt- und Nebennummer einer Version aus Zahlen mit Punkten nach einem optionalen `v` (`v1.4.2` → `1.4`, Core
+  `2026.11.1` → `2026.11`); Firmware-Nummern, Commits, Vorabversionen und Build-Zusätze haben keine. Der Store hält je
+  Entität zusätzlich, wann jede Linie, die sie meldet, installiert oder angeboten, zum ersten Mal gesehen wurde
+  (`lines`); eine Linie bleibt, solange die Entität eine Version davon meldet, auch nach der Installation. Eine Version
+  einer Linie, die vor ihr gesehen wurde, zählt ihr Alter ab der ersten Sicht der Linie, muss aber selbst 2 Tage alt
+  sein (nie mehr als das Mindestalter); die erste Version einer Linie, eine neue Linie und eine Version ohne Linie
+  warten ihr volles eigenes Alter.
+- **Mindestalter je Art** ([ADR-0180](../docs/adr/0180-device-firmware-and-the-radio-adapter-wait-at-least-14-days.md)):
+  `firmware` und `radio` warten mindestens 14 Tage, oder das Mindestalter der Optionen, wenn es länger ist; eine feste
+  Regel, keine Option, die das Formular in seiner Beschreibung nennt.
+- **Wann gerechnet wird:** bei jeder Zustandsänderung einer Update-Entität, beim Speichern der Optionen (ohne
+  Neuladen) und einmal pro Minute, weil sich Fenster öffnen und Versionen alt werden, ohne dass sich etwas ändert.
+  Unabhängig von der Verbindung zur Leitstelle.
+- **Sensor** `sensor.vordr_ha_updates_ready` auf einem eigenen Gerät „Vördr Home Assistant“ (ohne `via_device`, nicht
+  von Hand entfernbar, ohne Leitstelle verfügbar): Zustand = Anzahl `ready`; Attribute: je Code eine Anzahl (ihre Namen
+  sind die Texte der Codes), `min_age_days`, `min_age_days_firmware` und `updates`, je Entität `entity_id`, `kind`,
+  `code`, `installed_version`, `latest_version`, `first_seen`, `line_first_seen` (wo die Version das Alter ihrer Linie
+  erbt), `earliest` (Zeiten in der Zeitzone von Home Assistant). `updates` bleibt aus dem Recorder
+  ([ADR-0101](../docs/adr/0101-package-lists-stay-out-of-the-recorder.md)).
+- **Installieren** (`custom_components/vordr/ha_updates_installer.py`): nur, solange „Automatisch installieren“ an ist,
+  der Schalter `switch.vordr_ha_updates_paused` „Home-Assistant-Updates pausieren“ aus ist (über Neustarts behalten)
+  und kein anderer aktivierter Vördr-Eintrag das Installieren an hat; einen zweiten lehnen die Optionen ab
+  (`auto_install_other_entry`) ([ADR-0162](../docs/adr/0162-home-assistants-own-updates-install-only-when-switched-on-and-a-pause-holds-them.md)). Das Attribut `installer` des Sensors „Letzter Lauf“ sagt, was gilt:
+  `off`, `paused`, `other_entry`, `idle`, `running`.
+- **Eines nach dem anderen, das System zuletzt** ([ADR-0164](../docs/adr/0164-home-assistant-updates-install-one-at-a-time-with-core-os-and-supervisor-last.md)): Ein Lauf beginnt nur, wenn keiner läuft, überhaupt
+  keine Update-Entität `in_progress` meldet und der Backup-Manager von Home Assistant `idle` ist. Reihenfolge: alle
+  anderen Arten nach Entitäts-ID, dann `supervisor`, `core`, `os`; ein System-Update nur, wenn sonst nichts `ready`
+  ist, und danach beginnt in dieser Öffnung des Fensters nichts mehr. Die Entitäten von Vördr selbst nie. Ein Lauf:
+
+| Schritt | Was geschieht | Endet mit |
+|---|---|---|
+| Backup ([ADR-0163](../docs/adr/0163-a-backup-before-every-automatic-home-assistant-update.md)) | eine Entität mit der Fähigkeit `BACKUP` sichert sich selbst (`backup: true` unten); Geräte-Firmware und Funkadapter ohne sie brauchen keines (`exempt`, [ADR-0181](../docs/adr/0181-device-firmware-and-the-radio-adapter-install-without-a-backup-of-home-assistant.md)); für die übrigen das letzte erfolgreiche automatische Backup von Home Assistant (Sensor der Backup-Integration, gefunden über Plattform und Unique-ID) höchstens 26 h alt, sonst `backup.create_automatic`, und der Sensor muss das neue innert 5 min zeigen | `backup_failed` mit `backup_unavailable`, `failed` oder `timeout` |
+| Nochmals prüfen | der Plan neu gerechnet aus den Zuständen, wie sie jetzt sind: Installieren an, nicht pausiert, kein anderer Eintrag, noch `ready` für dieselbe Version, nichts beschäftigt | `skipped_paused`; `skipped_not_ready` mit `target_changed`, `gone`, `auto_install_off`, `other_entry`, `busy` oder dem Code des Plans |
+| Festhalten | der Lauf in `.storage/vordr.ha_updates_runs.<entry_id>` geschrieben | – |
+| Installieren | `update.install`, mit `backup: true` bei `BACKUP`, mit `version` (der geprüften) bei `SPECIFIC_VERSION`; seine Fehler nur hier gefangen | `failed`; `timeout` nach 2 h |
+| Prüfen | nicht mehr in Arbeit und meldet die Zielversion (oder ist aktuell mit einer anderen als der, von der es ausging) | `ok`; nach 30 min, Geräte-Firmware und Funkadapter nach 2 h ([ADR-0183](../docs/adr/0183-device-firmware-and-the-radio-adapter-get-two-hours-to-report-their-version.md)), `timeout`, solange noch in Arbeit, sonst `not_reached` |
+
+- **Neustart:** Beim Start wird vor allem anderen ein festgehaltener Lauf aus dem Zustand der Entität geprüft, sobald
+  Home Assistant gestartet ist (`restarted: true`); bis er entschieden ist, beginnt nichts anderes. Ein Eintrag, der
+  entladen wird, lässt einen laufenden Lauf weiterlaufen (eine Installation kann halb fertig sein); der nächste Start
+  entscheidet ihn aus dem Store.
+- **Nach einem gescheiterten Backup:** 24 h kein neues Backup und keine Installation einer Entität, die das Backup von
+  Home Assistant braucht (ohne `BACKUP`, nicht Geräte-Firmware oder Funkadapter), bis Home Assistant ein neueres
+  automatisches Backup zeigt; bis dahin bleibt der Reparaturhinweis `ha_updates_backup_failed`.
+- **Bericht:** das Ereignis `vordr_ha_update_finished` mit `entity_id`, `kind`, `from_version`, `to_version`,
+  `installed_version`, `result`, `reason`, `backup` (`entity`, `existing`, `created`, `exempt`), `started`, `finished`,
+  `restarted`. Der Sensor `sensor.vordr_ha_updates_last_run` auf dem Gerät „Vördr Home Assistant“: die Phase, solange
+  ein Lauf geht (`backing_up`, `installing`, `verifying`), danach sein Ergebnis; die Felder des Laufs als Attribute,
+  `installer` und `queue` (die bereiten Updates in der Reihenfolge, in der sie drankämen, aus dem Recorder
+  ausgenommen); über Neustarts behalten.
+- **Fehlschläge** ([ADR-0165](../docs/adr/0165-a-failed-home-assistant-update-stays-until-an-install-of-it-goes-through.md)): `failed`, `not_reached` und `timeout` werden je Entität im selben Store festgehalten;
+  die Version ist gesperrt (`last_failed`); ein behebbarer Reparaturhinweis `ha_update_failed_<object id>` mit einem
+  Text je Ergebnis. Weg, sobald die Entität die Version meldet oder aktuell ist, sobald eine Installation von ihr `ok`
+  endet, oder sobald sie aus dem Register verschwindet.
+- **Die Behebung installiert sofort** ([ADR-0182](../docs/adr/0182-the-repairs-fix-installs-a-failed-home-assistant-update-at-once.md)):
+  zuerst geprüft, startet sie den Lauf der Entität jetzt, ausserhalb des Fensters, aber unter allen anderen Regeln, mit
+  dem Backup und der Prüfung direkt vor dem Handeln; oder sie bricht mit einem festen Code ab und stellt nichts in eine
+  Warteschlange: `busy` (eine andere Installation läuft, oder der Backup-Manager arbeitet), `paused`,
+  `auto_install_off`, `other_entry`, `not_ready` (der Plan lässt sie abgesehen vom Fenster nicht durch),
+  `backup_held`, `no_longer_needed`, `entry_not_loaded`. Der Reparaturhinweis verschwindet, solange der Lauf geht; ein
+  festgehaltenes Ergebnis bringt ihn zurück, ebenso ein Lauf, der nicht zum Installieren kommt (die Version ist wieder
+  gesperrt).
+- **Noch nicht:** zuerst eine Entität je Modell (eine Kanarie über mehrere Geräte desselben Modells), ein Neustart von
+  Home Assistant nach HACS-Updates, Läufe an die Leitstelle melden.
+
+### 6d. Den Agenten über SSH auf einem neuen Linux-Host installieren
+
+Home Assistant erreicht einen neuen Host einmal über SSH, lässt ihn das signierte Agenten-Release holen und prüfen und
+führt dort `vordr-agent install` aus. Vom SSH-Zugang behält es nichts; danach wartet der Host wie jeder neue Host auf
+die Freigabe an der Leitstelle
+([ADR-0161](../docs/adr/0161-home-assistant-installs-the-agent-once-over-ssh-and-keeps-no-credentials.md), mit dem
+Bedrohungsvergleich). Nur Linux mit systemd und apt.
+
+- **Zwei Punkte im Options-Menü:**
+  - „Betreiberschlüssel“ (Schlüssel `operator_keys`): der Betreiberschlüssel und ein optionaler Ersatz, Base64-Ed25519,
+    wie `vordr-release public-key` sie ausgibt. Geprüft (32 Bytes, der Ersatz ungleich dem Schlüssel und nur mit ihm),
+    gespeichert wie jede Option: Sie sind öffentlich. Leer entfernt sie. Nie von der Leitstelle übernommen.
+  - „Agent auf einem Linux-Host installieren (SSH)“: ein Flow, der keine Optionen speichert. Er endet mit einem Code,
+    der in `options.abort` einen Text hat; was die Person korrigieren kann (Host, Port, Benutzer, Knoten, die Anmeldung,
+    sudo), zeigt das Formular als Fehler.
+- **Schritte:**
+
+| Schritt | Was er tut | Endet mit |
+|---|---|---|
+| Start | die SSH-Bibliothek installiert, Eintrag geladen, Betreiberschlüssel gespeichert, Leitstelle verbunden, ihr Status nennt `agent_download` | `install_needs_ssh_library`, `entry_not_loaded`, `install_needs_operator_key`, `hub_not_connected`, `hub_without_download` |
+| Ziel | Host, SSH-Port, Benutzer (`root`), Knoten (leer: der eigene Name des Hosts) | Formularfehler; `ssh_unreachable`, `ssh_timeout`, `ssh_failed` |
+| Host-Schlüssel | ohne Anmeldung geholt (`asyncssh.get_server_host_key`), gezeigt als Algorithmus und SHA256-Fingerprint; ein Menü: gleich, oder abbrechen | `host_key_rejected` |
+| Anmeldung | Passwort oder eingefügter privater Schlüssel mit Passphrase, Passwort für sudo (leer: das der Anmeldung); die Anmeldung nimmt nur den bestätigten Schlüssel an, in keine `known_hosts`-Datei wird geschrieben | Formularfehler `ssh_auth_failed`, `ssh_key_invalid`, `sudo_failed`, `sudo_needs_password`; `ssh_host_key_changed` |
+| Erkundung | als Benutzer, Fakten als `key=value`: `uname -s`, `uname -m`, `id -u`, systemd, `apt-get`, `curl`/`wget`, `sha256sum`, `base64`, `mktemp`, `timeout`, `systemd-run`, `sudo`; dann `sudo -k -n true`, sonst `sudo -k -S` mit dem Passwort auf stdin | `not_linux`, `unknown_arch`, `no_systemd`, `no_apt`, `no_download_tool`, `missing_tools`, `no_sudo`, `probe_failed` |
+| Release | `agent_download` für `linux/<arch>` (`x86_64` → `amd64`, `aarch64` → `arm64`, `armv7l`/`armv8l` → `arm`); die Signatur des Betreibers über `vordr/agent-manifest/v1\0` + Manifest mit den gespeicherten Schlüsseln; das Manifest so streng gelesen wie `VerifyManifest` des Agenten; Datei, SHA-256 und Grösse nur daraus; der Download-Pfad muss genau diese Datei öffnen; nicht älter als das neuste Release, das eine Installation dieses Eintrags genommen hat (gehalten in `.storage/vordr.agent_release.<entry_id>`, verglichen wie `NewerRelease` des Agenten) | die Codes der Leitstelle (`role_forbids` mit `vordr-hub client-role <client> --role admin`, `no_release`, `too_many_downloads`, …), `hub_refused`, `manifest_signature_invalid`, `manifest_invalid`, `no_binary_for_platform`, `release_too_old`, `download_invalid` |
+| Installation | als root, als eigener vorübergehender Dienst (`systemd-run --pipe --wait --collect`), ausserhalb der Anmeldesitzung; ein Skript: ein privater temporärer Ordner (`mktemp -d`, umask 077, abgelehnt, wenn daraus nichts laufen darf); Download über HTTPS von Host und Port der Integration, mit der CA der Leitstelle, falls sie eine hat, die URL aus einer Datei in diesem Ordner gelesen (`curl -K`, `wget -i`), begrenzt auf die signierte Grösse (`curl --max-filesize`, `ulimit -f` für beide) und in der Zeit (`curl --max-time 900`, `timeout 900 wget`); Grösse und SHA-256 verglichen, bevor etwas läuft; die CA der Leitstelle nach `/etc/vordr/hub-ca.pem` (verglichen, wenn sie schon da ist, nach einer Ablehnung wieder entfernt); `vordr-agent install --hub wss://<host>:<port>/v1/tunnel --hub-key <aus der Antwort> --operator-key … [--backup-operator-key] [--node] [--ca-file]`; der Ordner in jedem Fall per trap entfernt | `size_mismatch`, `hash_mismatch`, `download_failed`, `download_refused`, `download_too_large`, `ca_differs`, `ca_failed`, `temp_noexec`, `temp_failed`, `bad_input`; die Codes des Agenten als `agent_<code>`, andere als `agent_refused`/`agent_failed`; `agent_no_result`, `install_no_result`, `ssh_lost`, `ssh_timeout` |
+| Ende | die letzte Zeile des Agenten `result=installed node=<n> fingerprint=<hex>` | `agent_installed` mit Knoten, Fingerprint und Version; der Reparaturhinweis `waiting_<node>` nennt dann den Befehl zur Freigabe |
+
+- **Was vom Host gelesen wird:** nur `key=value`-Felder: die Zeilen der Erkundung, die eigene letzte Zeile des Skripts
+  (`step=<step> code=<code>`) und nach `step=agent exit=<n>` die letzte Zeile des Agenten. Prosa wird nie gelesen;
+  eine Zeile, die nicht nur aus Feldern besteht, gilt als kein Ergebnis. Von jedem Befehl werden höchstens 64 KiB von
+  stdout gelesen und stderr gar nicht; ein Host, der mehr ausgibt, beendet den Flow mit `host_output_too_long`.
+- **Zugangsdaten und Tokens** leben nur im Objekt des Flows (`AgentInstall`): Passwort und Schlüssel der Anmeldung bis
+  zur Anmeldung, das Passwort für sudo, bis der Installationsbefehl gesendet ist, die Verbindung, bis die Installation
+  endet. asyncssh bekommt Passwort und Schlüssel einmal, wenn es danach fragt; die offene Verbindung behält keines von
+  beiden. Das Passwort für sudo und der Download-Pfad (er trägt das Einmal-Token) gehen über stdin, nie auf eine
+  Befehlszeile; auf dem Host liest das Download-Werkzeug den Pfad aus einer Datei im privaten Ordner. Nichts davon
+  steht im Config-Eintrag, in seinen Optionen, im Speicher von Home Assistant, in den Logs (auch nicht im Debug-Log von
+  asyncssh), in der Diagnose, als Vorgabe in einem Formular oder in einer Exception. Der Flow verwirft es, wie immer er
+  endet. Wird der Dialog während der Anmeldung geschlossen, schliesst sich die Verbindung sofort und der wartende
+  Schritt endet mit `install_cancelled`: Die Leitstelle wird nicht gefragt, und auf dem Host läuft nichts. Wird er
+  während der Installation geschlossen, bricht die Aufgabe ab und schliesst die Verbindung; der Host macht von sich
+  aus fertig (die Installation läuft ausserhalb der Anmeldesitzung, auch wo logind die Prozesse einer Sitzung mit
+  `KillUserProcesses=yes` beendet) und entfernt seinen temporären Ordner.
+- **Grenze:** `custom_components/vordr/ssh.py` ist die einzige Stelle, die SSH spricht; sie bildet jeden Fehler nach
+  seinem Typ auf einen Code ab, liest nichts aus `~/.ssh`, verwendet keinen SSH-Agenten und keine Standardschlüssel.
+  `agent_install.py` enthält die reinen Teile (Prüfungen, Skripte, Lesen), `agent_installer.py` die Schritte und was
+  sie halten.
+- **Der Client** behält die `features` des letzten Status der Leitstelle und sendet `agent_download` nur an eine
+  Leitstelle, die es genannt hat ([ADR-0067](../docs/adr/0067-hub-announces-features.md)); die Antwort geht an den, der
+  gefragt hat, nie an den Koordinator oder eine Entität.
+
+### 6e. KI-Erklärungen gescheiterter Läufe (freiwillig)
+
+Scheitert ein Lauf, kann eine AI-Task-Entität von Home Assistant, die die Person gewählt hat, ihn erklären: ein kurzer
+Text, eine wahrscheinliche Ursache und nächste Schritte aus festen Listen und ein Zitat aus dem Log des Laufs als
+Beleg. Nur ein Rat: es ändert nichts, was Vördr entscheidet, und die Leitstelle weiss nichts davon
+([ADR-0166](../docs/adr/0166-optional-ai-explanations-of-failed-runs-go-through-home-assistants-ai-task-and-only-advise.md)).
+`custom_components/vordr/ai_explain.py` enthält die reinen Teile (Optionen, Ersetzungen, Fakten, die Prüfung der
+Antwort) und `Explainer`, der fragt; der Koordinator gibt ihm jeden beendeten Lauf.
+
+- **Punkt „KI-Erklärungen“** des Optionsmenüs (Schlüssel `ai_explanations`): `entity_id`, eine `ai_task`-Entität,
+  und `data_ack`, die Bestätigung, dass Paketnamen und Logauszüge gescheiterter Läufe an ihren Anbieter gehen. Leer:
+  aus. Das Formular lehnt ab: `ai_entity_invalid` (keine `ai_task`-Entität), `ai_data_ack_missing`,
+  `ai_entity_missing` (nicht da oder nicht verfügbar) und `ai_entity_unsupported` (kann keine Daten erzeugen, oder die
+  Aktion von AI Task fehlt). Die Entität leeren entfernt die Optionen des Punkts; die der anderen Punkte bleiben.
+- **Welche Läufe:** die Ergebniscodes in `EXPLAINED`, Fehlschläge, deren Log die Ursache trägt. Nie `ok`, eine
+  Ablehnung (`rejected_*`), eine Entscheidung der Regeln von Vördr (`precheck_version_flagged`,
+  `precheck_version_too_new`, `precheck_vetting_unavailable`, `precheck_not_from_registry`) oder ein
+  Sicherheitssignal (`precheck_hash_mismatch`, `failed_target_tls`, `failed_target_hostkey`). Ein Test hält jeden Code
+  in einer der beiden Mengen.
+- **Schritte:**
+
+| Schritt | Was geschieht | Code, wenn nicht |
+|---|---|---|
+| Optionen | eine Entität gewählt und bestätigt; ohne sie ist es aus: nichts wird gesendet, kein Ereignis, kein Attribut, und der Lauf gilt als genommen, damit späteres Einschalten ihn nicht erklärt ([ADR-0184](../docs/adr/0184-with-ai-explanations-off-nothing-is-sent-and-no-event-is-fired.md)); gespeicherte Optionen, die das Formular ablehnen würde, senden nichts und werden einmal geloggt | `not_configured` (aus hat keinen Code) |
+| Auszug | der Lauf hat einen Logauszug | `no_excerpt` |
+| Entität | im Zustandsautomaten und nicht `unavailable`, `supported_features` mit Daten erzeugen (1), die Aktion `ai_task.generate_data` vorhanden; direkt vor dem Aufruf nochmals geprüft | `entity_missing`, `unsupported` |
+| Aufruf | `ai_task.generate_data` über `hass.services.async_call` mit `task_name` `vordr_failed_run`, `entity_id`, `instructions` und `structure`, `return_response`; höchstens 60 s; eine Frage nach der anderen | `no_answer`: Zeitüberschreitung oder was immer der Anbieter wirft (nur dort gefangen) |
+| Antwort | `data` mit `explanation` (Text), `likely_cause` (ein Wert der Liste), `next_steps` (Werte der Liste), `quote` (Text) | `invalid_answer` |
+| Zitat | Teil des Auszugs, wie er gesendet wurde, Zeichen für Zeichen, Folgen von Leerraum als ein Leerzeichen, 8 bis 300 Zeichen | `unverified`: nichts von der Antwort wird gezeigt |
+
+- **Was gesendet wird:** Anweisungen auf Englisch, die die Platzhalter nennen, sagen, dass die Fakten Daten sind, und
+  die Erklärung in der Sprache von Home Assistant verlangen (ihr Kürzel, z. B. `de`), dann zwischen den Zeilen
+  `BEGIN RUN FACTS` und `END RUN FACTS`: der Ergebniscode, das Verb, die Paketnamen der Zusammenfassung des Laufs
+  (höchstens 50) und das Ende des Logauszugs (höchstens 2000 Zeichen). Eine Markierungszeile in den Fakten wird
+  herausgenommen; Steuerzeichen fallen weg.
+- **Vor dem Senden ersetzt** (`redact`), in dieser Reihenfolge: URL und Host der Leitstelle → `<hub>`; der Host des
+  Laufs und jeder andere Host, den die Leitstelle kennt, ohne Rücksicht auf Gross- und Kleinschreibung und mit der
+  Domain dahinter → `<host>`, `<other-host>`; Namen in der Domain der Leitstelle, wenn sie zwei oder mehr Teile hat
+  (`*.site.example` bei `hub.site.example`) → `<server>`; der Host jeder anderen URL, mit Benutzer und Passwort →
+  `<server>`; IPv4-Adressen (vier Zahlen bis 255) und IPv6-Adressen (acht Gruppen, oder weniger mit einem `::`) →
+  `<ip>`, nicht eine Version wie `10.0.26100.1`, eine Uhrzeit oder eine MAC-Adresse. Zuerst ersetzt, dann gekürzt.
+  Andere Wörter gehen unverändert.
+- **Die verlangten Felder:** `likely_cause` eines von `package_conflict`, `package_source`, `disk_space`,
+  `package_lock`, `network`, `configuration`, `service`, `credentials`, `interrupted`, `other`, `unknown`;
+  `next_steps` bis zu drei von `retry_later`, `free_disk_space`, `check_package_sources`, `repair_package_manager`,
+  `resolve_conflict_by_hand`, `check_service`, `check_configuration`, `check_credentials`, `check_network`,
+  `read_run_log`. Bei `ok` wird die Erklärung auf eine Zeile gebracht und auf 600 Zeichen gekürzt, wiederholte
+  Schritte fallen weg.
+- **Ergebnis:** das Ereignis `vordr_ai_explanation` `{node, job_id, state, code, entity_id}`, bei `ok` dazu
+  `likely_cause`, `next_steps`, `explanation` und `quote`; wenn an, für jeden Lauf aus `EXPLAINED`, auch wenn nicht
+  gefragt werden kann; wenn aus, nie. `sensor.vordr_<id>_last_run` des Hosts zeigt `ai_code`, `ai_entity_id` und bei `ok`
+  `ai_likely_cause`, `ai_next_steps`, `ai_explanation`, `ai_quote`, solange er diesen Lauf zeigt, ausserhalb des
+  Recorders; nichts, wenn aus. Ihre Werte werden wie Zustände übersetzt (`state_attributes` von `last_run`).
+- **Grenzen:** zu einem Lauf wird einmal gefragt (Node und Job-ID; die letzten 256 bleiben gemerkt); eine Antwort `ok`
+  wird nach einem Hash von Entität und gesendetem Text behalten (die letzten 32), so wird derselbe Fehlschlag auf
+  mehreren Hosts einmal gefragt.
+- **Nie:** ein Fenster, ein Mindestalter, ein Umfang, die Richtlinie, ein Knopf, ein Reparaturhinweis oder ein
+  Befehl. Nichts liest den freien Text.
+- **Noch nicht:** Release-Notes und Changelogs, ein Tageslimit, die Erklärung in einem Push (das kann eine
+  Automation auf das Ereignis).
+
+### 6f. Blueprints für Benachrichtigungen
+
+Vier Automations-Blueprints in `blueprints/automation/vordr/` machen aus den Ereignissen und Entitäten oben
+Benachrichtigungen
+([ADR-0173](../docs/adr/0173-notifications-are-shipped-as-blueprints-the-user-imports.md)). Der Benutzer importiert
+sie (`ha/README.de.md`); die Integration installiert sie nicht, und ihre Version ändert sich nicht mit ihnen.
+
+| Blueprint | Startet bei | Tut |
+|---|---|---|
+| `problem.yaml` | `vordr_problem` | `message.<Sprache>` des Problems an einen Benachrichtigungsdienst; optional Wartezeit (ein Problem, das in der Wartezeit endet oder sich ändert, entfällt), ignorierte Gründe, ein Hinweis beim Ende (nur ohne Wartezeit) |
+| `run_failed.yaml` | `vordr_run_finished`, `state` nicht `ok` | `message.<Sprache>` des Ergebnisses; Filter nach Art des Laufs und nach ignorierten Ergebnissen (standardmässig `ok_reboot_required`) |
+| `reboot_offer.yaml` | `vordr_run_finished` mit `ok_reboot_required`; `vordr_problem` mit `reboot_pending` | der Text und die Aktion „Jetzt neu starten“, wo der Host einen Neustart-Knopf hat; ein Tipp drückt diesen Knopf |
+| `hub_offline.yaml` | Online-Entität der Leitstelle seit N Minuten aus | ein Hinweis und einer, wenn die Verbindung wieder steht |
+
+- Eingaben sind Selektoren: der Benachrichtigungsdienst (Text), Hosts (Geräteauswahl dieser Integration, leer heisst
+  jeder Host), die Sprache (`en`, `de`, freier Text; eine Sprache, die die Integration nicht mitliefert, fällt auf
+  Englisch zurück). Keine Entitäts-ID steht in einem Blueprint; das Neustart-Angebot findet Neustart-Knopf und
+  Neustart-Sensor des Hosts über dessen Gerät.
+- Die Aktion erscheint nur, wo der Host den Neustart anbietet (dann gibt es den Knopf). Ein Tipp drückt den Knopf nur,
+  wenn der Sensor noch sagt, dass der Host den Neustart braucht, und der Knopf verfügbar ist; sonst sagt er, dass
+  nichts getan wurde. Jedes Angebot hat eine eigene Aktions-ID und verfällt nach den gewählten Stunden. Ein Blueprint
+  installiert oder startet nie von sich aus neu.
+- `mode: parallel` für das Problem (Wartezeit je Host) und das Neustart-Angebot (ein offener Tipp je Host), `queued` für
+  die übrigen.
+- `ha/tests/test_blueprints.py` lädt jeden Blueprint mit dem Blueprint-Schema von Home Assistant, prüft Ereignisse,
+  Ereignisfelder, Gründe, Ergebniscodes und Eingaben gegen die Integration und lässt die Blueprints mit Ereignissen der
+  Test-Leitstelle und einem nachgebildeten Benachrichtigungsdienst laufen.
+
 ## 7. Änderungen an der Leitstelle
 
 - Endpunkt `/v1/ha` neben `/v1/tunnel`; Client-Register `clients.json` (0600) getrennt vom Host-Register.
 - CLI: `clients`, `approve-client`, `reject-client`, `forget-client`, `client-role`; Admin-Codes wie bei den Hosts.
 - `HostView` an einer Stelle berechnet (`internal/hub/view.go`, 5a); `/v1/ha` ist der einzige Weg zu HA.
 - Befehle laufen durch dasselbe `Resolve` wie früher die MQTT-Befehle.
+- `agent_download` und der Download-Pfad `/v1/agent-download/` für das Einrichten eines neuen Hosts (5b).
 - Für den Umstieg gab es bis Leitstelle 0.5 `mqtt.mode: remove`: einmal verbinden, alle eigenen retained Themen
   löschen, trennen.
 
@@ -252,7 +588,12 @@ gleich die Integration ein (`ha/README.de.md`).
   Ablehnungsgründen, Widerruf trennt; Mutationsprobe auf die Rechteprüfung.
 - Integration (Python): `pytest-homeassistant-custom-component` unter Linux, mit der HA-Version, die
   `ha/requirements_test.txt` festlegt. Config-Flow samt Warten auf Freigabe, alle Entitäten, `None` → unbekannt,
-  Verfügbarkeit, Knöpfe → Befehle, Entitäts-IDs, Reparaturhinweise. Ruff und Pyright.
+  Verfügbarkeit, Knöpfe → Befehle, Entitäts-IDs, Reparaturhinweise. Die Installation über SSH (6d) gegen eine
+  nachgebildete Leitstelle und einen echten SSH-Server, dessen Befehle die Skripte der Integration in einer Sandbox
+  ausführen (`ha/tests/fake_ssh_host.py`). Das Installieren der Updates von Home Assistant selbst (6c) gegen
+  Update-Entitäten von Integrationen, die der Test spielt, und eine gespielte Backup-Integration, samt Neustart
+  mittendrin. Die KI-Erklärungen (6e) gegen eine gespielte AI-Task-Entität und Aktion, ohne Anbieter. Ruff und
+  Pyright.
 - Ende-zu-Ende: der Python-Test startet das echte `vordr-hub`-Binary mit Testzertifikat.
 
 ## 10. Ausbaustufen
@@ -263,6 +604,10 @@ gleich die Integration ein (`ha/README.de.md`).
 | H2 (gebaut) | Integration: Config-Flow mit Freigabe, Verbindung, Entitäten, de/en, Tests | alle Entitäten aus Abschnitt 6 in einem HA-Test, IDs belegt |
 | H3 (gebaut) | Reparaturhinweise, Diagnose, `mqtt.mode: remove`, Umstieg (Abschnitt 8) | die Leitstelle läuft ohne MQTT, alle IDs unverändert |
 | H5 (gebaut) | Protokoll 2: Codes statt Texte, Übersetzungen (6b) | jede Sprache hat jeden Text (`tests/test_texts.py`) |
+| H6 (gebaut als Probebetrieb) | Updates von Home Assistant selbst unter den Regeln von Vördr: Optionen, Plan, erste Sicht, Sensor (6c) | jeder Code getestet; nichts wird installiert |
+| H7 (gebaut, Linux) | Den Agenten über SSH auf einem neuen Host installieren: Betreiberschlüssel, Host-Schlüssel, Anmeldung, Erkundung, geprüftes Release, Installation (6d) | jedes Ende getestet gegen eine nachgebildete Leitstelle und einen echten SSH-Server; nirgends bleibt ein Zugangsdatum |
+| H8 (gebaut) | Updates von Home Assistant selbst nach dem Plan installieren: Schalter, Pause, Backup, eines nach dem anderen mit dem System zuletzt, Prüfung vor dem Handeln, Prüfung der Version, Neustart, Ereignis, letzter Lauf, Reparaturhinweis (6c) | jedes Ergebnis im Testgerüst von Home Assistant getestet; nichts wird installiert, bevor es eingeschaltet ist |
+| H9 (gebaut) | Freiwillige KI-Erklärungen gescheiterter Läufe über AI Task: Punkt, Prüfungen, Ersetzungen, geprüftes Zitat, Ereignis, Attribute des Sensors (6e) | jeder Code gegen ein gespieltes AI Task getestet; nichts gesendet, bevor es eingeschaltet ist, sonst ändert sich nichts |
 
 ## 11. Entscheidungen
 
@@ -276,6 +621,35 @@ gleich die Integration ein (`ha/README.de.md`).
    [ADR-0025](../docs/adr/0025-distribution-via-deploy-tool.md) ab); von Hand nach `/config/custom_components/vordr`
    kopieren geht weiter (`ha/README.de.md`).
 4. MQTT nach dem Umstieg **ganz aus dem Code entfernen** ([ADR-0026](../docs/adr/0026-remove-mqtt.md)).
+5. Updates von Home Assistant selbst: **Regeln in der Integration, standardmässig geschlossen, zuerst als
+   Probebetrieb** ([ADR-0158](../docs/adr/0158-home-assistants-own-updates-follow-vordrs-rules-in-the-integration.md));
+   Mindestalter ab erster Sicht, eine Patch-Version mit dem Alter ihrer Linie, Firmware und Funkadapter mindestens 14
+   Tage ([ADR-0159](../docs/adr/0159-the-minimum-age-of-a-home-assistant-update-counts-from-its-first-sight.md)); eine neue
+   Hauptversion von Hand ([ADR-0160](../docs/adr/0160-a-new-major-version-of-a-home-assistant-update-stays-manual.md)).
+6. Einen Host aus Home Assistant einrichten: **einmal über SSH, Zugangsdaten nur im Speicher des Flows, das Release
+   geprüft gegen den in Home Assistant eingegebenen Betreiberschlüssel und auf dem Host, bevor es läuft, Freigabe an
+   der Leitstelle**
+   ([ADR-0161](../docs/adr/0161-home-assistant-installs-the-agent-once-over-ssh-and-keeps-no-credentials.md)).
+7. Updates von Home Assistant selbst installieren: **nur eingeschaltet, aus einem Eintrag, mit Pause**
+   ([ADR-0162](../docs/adr/0162-home-assistants-own-updates-install-only-when-switched-on-and-a-pause-holds-them.md)); **vor jedem ein Backup**, das eigene der Entität oder das automatische Backup von Home Assistant,
+   höchstens 26 h alt ([ADR-0163](../docs/adr/0163-a-backup-before-every-automatic-home-assistant-update.md)); **eines nach dem anderen, Core, OS und Supervisor zuletzt, vor dem Handeln
+   nochmals geprüft, an der Version geprüft, über Neustarts hinweg** ([ADR-0164](../docs/adr/0164-home-assistant-updates-install-one-at-a-time-with-core-os-and-supervisor-last.md)); **ein Fehlschlag bleibt, bis
+   eine Installation durchläuft** ([ADR-0165](../docs/adr/0165-a-failed-home-assistant-update-stays-until-an-install-of-it-goes-through.md)).
+8. KI: **freiwillig, in der Integration über AI Task von Home Assistant, für gescheiterte Läufe, nur als Rat**, mit
+   ersetzten Namen der Site und geprüftem Zitat; die Leitstelle bleibt ohne KI und API-Schlüssel
+   ([ADR-0166](../docs/adr/0166-optional-ai-explanations-of-failed-runs-go-through-home-assistants-ai-task-and-only-advise.md));
+   **aus heisst still**: kein Aufruf und kein Ereignis
+   ([ADR-0184](../docs/adr/0184-with-ai-explanations-off-nothing-is-sent-and-no-event-is-fired.md)).
+9. Updates von Home Assistant selbst, verfeinert: **eine neuere Version einer Linie erbt das Alter der Linie, mit 2
+   Tagen eigenem** ([ADR-0179](../docs/adr/0179-a-newer-release-of-a-version-line-inherits-the-lines-age-with-two-days-of-its-own.md));
+   **Geräte-Firmware und Funkadapter warten mindestens 14 Tage**
+   ([ADR-0180](../docs/adr/0180-device-firmware-and-the-radio-adapter-wait-at-least-14-days.md)), **installieren ohne
+   Backup von Home Assistant**
+   ([ADR-0181](../docs/adr/0181-device-firmware-and-the-radio-adapter-install-without-a-backup-of-home-assistant.md))
+   und **haben 2 Stunden, um ihre Version zu melden**
+   ([ADR-0183](../docs/adr/0183-device-firmware-and-the-radio-adapter-get-two-hours-to-report-their-version.md)); **die
+   Behebung eines Reparaturhinweises installiert sofort**
+   ([ADR-0182](../docs/adr/0182-the-repairs-fix-installs-a-failed-home-assistant-update-at-once.md)).
 
 ## 12. Ergebnis des Umstiegs
 

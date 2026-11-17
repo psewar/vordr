@@ -25,10 +25,20 @@ darunter die Update-Quellen und wichtigen Programme mit ihrem Stand.
   Proxmox VE mit Proxmox Backup Server).
 - Signiertes Selbst-Update der Agenten mit Rücksprung; signiert wird mit `vordr-release` beim Betreiber.
 - Pakete von pip, pipx und npm sowie Container-Images: Bestand, bekannte Schwachstellen und Schadsoftware aus den
-  OSV-Daten, veraltete Versionen, Aktualisieren per Knopf.
+  OSV-Daten, wahlweise markiert, wenn der KEV-Katalog von CISA sie als ausgenutzt führt, veraltete Versionen,
+  Aktualisieren per Knopf.
 - Appliances ohne eigenen Agenten (Firewall, NAS) über einen Stellvertreter: Firmware melden, Konfiguration sichern.
 - In Home Assistant je Host ein Gerät mit Update-Entitäten, Sensoren und Knöpfen; Probleme als Reparaturhinweis und als
   Ereignis für Automationen.
+- Die Updates von Home Assistant selbst (Core, OS, Apps, HACS, ESPHome, Geräte-Firmware) unter den Regeln von Vördr –
+  erlaubte Arten, Fenster, Mindestalter, Hauptversionen von Hand –, installiert, sobald eingeschaltet: eines
+  nach dem anderen, Core, OS und Supervisor zuletzt, jedes mit Backup, an der erreichten Version geprüft, ein
+  Fehlschlag als Reparaturhinweis festgehalten.
+- Einen neuen Linux-Host aus Home Assistant einrichten: einmal über SSH, das signierte Agenten-Release geprüft, bevor
+  es läuft, vom SSH-Zugang nichts gespeichert; danach wartet der Host auf die Freigabe an der Leitstelle.
+- Freiwillig ein gescheiterter Lauf, erklärt von einer AI-Task-Entität von Home Assistant: ein kurzer Text, Ursache
+  und nächste Schritte aus festen Listen und ein am Log geprüftes Zitat; Hostnamen und Adressen vor dem Senden
+  ersetzt, nur als Rat.
 
 Entwürfe: [design/architecture.de.md](design/architecture.de.md),
 [design/ha-integration.de.md](design/ha-integration.de.md), [design/proxy-agent.de.md](design/proxy-agent.de.md).
@@ -63,11 +73,12 @@ Leitstelle und Agent verbinden (Vorlagen: `hub.example.yaml`, `agent.example.yam
 ```bash
 vordr-hub key                                   # öffentlicher Hub-Schlüssel -> agent.yaml hub.public_key
 vordr-hub run                                   # Tunnel auf TLS, Verwaltung über den lokalen Socket
-vordr-agent hub-check                           # auf dem Host: erreicht er die Leitstelle?
+vordr-agent hub-check                           # auf dem Host: erreicht er die Leitstelle, ist hub.public_key ihr Schlüssel?
 vordr-agent run                                 # auf dem Host: meldet sich an, wartet auf Freigabe
 vordr-agent identity                            # auf dem Host: Fingerprint zum Abgleich
 vordr-hub approve <node> --fingerprint <fp>     # an der Leitstelle: zulassen
 vordr-hub list                                  # Zustand, online, letzter Bericht
+vordr-hub show <node>                           # ein Host vollständig; --json für Programme (auch list)
 vordr-hub check <node>                          # signierten check-Auftrag schicken
 vordr-hub events <node> --since 24h             # Ereignisse eines Hosts der letzten 24 h
 ```
@@ -89,6 +100,7 @@ vordr-hub events <node> --since 24h             # Ereignisse eines Hosts der let
 | `internal/inventory` | Pakete von pip, pipx und npm je Ort, veraltete Versionen, Aktualisieren |
 | `internal/images` | Container-Images: Bestand, Vergleich mit der Registry, Neubauten per Knopf |
 | `internal/osv` | Abgleich mit den OSV-Daten an der Leitstelle |
+| `internal/kev` | der CISA-Katalog der bekannt ausgenutzten Schwachstellen, nachgeschlagen an der Leitstelle |
 | `internal/versions` | Versionen ordnen wie ihr Ökosystem (PEP 440, SemVer, Debian, Alpine) |
 | `internal/target` | Treiber des Stellvertreters für Appliances (Synology DSM, pfSense) |
 | `internal/runner` | externe Befehle starten; Exit-Code als Daten |

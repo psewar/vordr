@@ -236,7 +236,7 @@ func (s *Server) HubView(entries []Entry) wire.HubView {
 		Limits: wire.LimitsView{OfflineAfterMinutes: int(lim.OfflineAfter.Minutes()), StaleAfterDays: int(lim.StaleAfter.Hours() / 24),
 			RebootPendingAfterDays: int(lim.RebootAfter.Hours() / 24), NoReportAfterHours: int(lim.NoReportAfter.Hours())}}
 	if s.Packages != nil {
-		v.OSV = s.Packages.HubView()
+		v.OSV, v.KEV = s.Packages.HubView(), s.Packages.KEVView()
 	}
 	for _, e := range entries {
 		switch e.State {

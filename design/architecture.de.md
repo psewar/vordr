@@ -108,8 +108,8 @@ Betreiber-Schlüssel: signiert die Agent-Manifeste, nie auf der Leitstelle
 
 Verbindungen:
 
-- **Agent → Hub:** nur ausgehend, WebSocket über TLS (`/v1/tunnel`), Anmeldung per Ed25519-Challenge. Auf den Hosts
-  ist kein Port offen, Reconnect mit Backoff 1–30 s.
+- **Agent → Hub:** nur ausgehend, WebSocket über TLS (`/v1/tunnel`), Anmeldung per Ed25519-Challenge, die der Hub mit
+  seinem Schlüssel signiert (6.2). Auf den Hosts ist kein Port offen, Reconnect mit Backoff 1–30 s.
 - **Home Assistant → Hub:** die Integration verbindet sich als freigegebener Client über `/v1/ha`, auf demselben Port
   und mit demselben Zertifikat ([ha-integration.de.md](ha-integration.de.md),
   [ADR-0023](../docs/adr/0023-own-ha-integration.md)). Die Leitstelle braucht keinen Weg zu HA.
@@ -121,7 +121,7 @@ Verbindungen:
 | Schlüssel | Liegt | Wofür | Wer ihn stiehlt, kann |
 |---|---|---|---|
 | Agent-Identität (Ed25519) | jeder Host; Linux als Datei mit 0600, Windows DPAPI-geschützt | Anmeldung am Hub | sich als dieser Host ausgeben und dessen Zustand fälschen |
-| Hub-Schlüssel (Ed25519) | Hub | signiert jeden Auftrag; jeder Agent hat den öffentlichen Schlüssel fest in seiner Konfiguration | erlaubte Aufträge innerhalb der lokalen Richtlinien auslösen, mit Grund auch ausserhalb des Fensters |
+| Hub-Schlüssel (Ed25519) | Hub | signiert jeden Auftrag und seine Challenge an jeden Agenten; jeder Agent hat den öffentlichen Schlüssel fest in seiner Konfiguration | erlaubte Aufträge innerhalb der lokalen Richtlinien auslösen, mit Grund auch ausserhalb des Fensters |
 | Betreiber-Schlüssel (Ed25519) | beim Betreiber, nur für ihn lesbar; nie auf dem Hub. Der Ersatzschlüssel liegt getrennt davon (10.4) | signiert das Manifest der Agent-Binaries | Code auf alle Agenten bringen – darum nie auf dem Hub, dazu ein Ersatzschlüssel (10.4) |
 | Code-Signing-Zertifikat (Authenticode) | keins ([ADR-0084](../docs/adr/0084-windows-self-update-without-code-signing.md)) | erst nötig, falls Smart App Control den Tausch der Windows-Binary blockt | nichts über die Manifest-Signatur hinaus |
 
@@ -132,6 +132,14 @@ das Netz umlenkt. Ein Auftrag trägt `job_id`, `node`, `verb`, `params`, `issued
 `job_id` (Wiederholungsschutz) und meldet das als `rejected_invalid_job`
 ([ADR-0002](../docs/adr/0002-own-project-following-an-earlier-agent.md)).
 
+**Warum der Hub auch seine Challenge signiert:** Damit ein falscher `hub.public_key` vor dem ersten Auftrag auffällt:
+`hub-check` findet ihn, bevor eine Installation etwas ändert, und der Agent schickt nichts über seinen Host an einen
+Hub, der mit einem anderen Schlüssel signiert (6.2,
+[ADR-0170](../docs/adr/0170-the-hub-signs-its-challenge-and-the-agent-checks-its-key.md)). Hat der Agent seinen Hub
+einmal signieren sehen, lehnt er auch eine unsignierte Challenge von derselben `hub.url` ab. Die Signaturen der
+Aufträge ersetzt das nicht: Solange es ältere Hubs gibt, geht eine unsignierte Challenge beim allerersten Kontakt
+durch.
+
 TLS sichert die Vertraulichkeit. Das Vertrauen in Aufträge und Binaries hängt an den Signaturen
 ([ADR-0032](../docs/adr/0032-self-update-signed-by-operator.md), [ADR-0035](../docs/adr/0035-backup-operator-key.md)).
 
@@ -141,7 +149,7 @@ TLS sichert die Vertraulichkeit. Das Vertrauen in Aufträge und Binaries hängt 
 |---|---|---|
 | einen Host übernommen | dessen Zustand fälschen | andere Hosts beeinflussen, Aufträge erzeugen |
 | den Hub übernommen | den Bestand lesen; erlaubte Aufträge auslösen, mit einem Grund auch ausserhalb des Fensters (ADR-0087); die HA-Anzeige fälschen | Befehle oder Code auf Hosts bringen, Pakete wählen, Umfang erweitern, Neustartverbot oder Mindestabstand umgehen, Agent-Binaries tauschen |
-| ein freigegebenes Home Assistant | Prüfen und Installieren anstossen, mit Grund auch ausserhalb des Fensters, mit Rolle `admin` auch Neustarts (12) – über den Hub, also innerhalb der Richtlinien | mehr als der Hub; einen Host neu starten, der es nicht braucht, erneut nach einem Neustart, der nicht gewirkt hat (ADR-0153), ausserhalb eines Fensters, das der Host geschlossen hält (ADR-0154), oder solange seine Leerlauf-Prüfung „beschäftigt“ sagt (ADR-0155) |
+| ein freigegebenes Home Assistant | Prüfen und Installieren anstossen, mit Grund auch ausserhalb des Fensters, mit Rolle `admin` auch Neustarts (12) – über den Hub, also innerhalb der Richtlinien; mit Rolle `admin` die signierte Agent-Release für einen neuen Host holen, höchstens 4 Einmal-Downloads je 15 Minuten (10.4) | mehr als der Hub; einen Host neu starten, der es nicht braucht, erneut nach einem Neustart, der nicht gewirkt hat (ADR-0153), ausserhalb eines Fensters, das der Host geschlossen hält (ADR-0154), oder solange seine Leerlauf-Prüfung „beschäftigt“ sagt (ADR-0155) |
 | das Netz (mitlesen, umlenken) | Verbindungen stören | Aufträge fälschen (Hub-Signatur), Binaries unterschieben (Betreiber-Signatur und SHA-256) |
 | den Betreiber-Schlüssel | Code auf alle Agenten bringen | – darum nie auf dem Hub; Rotation über einen neuen öffentlichen Schlüssel in der Agent-Konfiguration |
 
@@ -196,16 +204,48 @@ einer Nachricht, die sie nicht kennt. Der Agent schickt eine neuere Art deshalb 
 hat; er probiert nicht aus und liest es nicht aus einem Abbruch. So ist die Reihenfolge der Updates egal, die Betriebsregel
 „Leitstelle vor Agent“ bleibt trotzdem.
 
+**Signierte Challenge** ([ADR-0170](../docs/adr/0170-the-hub-signs-its-challenge-and-the-agent-checks-its-key.md)):
+- Der Agent schickt eine eigene Nonce, 32 Zufallsbytes in Base64, im Header `Vordr-Challenge-Nonce` der
+  WebSocket-Anfrage; für jede Verbindung eine neue.
+- Die Challenge der Leitstelle trägt dann `hub_sig`: die Signatur des Hub-Schlüssels über `vordr/challenge/v1\0`, ihre
+  Nonce und die Nonce des Agenten. Eine Signatur, die auf einer anderen Verbindung mitgeschnitten wurde, passt nicht.
+- Vor seinem `hello` prüft der Agent die Signatur gegen `hub.public_key` und hält das Ergebnis als festen Code
+  `hub_key`: `matches`, `mismatch` (anderer Schlüssel, beschädigte Signatur oder eine von einer anderen Verbindung),
+  `unsigned` (eine Leitstelle vor ADR-0170) oder `downgrade` (unsigniert, von einer Leitstelle, die schon signiert hat).
+- Schutz vor dem Downgrade: Das erste `matches` kommt mit `hub.url` und `hub.public_key` nach
+  `state_dir/hub-signed.json`. Solange `agent.yaml` dieses Paar nennt, ist eine unsignierte Challenge `downgrade`. Eine
+  andere `hub.url` oder ein anderer `hub.public_key` beginnt neu; der allererste Kontakt ist nicht geschützt. Eine
+  Leitstelle, die bewusst auf eine Version vor ADR-0170 zurückgesetzt wurde, lässt man durch Löschen der Datei wieder
+  herein.
+- Bei `mismatch` oder `downgrade` schickt der Agent nichts über seinen Host: Er beendet die Verbindung mit dem
+  WebSocket-Close-Code `4001` (`mismatch`) oder `4002` (`downgrade`), schreibt `hub_key mismatch` oder
+  `hub_key downgrade` ins Log und fragt nach 10 min wieder, wie nach einer Ablehnung durch die Leitstelle. Die
+  Leitstelle schreibt das Ereignis `agent_refused_hub_key` mit `hub_key` und der Adresse der Gegenstelle. Bei
+  `unsigned` meldet sich der Agent an wie bisher; die Logzeile der Sitzung nennt den Fakt.
+- Ein älterer Agent schickt keinen Header und bekommt die Challenge wie bisher. Die Challenge für Home Assistant
+  (`/v1/ha`) ist nicht signiert: Die Integration kennt den Hub-Schlüssel nicht.
+
 ### 6.3 Befehle am Host selbst
 
-Für den Betrieb vor Ort. Sie lesen und prüfen nur; keiner installiert etwas:
+Für den Betrieb vor Ort. Ausser dem Einrichten des Agenten selbst lesen und prüfen sie nur; keiner installiert ein
+Update:
 
 ```
 vordr-agent check [--no-refresh] | identity | check-config | hub-check | version
 vordr-agent packages [--plan <ort>[/<name>] | --plan-deps <ort>:<name>[,<name>…]]   # 11.2, 11.4
 vordr-agent run                                                 # der Dienst selbst
+vordr-agent install --hub <wss-url> --hub-key <base64> [--node <name>] [--ca-file <pfad>]
+    [--operator-key <base64> [--backup-operator-key <base64>]] [--replace-config "<grund>"]   # nur Linux (10.1)
 vordr-agent install-service [--replace-config "<grund>"] | uninstall-service   # nur Windows (11.1)
 ```
+
+`hub-check` prüft, ohne sich anzumelden, die Stufen `dns`, `connect`, `tls`, `websocket`, `challenge` und `hub_key` und
+nennt die erste, die scheitert. `hub_key` besteht, wenn die Challenge mit `hub.public_key` signiert ist, und auch, wenn
+die Leitstelle nicht signiert (eine ältere; die Ausgabe sagt „not checked“), ausser `state_dir` weiss, dass sie es schon
+getan hat (6.2). `hub-check` liest diesen Eintrag, schreibt ihn aber nie. Der Exit-Code ist der Befund, für die
+Installer: 0 in Ordnung, 1 eine Stufe vor `hub_key` gescheitert, 2 `agent.yaml` nicht brauchbar, 3 die Leitstelle
+signiert nicht mit `hub.public_key` oder nicht mehr. `install-agent.sh` und `install-service` lehnen bei 1 und bei 3 ab,
+je mit eigenem Grund, bevor sie etwas ändern.
 
 Installieren und Neustart kommen nur als signierter Auftrag der Leitstelle: aus HA, aus der Warteschlange oder von der
 Automatik (10.3), ausserhalb des Fensters mit Grund (6.4). Einen Befehl am Host dafür gibt es nicht.
@@ -456,9 +496,15 @@ Leitstelle 0.6 nicht mehr ([ADR-0026](../docs/adr/0026-remove-mqtt.md)).
 
 - Alle `update`-Entitäten erscheinen ohne weiteres Zutun unter *Einstellungen → Updates*.
 - Je Host-Problem ein Reparaturhinweis und das Ereignis `vordr_problem` für Automationen (ha-integration.de.md 6a).
-- Noch nicht gebaut: ein Blueprint, der aus `binary_sensor.*_problem` eine Benachrichtigung bzw. einen
-  Aufgabeneintrag mit `next_step` macht und alle übrigen `update`-Entitäten (aus Integrationen) auf „hängt seit
-  N Tagen“ prüft. Damit gälte 7.5 auch für Geräte ohne Agent.
+- Die übrigen `update`-Entitäten (Home Assistant selbst, Apps, HACS, Firmware) unter den Regeln von Vördr: Die
+  Integration plant sie mit erlaubten Arten, Fenster, Mindestalter und Hauptversionen von Hand und installiert, sobald
+  eingeschaltet, was bereit ist: eines nach dem anderen mit Core, OS und Supervisor zuletzt, jedes mit Backup, an
+  seiner Version geprüft, ein Fehlschlag als Reparaturhinweis festgehalten (ha-integration.de.md 6c).
+- Blueprints für Benachrichtigungen liegen in `blueprints/automation/vordr/`: ein Host-Problem, ein gescheiterter
+  Lauf, ein Neustart-Angebot mit Knopf in der Benachrichtigung und eine Leitstelle, die nicht erreichbar ist
+  ([ADR-0173](../docs/adr/0173-notifications-are-shipped-as-blueprints-the-user-imports.md), ha-integration.de.md 6f).
+- Noch nicht gebaut: ein Blueprint, der alle übrigen `update`-Entitäten (aus Integrationen) auf „hängt seit N Tagen“
+  prüft. Damit gälte 7.5 auch für Geräte ohne Agent.
 
 ## 9. Lokale Richtlinie
 
@@ -504,12 +550,44 @@ automatisches Installieren, nur `check`. `vordr-agent check-config` prüft die D
 
 ### 10.1 Anmeldung und Freigabe
 
-1. Beim ersten Start erzeugt der Agent seine Identität, verbindet sich, signiert die Challenge und schickt `hello`.
+1. Beim ersten Start erzeugt der Agent seine Identität, verbindet sich, prüft die Signatur der Leitstelle auf der
+   Challenge gegen `hub.public_key` (6.2), signiert die Challenge und schickt `hello`.
 2. Der Hub legt den Host als `pending_approval` an; HA zeigt ihn unter „Wartende Freigaben“ mit Fingerprint.
 3. Freigegeben wird nur am Hub selbst: `vordr-hub approve <node> --fingerprint <fp>`, nach Abgleich mit
    `vordr-agent identity` am Host. HA kann keine Hosts zulassen
    ([ADR-0010](../docs/adr/0010-administration-only-local.md)).
 4. Erst danach entstehen die HA-Entitäten, und der Hub nimmt Meldungen an.
+
+Vor Schritt 1 kommt der Agent auf den Host. Unter Linux erledigt das `vordr-agent install` allein aus der Binary
+([ADR-0169](../docs/adr/0169-the-linux-agent-installs-itself-from-one-binary-and-one-command.md)); der Befehl ist dafür
+gemacht, unbeaufsichtigt zu laufen, zum Beispiel über SSH:
+
+- Er schreibt aus seinen Flags eine minimale `agent.yaml`: `node` (Vorgabe: der Hostname in Kleinbuchstaben),
+  `hub.url`, `hub.public_key`, `hub.ca_file` falls angegeben, und mit `--operator-key` den Abschnitt `agent_update`
+  (eingeschaltet, mit dem Schlüssel und dem Ersatzschlüssel falls angegeben). Alles andere behält die strenge Vorgabe
+  (Abschnitt 9): nur prüfen, nichts installieren, kein Neustart. Die Richtlinie zu erweitern bleibt die Änderung des
+  Betreibers an der `agent.yaml` auf dem Host.
+- Zuerst prüft er, und bis dahin ändert er nichts: die Befehlszeile, Linux, root, systemd, `apt-get`, die erzeugte
+  `agent.yaml` wie `check-config` (jedes Problem nennt sein Flag), eine `--ca-file`, die nur root ändern kann (die
+  Datei und jeder Ordner darüber gehören root und sind für andere nicht beschreibbar; sonst `ca_file_unsafe`, mit
+  `/etc/vordr/hub-ca.pem` als Ort), eine installierte `agent.yaml`, die abweicht (nur mit
+  `--replace-config "<grund>"` ersetzt), die laufende Binary und die Leitstelle mit den Stufen von `hub-check`.
+- Dann schreibt er `install-agent.sh`, beide Units und `rollback.sh`, die die Binary mitbringt, mit der erzeugten
+  `agent.yaml` in einen privaten Ordner unter `/run` (nie `$TMPDIR`; `/run` muss root gehören und für andere nicht
+  beschreibbar sein, sonst `temp_dir_unsafe`) und führt das Skript von dort mit der laufenden Binary aus. Das Skript
+  bekommt eine feste Umgebung (`PATH` aus den Ordnern des Systems, `LANG=C`; nichts vom Aufrufer wie `BASH_ENV` oder
+  `SHELLOPTS`), und seine Ausgabe läuft weiter, auch wenn der Leser weg ist. Der Ordner wird danach in jedem Fall
+  entfernt.
+- SIGINT, SIGTERM oder SIGHUP beenden `install` nicht ohne Ergebnis: Vor dem Skript hört es auf und lehnt ab; während
+  das Skript läuft, reicht es das Signal weiter, das Skript endet, sobald sein laufender Befehl zu Ende ist, und
+  `install` meldet `interrupted`, als abgelehnt (2), wenn das Skript noch nichts geändert hatte, sonst als gescheitert
+  (1).
+- Ergebnis: Exit 0 installiert, 2 abgelehnt ohne Änderung, 1 gescheitert nach der ersten Änderung; `install-agent.sh`
+  selbst antwortet mit denselben Codes, auch wenn ein Befehl unerwartet scheitert oder ein Signal es beendet. Die
+  letzte Zeile ist für Programme: `result=installed node=<node> fingerprint=<hex>`, `result=refused code=<code>`
+  (bei `hub_unreachable` mit `stage=<stufe>`) oder `result=failed code=<code>`. Darüber steht der Freigabe-Befehl für
+  die Leitstelle.
+- Unter Windows macht das weiter `install-service` (11.1); `install` verweist darauf.
 
 ### 10.2 Installationslauf (apt)
 
@@ -745,7 +823,8 @@ Active Backup for Business wurde dafür geprüft und verworfen
   `ionice -c2 -n7`, sonst käme dpkg auf einem Host mit dauernder Plattenlast kaum voran.
 - Nach dem Lauf schickt der Agent sofort einen neuen Bericht, damit die Zähler in HA dem Ergebnis vorangehen.
 - `install-agent.sh --replace-config "<grund>"` ersetzt eine geänderte `agent.yaml` (Sicherung, Diff, Grund ins
-  Systemlog), wie bei der Leitstelle. Unter Windows gilt dasselbe für `install-service` (11.1).
+  Systemlog), wie bei der Leitstelle; `vordr-agent install` reicht die Option durch (10.1). Unter Windows gilt dasselbe
+  für `install-service` (11.1).
 
 ### 10.3 Automatisch einspielen
 
@@ -837,6 +916,33 @@ startet neu (systemd `Restart=always` bzw. Windows-Dienst). Rollout in denselben
   (`agent_update.public_key` in `hub.yaml`), nur um die gültige Version zu kennen.
 - **Auftrag** `agent_update` trägt das Manifest samt Signatur und ein Einmal-Token. Mit dem Token lädt der Agent seine
   Binary über `https://<leitstelle>/v1/agent/<datei>`; das Token gilt 15 Minuten.
+- **Für einen neuen Host** ([ADR-0167](../docs/adr/0167-home-assistant-gets-one-time-downloads-of-the-signed-agent-release.md)):
+  - Ein Home-Assistant-Client mit Rolle `admin` fragt über `/v1/ha` (`agent_download`, wahlweise für eine Plattform).
+    Die Leitstelle antwortet mit dem Manifest und seiner Signatur genau wie signiert, ihrem eigenen öffentlichen
+    Schlüssel (für `hub.public_key`) und je Binary einem Pfad mit eigenem Token
+    ([ha-integration.de.md](ha-integration.de.md#5b-die-agent-release-für-einen-neuen-host)).
+  - Die Leitstelle sendet keinen Betreiber-Schlüssel. Home Assistant prüft das Manifest mit dem Schlüssel, den es von
+    der Person hat, und das Binary gegen den Hash im Manifest; so kann die Leitstelle auch auf einen neuen Host keinen
+    Code bringen.
+  - `GET https://<leitstelle>/v1/agent-download/<datei>?token=<t>`: ein eigener Pfad neben dem des Selbst-Updates;
+    keiner nimmt die Tokens des anderen. Ein Token öffnet eine Datei einmal, mit dem Hash, für den es ausgestellt
+    wurde, 15 Minuten lang, solange sein Client mit demselben Schlüssel und Rolle `admin` freigegeben ist. Die Tokens
+    liegen im Speicher; ein Neustart der Leitstelle beendet sie.
+  - Bevor ein Token verbraucht wird, prüft die Leitstelle Grösse und SHA-256 des Binarys gegen das Manifest; jeden
+    Hash liest sie einmal je Grösse und Änderungszeit. Ein Download darf so lange dauern, wie das Binary bei 64 KiB/s
+    braucht, plus eine Minute; ein langsamerer Leser wird abgeschnitten. Der Pfad des Selbst-Updates hat dieselbe
+    Schreibfrist.
+  - Höchstens 8 Tokens bestehen zugleich, höchstens 4 für einen Client, benutzt oder nicht, bis sie ablaufen. Ohne
+    Release `no_release`, mit einem Binary, das auf der Leitstelle fehlt oder nicht das signierte ist,
+    `release_incomplete`, an einer Grenze `too_many_downloads`. Ein Client, der nicht freigegeben ist, bekommt einmal
+    `client_not_approved`, und seine Verbindung endet.
+  - Ablehnungen des Downloads haben feste Status (403 unbekanntes Token oder Client entzogen, 410 abgelaufen oder
+    Release geändert, 409 benutzt, 404 andere Datei, 405 kein GET, 500 Binary nicht lesbar oder nicht das signierte)
+    und ihren Code als Inhalt.
+  - Ereignisprotokoll: `agent_download_issued`, `agent_downloaded`, `agent_download_refused`, mit `download_id` (der
+    Anfang des SHA-256 des Tokens), nie mit dem Token. Ablehnungen eines Tokens, das die Leitstelle ausgestellt hat,
+    kommen bis zu 20 Mal je Token ins Protokoll (die letzte sagt `more_not_logged`); andere Ablehnungen des
+    Download-Pfads höchstens 10 Mal je Minute, und die nächste sagt, wie viele ausgelassen wurden (`suppressed`).
 - **Agent:** Er prüft das Manifest gegen den Schlüssel in **seiner** `agent.yaml`, dann Hash und Grösse. Probelauf
   der neuen Binary: `version` muss die Manifest-Version sagen, `check-config` die eigene `agent.yaml` annehmen. Dann
   setzt er die Markierung `update.json`, tauscht die Binary (die alte bleibt als `.old`) und beendet sich; systemd
@@ -1001,16 +1107,22 @@ Microsofts PowerShell-Modul `Microsoft.WinGet.Client` (dieselbe COM-Schnittstell
 - **Dienst** ([ADR-0015](../docs/adr/0015-windows-service-localsystem.md)):
   `vordr-agent install-service` (als Administrator) macht alles in einem Schritt:
   - prüft zuerst alles, was ablehnen kann, und ändert bis dahin nichts (Exit 2): Adminrechte, `agent.yaml`, mit
-    `hub-check` die Leitstelle, eine schon installierte `agent.yaml`, Dienstverwaltung und vorhandenen Dienst;
+    `hub-check` die Leitstelle und ihren Schlüssel (6.3), eine schon installierte `agent.yaml`, Dienstverwaltung und
+    vorhandenen Dienst;
   - ersetzt eine abweichende `agent.yaml` in `%ProgramData%\vordr` nur mit `--replace-config "<grund>"`, wie
     `install-agent.sh` unter Linux: alte Datei als `agent.yaml.bak-<zeit>`, Abweichung angezeigt, Grund ins
     `agent.log` (unter Windows das Log des Agenten, wie unter Linux das Systemlog). Ohne Grund lehnt es ab und nennt
     beide Dateien und den nächsten Schritt;
   - installiert PowerShell 7 (als MSI) und das Modul für alle Benutzer, gibt `%ProgramData%\vordr` und `state_dir` nur
-    SYSTEM und Administratoren frei und sichert die alte `agent.yaml`, solange ein vorhandener Dienst noch läuft;
+    SYSTEM und Administratoren frei, lädt das Schlüsselpaar des Agenten aus `state_dir` oder erzeugt es dort (nach den
+    Rechten des Ordners, vor dem Start des Dienstes) und sichert die alte `agent.yaml`, solange ein vorhandener Dienst
+    noch läuft;
   - hält erst dann den Dienst an, legt die Binary nach `%ProgramFiles%\Vordr` (die vorige bis zum Erfolg als
     `vordr-agent.exe.old`) und `agent.yaml` nach `%ProgramData%\vordr`;
-  - richtet den Dienst unter LocalSystem ein (automatischer Start, Neustart nach Absturz) und startet ihn.
+  - richtet den Dienst unter LocalSystem ein (automatischer Start, Neustart nach Absturz) und startet ihn;
+  - endet mit Knoten, Fingerabdruck und dem Befehl für die Leitstelle, `vordr-hub approve <node> --fingerprint <fp>` mit
+    dem echten Wert, wie `install-agent.sh` unter Linux. Der Dienst lädt denselben Schlüssel, der Fingerabdruck ist also
+    der, den die Leitstelle zeigt.
   - **Rückweg:** Scheitert ein Schritt nach dem Anhalten, macht es die Schritte rückwärts rückgängig (Dienst,
     Dienstkonfiguration, `agent.yaml`, Binary) und startet den Dienst wieder, wenn er vorher lief. Den Zustand danach
     erfragt es bei der Dienstverwaltung und meldet ihn als Fakt: Exit 3, wenn der Dienst wie vorher ist; Exit 1 nur,
@@ -1116,7 +1228,9 @@ Begründungen der Entscheidungen: [ADR-0064](../docs/adr/0064-osv-data-local-at-
 [ADR-0065](../docs/adr/0065-scope-of-package-locations.md) (Umfang),
 [ADR-0066](../docs/adr/0066-inventory-from-metadata.md) (Bestand aus Metadaten),
 [ADR-0067](../docs/adr/0067-hub-announces-features.md) (Merkmale der Leitstelle),
-[ADR-0079](../docs/adr/0079-detect-packages-in-msix-app-containers.md) (Container von MSIX-Apps).
+[ADR-0079](../docs/adr/0079-detect-packages-in-msix-app-containers.md) (Container von MSIX-Apps),
+[ADR-0168](../docs/adr/0168-known-exploitation-comes-from-the-kev-catalog-fetched-whole-at-the-hub.md) (bekannte
+Ausnutzung aus dem KEV-Katalog).
 
 Die Teile:
 
@@ -1257,8 +1371,8 @@ keine harte Grenze; die Leitstelle wird dafür nie beendet. Begründung: [ADR-00
   - Orte mit Paketzahl und Code;
   - `malicious` (Pakete mit Schadsoftware-Eintrag) und `vulnerable` (mit anderen Einträgen; Schadsoftware nicht
     doppelt gezählt). Beide `null`, wenn für ein Ökosystem des Hosts Daten fehlen;
-  - höchstens 50 Funde, Schadsoftware zuerst, dann nach Bewertung der Quelle (GHSA: CRITICAL … LOW), mit Kennungen,
-    Aliasen (CVE, GHSA), `via` und `fixed_in`;
+  - höchstens 50 Funde, Schadsoftware zuerst, dann die bekannt ausgenutzten (KEV, unten), dann nach Bewertung der
+    Quelle (GHSA: CRITICAL … LOW), mit Kennungen, Aliasen (CVE, GHSA), `via` und `fixed_in`;
   - `fixed_in` ist die kleinste Version, die alle Einträge des Pakets behebt; leer, wenn einer keine Behebung nennt.
     Bei Schadsoftware bleibt es immer leer: Das Paket gehört entfernt, nicht aktualisiert.
   - **Wo die Behebung liegt** (`reach`, ADR-0129), je verwundbarem Fund. Ein Halt (`holds`) hält das Paket unter
@@ -1279,6 +1393,36 @@ keine harte Grenze; die Leitstelle wird dafür nie beendet. Begründung: [ADR-00
   Paket dazu, meldet HA erneut. Wartende Funde stehen am Sensor, mit `reach` und `held_by`.
 - Das Ereignisprotokoll der Leitstelle hält vom Bestand nur Zahlen fest, keine Paketlisten.
 
+**Bekannte Ausnutzung (KEV, Leitstelle).** Mit dem Abschnitt `kev:` in `hub.yaml` (er braucht `osv:`) markiert die
+Leitstelle jeden Fund mit einer CVE, die der CISA-Katalog der Known Exploited Vulnerabilities führt
+([ADR-0168](../docs/adr/0168-known-exploitation-comes-from-the-kev-catalog-fetched-whole-at-the-hub.md)). Ohne den
+Abschnitt holt sie nichts und markiert nichts; das ist der Standard.
+
+- **Quelle:** der JSON-Feed des Katalogs (`url`, Standard
+  `https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json`, ein Spiegel im selben Format
+  geht auch), CC0 1.0, rund 2 MB. Gelesen werden `catalogVersion`, `dateReleased`, `count` und je Eintrag `cveID`,
+  `dateAdded`, `knownRansomwareCampaignUse`.
+- **Holen** wie die OSV-Dumps: ganz, alle 24 h (`refresh_hours`), mit ETag und `Last-Modified` der letzten Antwort
+  (Server beachten das eine oder das andere); unverändert heisst `304`. Aufbewahrt wie geholt in
+  `<state_dir>/kev/catalog.json`, daneben `meta.json`; ein Neustart liest beide. Eine fehlende oder unlesbare Datei
+  wird sofort geholt, ohne Validatoren.
+- **Prüfungen:** Was nicht der Katalog ist (kein JSON, ein Feld fehlt, `count` weicht von den Einträgen ab), ist
+  `bad_feed`; ein Katalog ohne lesbare Einträge oder mit weniger als 90 % der Einträge in Gebrauch ist
+  `implausible_feed` (Regel von ADR-0085); dazu `download_failed`, `store_failed`. Der Katalog in Gebrauch bleibt, neu
+  versucht wird nach einer Stunde. Ein Eintrag mit unlesbarer Kennung oder unlesbarem Datum fällt weg und wird im Log
+  gezählt.
+- **Zustand** in der Leitstellen-Sicht (`kev`): `ok`, `stale` (länger als `stale_hours`, Standard 72, nicht bestätigt),
+  `missing`, mit Code, letzter Prüfung, `dateReleased`, `catalogVersion` und der Zahl der CVEs. Ein veralteter Katalog
+  markiert weiter: Seine Einträge bleiben Tatsachen, nur neuere fehlen vielleicht.
+- **Abgleich:** die CVE-Kennungen jedes Eintrags eines Funds (Kennung, Aliase, `upstream`), genau. Eine geführte gibt
+  dem Fund `known_exploited: true`, `kev_cves`, `kev_added` (das früheste `dateAdded`: wann CISA sie aufnahm, nicht
+  wann die Ausnutzung begann) und `kev_ransomware` (eine davon `Known`). `packages.known_exploited` zählt die
+  markierten Funde des Hosts, Schadsoftware eingeschlossen; `null`, solange es keinen Katalog gibt oder `vulnerable`
+  `null` ist.
+- **Was es nicht ändert:** das Problem (`malicious_package`, `vulnerable_package` wie oben), Mindestalter,
+  Ringverzögerungen und Fenster. Ob ein bekannt ausgenutzter Fund daran etwas ändern soll, wird eigens entschieden.
+  Noch nicht markiert: Funde in Images (11.5) und Systemupdates.
+
 **Gegenprobe des Abgleichs:**
 
 - Ein Bestand mit knapp 3000 Paketen ergibt eine Nachricht von rund 270 kB, weit unter der Grenze.
@@ -1288,7 +1432,9 @@ keine harte Grenze; die Leitstelle wird dafür nie beendet. Begründung: [ADR-00
 - Die Gegenprobe ist selbst geprüft: Ein absichtlich verfälschtes Ergebnis meldet sie als Abweichung.
 
 **In HA:** Sensoren „Schädliche Pakete“ und „Verwundbare Pakete“ je Host, sobald der Agent einen Bestand schickt. Ältere
-Agenten bekommen sie nicht, vorhandene bleiben. Dazu der Diagnosesensor „Schwachstellendaten“ an der Leitstelle.
+Agenten bekommen sie nicht, vorhandene bleiben. Dazu der Diagnosesensor „Schwachstellendaten“ an der Leitstelle. Mit
+`kev:` tragen die Funde im Attribut `findings` die KEV-Felder, „Verwundbare Pakete“ hat das Attribut `known_exploited`
+(die Zahl), „Schwachstellendaten“ das Attribut `kev` (den Zustand des Katalogs).
 
 ### 11.3 Veraltete Pakete
 
@@ -1665,16 +1811,18 @@ Aktualisieren von Compose-Diensten auf den Neubau ihres Tags per Knopf
 ## 12. Leitstelle
 
 - Go, eine Binary, systemd-Dienst. Zustand in Dateien wie im Vorbild-Projekt: Register (`registry.json`), Ereignisprotokoll
-  (`events.jsonl`, nur anhängend), Einstellungen und Ringe (`hub.yaml`). Keine Datenbank
+  (`events.jsonl`, nur anhängend, auf Wunsch nach Grösse gewechselt, siehe unten), Einstellungen und Ringe (`hub.yaml`).
+  Keine Datenbank
   ([ADR-0011](../docs/adr/0011-state-in-files.md); Ort: [ADR-0054](../docs/adr/0054-hub-in-own-container.md)).
 - Schnittstellen: Tunnel-Endpunkt (WebSocket über TLS, Zertifikat wird bei Erneuerung ohne Neustart nachgeladen),
   Home-Assistant-Endpunkt `/v1/ha` auf demselben Port ([ha-integration.de.md](ha-integration.de.md)), Download der
-  Agent-Binaries (HTTPS, Einmal-Token). Keine Weboberfläche.
+  Agent-Binaries (HTTPS: mit dem Token eines `agent_update`-Auftrags unter `/v1/agent/`, für einen neuen Host mit einem
+  Einmal-Token aus Home Assistant unter `/v1/agent-download/`, 10.4). Keine Weboberfläche.
 - Verwaltung nur lokal über einen Unix-Socket (`admin_socket`, Modus 0600 in einem 0700-Ordner): `vordr-hub list |
-  approve <node> --fingerprint <fp> | reject <node> | forget <node> | check <node> | backup <node> | events`, für
-  Home-Assistant-Clients (eigenes Register `clients.json`) `clients | approve-client <name> --fingerprint <fp> |
-  reject-client <name> | forget-client <name> | client-role <name> --role <rolle>`. Ohne Socket: `key`, `check-config`,
-  `version`. Noch nicht gebaut: ein Befehl für die Ringe (`rings`)
+  show <node> | approve <node> --fingerprint <fp> | reject <node> | forget <node> | check <node> | backup <node> |
+  events`, für Home-Assistant-Clients (eigenes Register `clients.json`) `clients | approve-client <name> --fingerprint
+  <fp> | reject-client <name> | forget-client <name> | client-role <name> --role <rolle>`. Ohne Socket: `key`,
+  `check-config`, `version`. Noch nicht gebaut: ein Befehl für die Ringe (`rings`)
   ([ADR-0010](../docs/adr/0010-administration-only-local.md)).
 - **Beenden** (SIGTERM): Die Leitstelle nimmt nichts Neues mehr an, schliesst die Verbindungen der Agents und
   Home-Assistant-Clients und wartet bis zu 10 s, bis fertig ist, was sie angestossen haben (eine Meldung, die gerade
@@ -1683,6 +1831,25 @@ Aktualisieren von Compose-Diensten auf den Neubau ihres Tags per Knopf
   ([ADR-0142](../docs/adr/0142-the-hub-waits-for-its-sessions-work-when-it-stops.md)).
 - **Backup-Prüfung ansehen** (`vordr-hub backup <node>`): was die Prüfung vor einem Install jetzt entschiede (10.2);
   fragt den Backup-Server, schickt nichts.
+- **Hosts lesen** (`vordr-hub list [--json]`, `vordr-hub show <node> [--json]`,
+  [ADR-0171](../docs/adr/0171-the-hub-command-line-gives-programs-a-versioned-host-view.md)):
+  - `list` zeigt eine Zeile je Host für Menschen, `show` einen Host vollständig: Agent und seit wann, System,
+    Richtlinie, Updates, Neustart, Problem, letzter Lauf, Warteschlange, Backup, Pakete. Dieser Text kann sich mit
+    jeder Release ändern.
+  - `--json` gibt ein Dokument für Programme aus: `format`, `code`, `ha_protocol`, `hub_version`, `at` und `nodes`
+    (nie null; `show`: der eine Host, oder keiner bei einer Ablehnung). Jeder Host trägt, was das Register weiss
+    (Zustand, Fingerprint, zuerst gesehen und entschieden, Agent-Version und seit wann, Fakten, Verben, Richtlinie,
+    ausstehend seit, letzte Installation, die Zahlen des letzten Berichts) und, wenn freigegeben, `view`: die
+    Host-Sicht genau so, wie Home Assistant sie bekommt (Abschnitt 8, `wire.HostView`).
+  - Das Dokument ist eine stabile Schnittstelle. Innerhalb von `format` 1 kommen Felder nur hinzu; alles andere
+    erhöht `format`. `view` ändert sich unverträglich nur zusammen mit `ha_protocol`. Ein Programm prüft beide Nummern
+    und übergeht unbekannte Felder; fehlt ein Feld oder ist es null, ist es unbekannt oder trifft nicht zu.
+  - Exit-Status: 0 `ok`; 1 die Leitstelle lehnt ab, mit dem Grund in `code` (`unknown_node`, `bad_request`), oder
+    `hub.yaml` hat Mängel; 2 keine brauchbare Antwort: falsche Befehlszeile, keine `hub.yaml`, der Socket antwortet
+    nicht, oder die laufende Leitstelle ist älter als der Befehl (Binary ersetzt, Dienst nicht neu gestartet). Bei 2
+    steht nichts auf stdout.
+  - Keine öffentlichen Schlüssel, Tokens oder Signaturen: der Fingerprint benennt den Schlüssel. Die Buchführung des
+    Registers für automatische Installationen und der rohe Bericht bleiben intern.
 - **Ereignisprotokoll lesen** (`vordr-hub events [<node>] [--event <name>] [--since <wann>] [--limit <n>]`):
   - Die Leitstelle liest `events.jsonl` selbst und gibt die passenden Zeilen über den Socket zurück. Wer lesen darf,
     entscheidet der Socket, nicht die Dateirechte des Zustandsordners.
@@ -1691,10 +1858,30 @@ Aktualisieren von Compose-Diensten auf den Neubau ihres Tags per Knopf
     RFC 3339.
   - Gelesen wird ohne die Schreibsperre: Die Leitstelle schreibt weiter. Eine Zeile, die gerade entsteht, ist dann
     unvollständig und wird als unlesbar gezählt und genannt, nicht übersprungen ohne Wort.
+  - Gelesen wird auch über die gewechselten Dateien (unten): Die Leitstelle öffnet sie und die aktuelle Datei unter
+    der Sperre und hat so einen stimmigen Satz, beginnt mit der neuesten Datei und liest eine ältere nur, solange diese
+    noch etwas zur Antwort beitragen kann.
+- **Grenze des Ereignisprotokolls** (`event_log` in `hub.yaml`,
+  [ADR-0172](../docs/adr/0172-the-event-log-is-rotated-by-size-and-keeps-a-fixed-number-of-files.md)):
+  - Ohne den Abschnitt wächst die Datei nur, wie bisher. Mit ihm (`max_size_mb`, Standard 32; `keep`, Standard 8)
+    beginnt eine Zeile, die `events.jsonl` über die Grenze brächte, zuerst eine neue Datei: Die volle wird zu
+    `events.jsonl.1`, die älteren rücken eine Nummer hoch, und was über `keep` hinausgeht, wird gelöscht. Auf der
+    Platte bleiben höchstens (`keep` + 1) × `max_size_mb`. `check-config` sagt, was gilt.
+  - Der Wechsel läuft unter der Sperre jedes Schreibens: Keine Zeile geht verloren oder steht doppelt. Jeder Schritt
+    prüft zuerst, ob sein Ziel frei ist, und bricht sonst mit `target_exists` ab; nichts wird überschrieben. Eine
+    Leitstelle, die mittendrin stehen bleibt, hinterlässt die Dateien in ihrer Reihenfolge (höhere Nummer, ältere
+    Datei); ihr nächster Start öffnet oder erzeugt `events.jsonl`, und der nächste Wechsel füllt eine Lücke.
+  - Die neue Datei beginnt mit dem Ereignis `event_log_rotated`. Ein Wechsel, der abbricht, schreibt
+    `event_log_rotation_failed` mit seinem Code (`check_failed`, `target_exists`, `remove_failed`, `rename_failed`,
+    `reopen_failed`); die Leitstelle schreibt in die Datei weiter, die sie hat, und versucht es nach einer Minute
+    wieder. Jede Zeile geht auch ins Dienstprotokoll.
+  - Was `events.jsonl` anderswohin kopiert ([ADR-0060](../docs/adr/0060-event-log-off-host.md)), kopiert die
+    nummerierten Dateien mit.
 - **Rollen der HA-Clients** ([ADR-0039](../docs/adr/0039-ha-client-roles.md)):
   - `observe`: nur Sichten.
   - `operate`: Prüfen, Installieren, Agent-Update. Das ist der Standard.
-  - `admin`: zusätzlich Neustart.
+  - `admin`: zusätzlich Neustart, und die Agent-Release für einen neuen Host (`agent_download`, 10.4,
+    [ADR-0167](../docs/adr/0167-home-assistant-gets-one-time-downloads-of-the-signed-agent-release.md)).
 
   Die Richtlinie des Hosts hat ohnehin das letzte Wort. Die Rolle begrenzt, was ein übernommenes Home Assistant
   die Leitstelle signieren lassen kann. Eine Ablehnung heisst `role_forbids`, HA zeigt dafür einen eigenen Text.
@@ -1766,7 +1953,7 @@ Kanarienvogel, Ereignisprotokoll), keinen Code.
 | 2 | `install` und `reboot` mit Richtlinie, Laufjournal und den Codes aus 7.3 | gebaut (10.2) |
 | 3 | Selbst-Update, Ringe, `install.auto: hub` | gebaut (10.3, 10.4); `install.auto: local` noch nicht |
 | 4 | Quellen `winget` und `winupdate` | gebaut (11.1); Neustart unter Windows noch nicht |
-| 5 | Apps, HA-Blueprint inklusive „hängt“ für Integrationen | Apps per Knopf gebaut (8.1); Update-Entität je App und Blueprint noch nicht (8.5) |
+| 5 | Apps, HA-Blueprint inklusive „hängt“ für Integrationen | Apps per Knopf gebaut (8.1); Blueprints für Benachrichtigungen gebaut (8.5); Update-Entität je App und der Blueprint „hängt“ für Integrationen noch nicht |
 | 6 | pip, pipx, npm: Bestand und OSV-Funde, veraltete Pakete, Aktualisieren per Knopf; Container-Images | gebaut (11.2–11.5) |
 
 ## 16. Früher offene Fragen

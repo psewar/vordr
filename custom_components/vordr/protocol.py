@@ -35,6 +35,10 @@ T_HOST_REMOVED: Final = "host_removed"
 T_HUB: Final = "hub"
 T_COMMAND: Final = "command"
 T_COMMAND_RESULT: Final = "command_result"
+# The signed agent release for a new host (ADR-0161); only to a hub whose status names the feature.
+T_AGENT_DOWNLOAD: Final = "agent_download"
+T_AGENT_DOWNLOAD_RESULT: Final = "agent_download_result"
+FEATURE_AGENT_DOWNLOAD: Final = "agent_download"
 
 # Registration states and reasons of the status message.
 STATE_PENDING: Final = "pending_approval"

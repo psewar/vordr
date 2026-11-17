@@ -1,8 +1,9 @@
 // Package wire is the tunnel protocol between agent and hub: JSON text messages over a WebSocket over TLS, opened
 // by the agent. Every message carries its type in "t".
 //
-//	hub   -> agent  challenge   {nonce}
-//	agent -> hub    hello       {node, public_key, signature, agent_version, facts, verbs, policy}
+//	hub   -> agent  challenge   {nonce, hub_sig}     hub_sig only for an agent that sent its own nonce in the upgrade
+//	                                                 request (ChallengeNonceHeader, ADR-0170)
+//	agent -> hub    hello      {node, public_key, signature, agent_version, facts, verbs, policy}
 //	hub   -> agent  status      {state, reason}      again whenever the state changes (e.g. approved)
 //	agent -> hub    heartbeat   every HeartbeatInterval; the hub answers with a heartbeat
 //	agent -> hub    report      {sources, reboot}    after every check
@@ -153,6 +154,9 @@ type Challenge struct {
 	Nonce []byte `json:"nonce"`
 	// Features: what the hub accepts in the hello (FeatureAck). Hubs before ADR-0114 send none.
 	Features []string `json:"features,omitempty"`
+	// HubSig: the hub key's signature over ChallengeSigned(nonce, the agent's nonce), sent only to an agent that gave
+	// its own nonce in the upgrade request (ADR-0170). Hubs before it send none; agents before it ignore the field.
+	HubSig []byte `json:"hub_sig,omitempty"`
 }
 
 // PolicySummary is what the local policy allows; the hub offers only matching buttons in Home Assistant.

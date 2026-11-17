@@ -57,6 +57,7 @@ func (f *fakeChecker) calls() int {
 type testHub struct {
 	srv    *hub.Server
 	reg    *hub.Registry
+	events *hub.Events
 	key    *identity.Identity
 	url    string
 	caFile string
@@ -110,7 +111,7 @@ func startHubWith(t *testing.T, maxPending int, wrap func(net.Listener) net.List
 	if err := os.WriteFile(caFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ts.Certificate().Raw}), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	return &testHub{srv: srv, reg: reg, key: key, caFile: caFile, ts: ts,
+	return &testHub{srv: srv, reg: reg, events: events, key: key, caFile: caFile, ts: ts,
 		url: "wss" + strings.TrimPrefix(ts.URL, "https") + wire.TunnelPath}
 }
 
@@ -214,7 +215,7 @@ func TestEndToEndApprovalReportAndCheckJob(t *testing.T) {
 		t.Fatalf("install to an agent that cannot install: %s", code)
 	}
 
-	nodes := h.srv.Admin(hub.AdminRequest{Cmd: "list"}).Nodes
+	nodes := h.srv.Admin(hub.AdminRequest{Cmd: "list"}).Hosts.Nodes
 	if len(nodes) != 1 || !nodes[0].Online || nodes[0].Pending == nil || *nodes[0].Pending != 3 ||
 		nodes[0].Reboot == nil || *nodes[0].Reboot || nodes[0].OS != "TestOS" {
 		t.Fatalf("list: %+v", nodes)

@@ -41,6 +41,12 @@ func LoadOrCreateAt(path string) (id *Identity, created bool, err error) {
 	return id, false, err
 }
 
+// Load reads the agent key pair from dir and never creates one; found=false if dir holds none. For a tool that must
+// not race the agent creating its own (vordr-agent install reads the key the service has just made).
+func Load(dir string) (id *Identity, found bool, err error) {
+	return LoadAt(filepath.Join(dir, keyFile))
+}
+
 // LoadAt reads an existing key pair and never creates one; found=false if path holds none. For tools that run as
 // another user than the service owning the key: a key they created would belong to the wrong user.
 func LoadAt(path string) (id *Identity, found bool, err error) {

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/psewar/vordr/internal/facts"
 	"github.com/psewar/vordr/internal/protocol"
 	"github.com/psewar/vordr/internal/wire"
 )
@@ -18,7 +19,7 @@ import (
 // already root on the hub host. There is no web interface, and Home Assistant cannot admit hosts.
 
 type AdminRequest struct {
-	// list | approve | reject | forget | check | backup | events, and for Home Assistant clients:
+	// list | show | approve | reject | forget | check | backup | events, and for Home Assistant clients:
 	// clients | approve-client | reject-client | forget-client | client-role
 	Cmd         string       `json:"cmd"`
 	Node        string       `json:"node,omitempty"`
@@ -29,8 +30,9 @@ type AdminRequest struct {
 }
 
 type AdminResponse struct {
-	Code      AdminCode        `json:"code"`
-	Nodes     []NodeView       `json:"nodes,omitempty"`
+	Code AdminCode `json:"code"`
+	// Hosts: the answer of list and show, also when show is refused (ADR-0171).
+	Hosts     *HostsDoc        `json:"hosts,omitempty"`
 	Clients   []ClientView     `json:"clients,omitempty"`
 	JobStatus *wire.JobStatus  `json:"job_status,omitempty"`
 	Backup    *wire.BackupView `json:"backup,omitempty"` // backup: what the check before an install decides now
@@ -58,7 +60,24 @@ type ClientView struct {
 	Role               string         `json:"role"`
 }
 
-// NodeView is one line of "list".
+// AdminFormat is the version of HostsDoc (ADR-0171). Within a version fields are only added; a field that goes away,
+// is renamed or changes its type or meaning raises it. The host views inside follow wire.HAProtocol instead.
+const AdminFormat = 1
+
+// HostsDoc is the answer of "list" and "show" for programs: vordr-hub list --json and show --json print it as it is
+// (ADR-0171). show is list narrowed to one host; refused (unknown_node), Nodes is empty. A field that is absent or null
+// is unknown or does not apply.
+type HostsDoc struct {
+	Format     int        `json:"format"` // AdminFormat
+	Code       AdminCode  `json:"code"`
+	HAProtocol int        `json:"ha_protocol"` // the version of each NodeView.View (wire.HAProtocol)
+	HubVersion string     `json:"hub_version"`
+	At         time.Time  `json:"at"`    // when the views were computed
+	Nodes      []NodeView `json:"nodes"` // sorted by name; never null
+}
+
+// NodeView is one host of "list" and "show": what the register knows about it and, for an approved host, the view
+// Home Assistant gets. Public keys stay out; the fingerprint names the key.
 type NodeView struct {
 	Node         string         `json:"node"`
 	State        wire.NodeState `json:"state"`
@@ -71,6 +90,20 @@ type NodeView struct {
 	Security     *int           `json:"security,omitempty"`
 	Reboot       *bool          `json:"reboot_required,omitempty"` // only when some signal answered
 	ReportAt     *time.Time     `json:"report_at,omitempty"`
+	FirstSeen    time.Time      `json:"first_seen"`
+	DecidedAt    *time.Time     `json:"decided_at,omitempty"`  // approval or rejection
+	AgentSince   *time.Time     `json:"agent_since,omitempty"` // since when the host has run AgentVersion
+	Facts        facts.Host     `json:"facts"`
+	// Verbs: what the agent version can do; Policy: what its agent.yaml allows, both as of its last hello.
+	Verbs  []protocol.Verb    `json:"verbs"`
+	Policy wire.PolicySummary `json:"policy"`
+	// PendingSince: since when updates have been pending without a break (the problem stale counts from it).
+	PendingSince *time.Time `json:"pending_since,omitempty"`
+	// LastInstall: when the agent's last run that changed packages started (ADR-0110).
+	LastInstall *time.Time `json:"last_install,omitempty"`
+	// View: the state of an approved host exactly as Home Assistant gets it (problem, last run, reboot, updates);
+	// nil for a host that waits or was rejected.
+	View *wire.HostView `json:"view,omitempty"`
 }
 
 // checkTimeout: a check may refresh package lists over a slow link.
@@ -149,8 +182,8 @@ func (s *Server) serveAdminConn(c net.Conn) {
 // Admin carries out one request.
 func (s *Server) Admin(req AdminRequest) AdminResponse {
 	switch req.Cmd {
-	case "list":
-		return AdminResponse{Code: AdminOK, Nodes: s.views()}
+	case "list", "show":
+		return s.hostsAnswer(req)
 	case "approve", "reject":
 		to := wire.StateApproved
 		if req.Cmd == "reject" {
@@ -240,30 +273,59 @@ func (s *Server) clientViews() []ClientView {
 	return out
 }
 
-func (s *Server) views() []NodeView {
-	var out []NodeView
-	for _, e := range s.Reg.List() {
-		v := NodeView{Node: e.Node, State: e.State, Fingerprint: e.Fingerprint, AgentVersion: e.AgentVersion, OS: e.Facts.OS}
-		if online, seen := s.Online(e.Node); online {
-			v.Online, v.LastSeen = true, &seen
+// hostsAnswer: every host for list, the one asked for for show (ADR-0171). show without a node is a bad request, show
+// of a host the register does not know unknown_node; both still carry the document, with no host in it.
+func (s *Server) hostsAnswer(req AdminRequest) AdminResponse {
+	now := s.Now()
+	doc := &HostsDoc{Format: AdminFormat, Code: AdminOK, HAProtocol: wire.HAProtocol, HubVersion: s.Version, At: now.UTC(),
+		Nodes: []NodeView{}}
+	switch {
+	case req.Cmd == "list":
+		for _, e := range s.Reg.List() {
+			doc.Nodes = append(doc.Nodes, s.nodeView(e, now))
 		}
-		if r := e.LastReport; r != nil {
-			at := r.CheckedAt
-			v.ReportAt = &at
-			pending, security := 0, 0
-			for _, src := range r.Sources {
-				pending += src.Pending
-				security += src.Security
-			}
-			v.Pending, v.Security = &pending, &security
-			if r.Reboot != nil && len(r.Reboot.Checked) > 0 {
-				req := r.Reboot.Required
-				v.Reboot = &req
-			}
+	case req.Node == "":
+		doc.Code = AdminBadRequest
+	default:
+		if e, ok := s.Reg.Get(req.Node); ok {
+			doc.Nodes = append(doc.Nodes, s.nodeView(e, now))
+		} else {
+			doc.Code = AdminUnknownNode
 		}
-		out = append(out, v)
 	}
-	return out
+	return AdminResponse{Code: doc.Code, Hosts: doc}
+}
+
+func (s *Server) nodeView(e Entry, now time.Time) NodeView {
+	v := NodeView{Node: e.Node, State: e.State, Fingerprint: e.Fingerprint, AgentVersion: e.AgentVersion, OS: e.Facts.OS,
+		FirstSeen: e.FirstSeen, DecidedAt: e.DecidedAt, AgentSince: e.AgentSince, Facts: e.Facts, Verbs: e.Verbs,
+		Policy: e.Policy, PendingSince: e.PendingSince, LastInstall: e.LastInstall}
+	if v.Verbs == nil {
+		v.Verbs = []protocol.Verb{}
+	}
+	if online, seen := s.Online(e.Node); online {
+		v.Online, v.LastSeen = true, &seen
+	}
+	if r := e.LastReport; r != nil {
+		at := r.CheckedAt
+		v.ReportAt = &at
+		pending, security := 0, 0
+		for _, src := range r.Sources {
+			pending += src.Pending
+			security += src.Security
+		}
+		v.Pending, v.Security = &pending, &security
+		if r.Reboot != nil && len(r.Reboot.Checked) > 0 {
+			req := r.Reboot.Required
+			v.Reboot = &req
+		}
+	}
+	// The same calculation as for Home Assistant, which only gets approved hosts.
+	if e.State == wire.StateApproved {
+		hv := s.HostView(e, now)
+		v.View = &hv
+	}
+	return v
 }
 
 // AdminCall sends one request to the hub's admin socket and waits for the answer.

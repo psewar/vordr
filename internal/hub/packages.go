@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/psewar/vordr/internal/inventory"
+	"github.com/psewar/vordr/internal/kev"
 	"github.com/psewar/vordr/internal/osv"
 	"github.com/psewar/vordr/internal/protocol"
 	"github.com/psewar/vordr/internal/versions"
@@ -130,6 +131,10 @@ type Packages struct {
 	// indexes stay on disk; matchMu lets one match at a time load one.
 	images  map[string]map[string]imageMatch
 	matchMu sync.Mutex
+	// kevs: the KEV catalog that marks findings (ADR-0168), nil without a kev section; kevSeen: the catalog the views
+	// in views were marked with - another one drops them.
+	kevs    *KEV
+	kevSeen *kev.Catalog
 }
 
 // NewPackages loads the inventories and OSV indexes kept in stateDir. cfg nil: no OSV data.
@@ -394,6 +399,24 @@ func (p *Packages) implausible(eco versions.Ecosystem, db *osv.DB) string {
 // OSVOn reports whether the hub keeps OSV data (an osv section), so that it can vouch for update plans.
 func (p *Packages) OSVOn() bool { return p.cfg != nil }
 
+// SetKEV gives the findings the KEV catalog to be marked with (ADR-0168); k runs its own refresh.
+func (p *Packages) SetKEV(k *KEV) {
+	p.mu.Lock()
+	p.kevs = k
+	p.mu.Unlock()
+}
+
+// KEVView: the state of the KEV catalog; nil without a kev section.
+func (p *Packages) KEVView() *wire.KEVView {
+	p.mu.Lock()
+	k := p.kevs
+	p.mu.Unlock()
+	if k == nil {
+		return nil
+	}
+	return k.View()
+}
+
 // Vet checks every entry of an update plan against the OSV data (design 11.4). unavailable says why the hub cannot
 // vouch (data missing or stale); then there is no statement about the entries.
 func (p *Packages) Vet(eco versions.Ecosystem, plan []protocol.VetPackage) ([]protocol.VetPackage, string) {
@@ -579,6 +602,13 @@ func rank(s string) int {
 func (p *Packages) View(node string) *wire.PackagesView {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	var cat *kev.Catalog
+	if p.kevs != nil {
+		cat = p.kevs.Catalog()
+	}
+	if cat != p.kevSeen { // a new KEV catalog marks anew
+		p.views, p.kevSeen = map[string]*wire.PackagesView{}, cat
+	}
 	if v, ok := p.views[node]; ok {
 		return v
 	}
@@ -587,7 +617,7 @@ func (p *Packages) View(node string) *wire.PackagesView {
 		return nil
 	}
 	v := &wire.PackagesView{CheckedAt: inv.CheckedAt, Locations: []wire.LocationView{}}
-	vulnerable, malicious, outdated, waiting, known := 0, 0, 0, 0, true
+	vulnerable, malicious, outdated, waiting, exploited, known := 0, 0, 0, 0, 0, true
 	var findings []wire.FindingView
 	var updates []wire.UpdateView
 	for _, loc := range inv.Locations {
@@ -617,6 +647,12 @@ func (p *Packages) View(node string) *wire.PackagesView {
 				continue
 			}
 			fv := findingView(loc.ID, pkg.Name, pkg.Version, pkg.Via, found, loc.Ecosystem)
+			if cat != nil {
+				markKnownExploited(&fv, found, cat)
+				if fv.KnownExploited {
+					exploited++
+				}
+			}
 			if fv.Malicious {
 				malicious++
 				lv.Malicious++
@@ -634,11 +670,21 @@ func (p *Packages) View(node string) *wire.PackagesView {
 	}
 	if known {
 		v.Vulnerable, v.Malicious, v.Waiting = &vulnerable, &malicious, &waiting
+		if cat != nil {
+			v.KnownExploited = &exploited
+		}
 	}
+	// Malware first, then what is known to be exploited (ADR-0168), then by rating: the cut at MaxFindings drops the
+	// least urgent.
 	slices.SortStableFunc(findings, func(a, b wire.FindingView) int {
 		switch {
 		case a.Malicious != b.Malicious:
 			if a.Malicious {
+				return -1
+			}
+			return 1
+		case a.KnownExploited != b.KnownExploited:
+			if a.KnownExploited {
 				return -1
 			}
 			return 1

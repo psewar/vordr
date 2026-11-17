@@ -1,0 +1,112 @@
+blueprint:
+  name: Vördr - notify when the hub is unreachable
+  description: >-
+    Sends a notification when Home Assistant has had no connection to the Vördr hub for a number of minutes (its
+    online entity is off), and optionally when the connection is back. The hosts show as unavailable while the hub is
+    away, so this is the one message for that case.
+  domain: automation
+  author: Vördr
+  homeassistant:
+    min_version: 2024.10.0
+  input:
+    notify_service:
+      name: Notify service
+      description: The notify action to call, for example `notify.mobile_app_<device>` or a notify group.
+      selector:
+        text:
+    hub_online:
+      name: Hub online entity
+      description: The binary sensor "Online" of the Vördr hub device (`binary_sensor.vordr_hub_online`).
+      selector:
+        entity:
+          filter:
+            - integration: vordr
+              domain: binary_sensor
+              device_class: connectivity
+    minutes:
+      name: Minutes without a connection
+      default: 5
+      selector:
+        number:
+          min: 1
+          max: 1440
+          step: 1
+          unit_of_measurement: min
+          mode: box
+    language:
+      name: Language of the message
+      default: en
+      selector:
+        select:
+          options:
+            - en
+            - de
+          custom_value: true
+    notify_when_back:
+      name: Tell when the connection is back
+      description: Only after an outage that was announced.
+      default: true
+      selector:
+        boolean:
+
+mode: queued
+max: 5
+
+triggers:
+  - trigger: state
+    entity_id: !input hub_online
+    from: "on"
+    to: "off"
+    for:
+      minutes: !input minutes
+    id: lost
+  - trigger: state
+    entity_id: !input hub_online
+    from: "off"
+    to: "on"
+    id: back
+
+variables:
+  notify_service: !input notify_service
+  minutes: !input minutes
+  language: !input language
+  notify_when_back: !input notify_when_back
+  texts:
+    en:
+      lost: "Vördr hub unreachable"
+      lost_body: "Home Assistant has had no connection to the Vördr hub for {minutes} minutes."
+      back: "Vördr hub reachable again"
+      back_body: "The connection to the Vördr hub is back."
+    de:
+      lost: "Vördr-Leitstelle nicht erreichbar"
+      lost_body: "Home Assistant hat seit {minutes} Minuten keine Verbindung zur Vördr-Leitstelle."
+      back: "Vördr-Leitstelle wieder erreichbar"
+      back_body: "Die Verbindung zur Vördr-Leitstelle besteht wieder."
+  text: "{{ texts.get(language, texts.en) }}"
+
+actions:
+  - choose:
+      - alias: The hub stayed away
+        conditions:
+          - condition: trigger
+            id: lost
+        sequence:
+          - action: "{{ notify_service }}"
+            data:
+              title: "{{ text.lost }}"
+              message: "{{ text.lost_body.format(minutes=minutes | int(0)) }}"
+              data:
+                tag: vordr_hub_offline
+      - alias: The hub is back after an announced outage
+        conditions:
+          - condition: trigger
+            id: back
+          - condition: template
+            value_template: "{{ notify_when_back and (now() - trigger.from_state.last_changed).total_seconds() >= (minutes | float(0)) * 60 }}"
+        sequence:
+          - action: "{{ notify_service }}"
+            data:
+              title: "{{ text.back }}"
+              message: "{{ text.back_body }}"
+              data:
+                tag: vordr_hub_offline

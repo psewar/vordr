@@ -1,2 +1,5 @@
 pytest-homeassistant-custom-component==0.13.375
 ruff==0.17.3
+# The integration's own requirement (manifest.json asks for asyncssh>=2.24.0,<3): tested with the version Home Assistant
+# pins for its sftp_storage integration, the lower end of that range.
+asyncssh==2.24.0

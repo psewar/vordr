@@ -20,7 +20,8 @@ import (
 // The Home Assistant endpoint /v1/ha (design/ha-integration.md, section 5). A client proves its key like an agent
 // and is admitted only by the operator at the hub. Until then it gets its status and nothing else. Once approved it
 // gets a snapshot, then every change, and may ask for commands, which take the same way as MQTT's: Resolve, a job
-// signed by the hub, the agent's own checks.
+// signed by the hub, the agent's own checks. A client with role admin may also ask for the agent release to install a
+// new host (agentdownload.go).
 
 var requestIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
@@ -120,7 +121,7 @@ func (s *Server) loginHA(conn *wire.Conn, remote string) (*haSession, bool) {
 	}
 	s.Events.Log("", "ha_hello", map[string]any{"client": h.Name, "state": state, "reason": reason, "fingerprint": fp,
 		"integration_version": h.IntegrationVersion, "remote": remote})
-	if conn.Send(wire.Status{T: wire.TStatus, State: state, Reason: reason, Fingerprint: fp}) != nil ||
+	if conn.Send(wire.Status{T: wire.TStatus, State: state, Reason: reason, Fingerprint: fp, Features: haFeatures()}) != nil ||
 		state == wire.StateRejected {
 		return nil, false
 	}
@@ -168,6 +169,18 @@ func (s *Server) loopHA(sess *haSession) {
 			if sess.conn.Send(s.haCommand(sess, c)) != nil {
 				return
 			}
+		case wire.TAgentDownload:
+			var a wire.AgentDownload
+			if json.Unmarshal(raw, &a) != nil || !requestIDPattern.MatchString(a.RequestID) {
+				s.Events.Log("", "ha_protocol_violation", map[string]any{"client": sess.name, "type": t})
+				return
+			}
+			res := s.haAgentDownload(sess, a)
+			if sess.conn.Send(res) != nil || res.Code == string(AdminClientNotApproved) {
+				// A client that is not approved has nothing to ask for: one answer with the code, one line in the event
+				// log, and the connection ends, so that a pending client cannot write the log full (ADR-0167).
+				return
+			}
 		default:
 			s.Events.Log("", "ha_protocol_violation", map[string]any{"client": sess.name, "type": t})
 			return
@@ -186,9 +199,8 @@ func (s *Server) haCommand(sess *haSession, c wire.Command) wire.CommandResult {
 		res.Code = string(code)
 		return res
 	}
-	// Decided on the register as it is now, not as it was at login.
-	client, ok := s.Clients.Get(sess.name)
-	if !ok || client.State != wire.StateApproved || client.Fingerprint != sess.fingerprint {
+	client, ok := s.approvedClient(sess)
+	if !ok {
 		return refused(AdminClientNotApproved)
 	}
 	verb, scope, code := s.Resolve(c.Node, c.Command)
@@ -281,6 +293,16 @@ func (s *Server) haCommand(sess *haSession, c wire.Command) wire.CommandResult {
 	res.Code, res.JobID = string(AdminOK), job.ID
 	return res
 }
+
+// approvedClient is the session's client as the register has it now, and whether it is approved with the session's
+// key. Every request is decided on the register as it is now, not as it was at login.
+func (s *Server) approvedClient(sess *haSession) (ClientEntry, bool) {
+	c, ok := s.Clients.Get(sess.name)
+	return c, ok && c.State == wire.StateApproved && c.Fingerprint == sess.fingerprint
+}
+
+// haFeatures: what the hub accepts from Home Assistant beyond the base protocol, in every status it sends a client.
+func haFeatures() []string { return []string{wire.FeatureAgentDownload} }
 
 // haJob is the job a Home Assistant command becomes. It is decided when the job goes out, since a command that waited
 // in the queue may start later: the reason outside the window (ADR-0109), and the fixes the agent may take at its
@@ -395,7 +417,7 @@ func (s *Server) notifyClient(name string) {
 	case c.State == wire.StateApproved:
 		sess.mu.Lock()
 		// Status before the snapshot: sent under sess.mu, which syncHA needs as well.
-		err := sess.conn.Send(wire.Status{T: wire.TStatus, State: c.State, Fingerprint: c.Fingerprint})
+		err := sess.conn.Send(wire.Status{T: wire.TStatus, State: c.State, Fingerprint: c.Fingerprint, Features: haFeatures()})
 		sess.approved, sess.synced = err == nil, false
 		sess.mu.Unlock()
 		sess.markDirty()
