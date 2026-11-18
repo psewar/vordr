@@ -24,12 +24,19 @@ und Aufträge signiert; die Integration zeigt ihre Sichten und fragt Befehle an.
 
 | Gerät | Entitäten |
 |---|---|
-| „Vördr-Leitstelle“ bzw. „Vördr hub“ (Systemsprache) | `binary_sensor.vordr_hub_online`, `sensor.vordr_hub_hosts_online`, `_hosts_with_problem`, `_pending_approvals`, `_connection` (Diagnose) |
+| „Vördr-Leitstelle“ bzw. „Vördr hub“ (Systemsprache) | `binary_sensor.vordr_hub_online`, `sensor.vordr_hub_hosts_online`, `_hosts_with_problem`, `_hosts_with_updates`, `_hosts_with_security_updates`, `_hosts_needing_reboot`, `_pending_approvals`, `_connection` (Diagnose) |
 | „Vördr Home Assistant“ | `sensor.vordr_ha_updates_ready` „Updates bereit“: Updates von Home Assistant selbst, die die Regeln von Vördr jetzt durchlassen; `sensor.vordr_ha_updates_last_run` „Letzter Lauf“: was Vördr zuletzt installiert hat und wie es endete; `switch.vordr_ha_updates_paused` „Home-Assistant-Updates pausieren“. Nichts wird installiert, bevor es eingeschaltet ist (siehe unten) |
 | „Vördr <node>“ je Host | `binary_sensor.vordr_<id>_online`, `_problem`, `_reboot_required`; `sensor.vordr_<id>_last_report`, `_last_run`; mit Paketquelle `update.vordr_<id>_system`, `sensor.vordr_<id>_pending_updates`, `_security_updates`; Knöpfe je nach Fähigkeit (`_check`, `_install_security`, `_reboot`, `_agent_update`, `_install_app_<app>`); mit `packages.containers` `update.vordr_<id>_containers` „Container-Images“, gemeldet; installiert nur, wenn agent.yaml Compose-Dienste erlaubt (`image:<projekt>/<dienst>` in `install.allowed_scopes`), und dann nur den Neubau ihres Tags (einen Dienst allein per Aktion `vordr.update_image`); „an“ nur, solange dieser Installieren-Knopf etwas nähme, ein neuerer Tag oder ein nicht erlaubter Dienst lässt sie also aus; `sensor.vordr_<id>_outdated_images` „Veraltete Images“ zählt jedes veraltete Image, auch die, die Handarbeit bleiben (Attribute `ready`, `installable`, `updates`); mit `Debian` oder `Alpine` in `osv.ecosystems` der Leitstelle auch bekannte Schwachstellen in den Images (Attribut `vulnerable`; „an“ nur, wenn ein neueres Image zum Installieren da ist, Schwachstellen allein schalten nicht an; die Zusammenfassung sagt je Image, ob ein neueres Image bereit ist; Meldungen zum Kernel des Images zählen nicht und stehen je Image als `kernel`) |
 
 Unbekanntes bleibt unbekannt: eine gescheiterte Prüfung macht `update.*_system` und die Zähler „unbekannt“, nie
 „aktuell“; ein Host ohne Neustart-Signal (Container) hat `reboot_required` „unbekannt“, nie „aus“.
+
+**Ist alles aktuell?** Das Leitstellen-Gerät zählt über alle Hosts: `sensor.vordr_hub_hosts_with_updates` (Updates des
+Systems, veraltete Images oder pip/npm-Pakete), `_hosts_with_security_updates` und `_hosts_needing_reboot`, je mit dem
+Attribut `hosts`. Ein Host, dessen System-Prüfung scheiterte oder der noch nicht berichtet hat, steht im Attribut
+`unknown` und zählt nicht; Images und Pakete zählen, wo der Host sie vergleicht. „0“ mit leerem `unknown` heisst, jeder
+Host wurde geprüft und hat nichts zu aktualisieren, z. B. als Template-Bedingung
+`{{ is_state('sensor.vordr_hub_hosts_with_updates', '0') and not state_attr('sensor.vordr_hub_hosts_with_updates', 'unknown') }}`.
 
 **Für Automationen:**
 - Ereignis `vordr_problem` `{node, active, reason, reasons, check_failed_code, message}` bei jedem neuen, geänderten
@@ -44,6 +51,11 @@ Unbekanntes bleibt unbekannt: eine gescheiterte Prüfung macht `update.*_system`
   braucht. Wo Vördr neu starten darf, startet „Beheben“ den Neustart (wie der Neustart-Knopf); sonst sagt der Hinweis,
   dass von Hand neu zu starten ist. Nach `reboot_pending_after_days` der Leitstelle (Vorgabe 7) wird er zum Fehler und ersetzt den Problem-Hinweis `reboot_pending`
   ([ADR-0132](../docs/adr/0132-a-needed-reboot-is-a-repair-from-the-first-report.md)).
+- Ausserhalb des Neustart-Fensters eines Hosts schicken der Neustart-Knopf und „Beheben“ nichts und sagen, ab wann der
+  Neustart läuft; der Knopf zeigt das Fenster und die Uhrzeit als Attribute (`reboot_window`, `next_reboot`). Bei
+  einem Host mit `reboot.window_only` hilft auch ein Grund nicht; bei jedem anderen startet die Aktion
+  `vordr.press_outside_window` mit einem Grund sofort neu
+  ([ADR-0187](../docs/adr/0187-the-agent-reports-its-reboot-window-and-home-assistant-says-when-a-reboot-can-run.md)).
 - Ein gescheiterter Install, den die Leitstelle als Problem festhält, bis ein Install durchläuft, steht als
   Reparaturhinweis „erneut installieren“, wo Vördr installieren darf: Ist die Ursache behoben, installiert „Beheben“
   erneut, und ein Lauf, der durchläuft, löscht ihn, auch wenn nichts mehr zu installieren ist
@@ -162,7 +174,8 @@ oder sie gibt das Release nicht heraus, die SSH-Bibliothek fehlt. Sonst:
 
 1. Host, SSH-Port, Benutzer und Name des Knotens (leer: der eigene Name des Hosts);
 2. der Host-Schlüssel, den der Server zeigt: an der Konsole des Hosts mit dessen eigenem vergleichen
-   (`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`) und nur bestätigen, wenn beide gleich sind;
+   (der Dialog nennt die Datei, z. B. `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`; er fragt zuerst nach ED25519)
+   und nur bestätigen, wenn beide gleich sind;
 3. ein Passwort oder ein privater Schlüssel (mit Passphrase) und das Passwort für sudo, falls es vom Passwort der
    Anmeldung abweicht. Wenn möglich einen Schlüssel oder ein Passwort eigens dafür verwenden: Home Assistant hält
    Passwort und Schlüssel der Anmeldung im Speicher, bis es angemeldet ist, das Passwort für sudo, bis die Installation
@@ -239,7 +252,8 @@ Ereignissen und Entitäten oben Benachrichtigungen
   Wartezeit, ignorierte Gründe, ein Hinweis beim Ende.
 - `run_failed.yaml`: Ein Lauf endet mit einem anderen Ergebnis als `ok`.
 - `reboot_offer.yaml`: Ein Host braucht einen Neustart; wo Vördr ihn neu starten darf, hat die Benachrichtigung die
-  Aktion „Jetzt neu starten“, die auf einen Tipp den Neustart-Knopf des Hosts drückt (Companion-App).
+  Aktion „Jetzt neu starten“, die auf einen Tipp den Neustart-Knopf des Hosts drückt (Companion-App); bei geschlossenem
+  Neustart-Fenster sagt der Tipp stattdessen, ab wann.
 - `hub_offline.yaml`: Die Online-Entität der Leitstelle ist seit N Minuten aus.
 
 Import: *Einstellungen → Automatisierungen & Szenen → Blueprints → Blueprint importieren*, mit der Adresse der Datei im

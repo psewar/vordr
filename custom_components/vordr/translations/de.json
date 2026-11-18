@@ -64,7 +64,7 @@
         },
         "host_key": {
           "title": "Host-Schlüssel prüfen",
-          "description": "{host}:{port} zeigt diesen Host-Schlüssel ({algorithm}):\n\n`{fingerprint}`\n\nMit dem des Hosts selbst vergleichen, an seiner Konsole: `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` (für einen anderen Typ seine Datei in /etc/ssh). Nur weiter, wenn beide gleich sind: Sonst sitzt womöglich jemand zwischen Home Assistant und dem Host. Die Anmeldung nimmt nur diesen Schlüssel an; in eine known_hosts-Datei wird nichts geschrieben.",
+          "description": "{host}:{port} zeigt diesen Host-Schlüssel ({algorithm}):\n\n`{fingerprint}`\n\nMit dem des Hosts selbst vergleichen, an seiner Konsole: `ssh-keygen -lf /etc/ssh/{key_file}`. Nur weiter, wenn beide gleich sind: Sonst sitzt womöglich jemand zwischen Home Assistant und dem Host. Die Anmeldung nimmt nur diesen Schlüssel an; in eine known_hosts-Datei wird nichts geschrieben.",
           "menu_options": {
             "login": "Sie sind gleich: anmelden",
             "host_key_rejected": "Sie weichen ab: abbrechen"
@@ -100,7 +100,7 @@
         "sudo_password_invalid": "Ein Passwort auf einer Zeile.",
         "ssh_unreachable": "Der Host ist nicht erreichbar: Name, Adresse und Port prüfen.",
         "ssh_timeout": "Der Host antwortet nicht rechtzeitig.",
-        "ssh_failed": "Die Gegenseite spricht nicht SSH wie erwartet.",
+        "ssh_failed": "Die Gegenseite spricht nicht SSH wie erwartet oder bietet keinen Host-Schlüssel-Typ an, den die Installation annimmt (ED25519, ECDSA, RSA mit SHA-2).",
         "ssh_no_host_key": "Der Host hat keinen Host-Schlüssel gezeigt.",
         "ssh_auth_failed": "Die Anmeldung wurde abgelehnt: Benutzer, Passwort oder Schlüssel falsch, oder der Host erlaubt diese Art der Anmeldung nicht.",
         "ssh_lost": "Die Verbindung zum Host ist abgebrochen. Nichts wurde geändert.",
@@ -144,6 +144,7 @@
         "ca_failed": "Das CA-Zertifikat der Leitstelle liess sich nicht auf den Host legen. Nichts wurde installiert.",
         "ca_differs": "`{ca_path}` liegt schon auf dem Host und unterscheidet sich vom CA-Zertifikat dieser Leitstelle: dort vergleichen. Auf dem Host wurde nichts geändert.",
         "download_failed": "Der Host konnte den Agenten nicht von der Leitstelle herunterladen (`{tool}`, Exit {exit}): Erreicht er die Leitstelle unter der Adresse, die Home Assistant verwendet? Nichts wurde installiert.",
+        "download_unreachable": "Der Host bekommt keine Verbindung zur Leitstelle unter `{hub}` (`{tool}`, Exit {exit}): Der Name der Leitstelle lässt sich dort nicht auflösen, oder eine Firewall an der Leitstelle oder dazwischen sperrt diesen Host. Ihn dort freigeben und erneut versuchen. Nichts wurde installiert.",
         "download_refused": "Die Leitstelle hat den Download abgelehnt (HTTP {http}, `{reason}`): noch einmal versuchen. Nichts wurde installiert.",
         "download_too_large": "Die Leitstelle hat mehr geschickt als die signierte Grösse des Agenten (`{tool}`): Der Host hat den Download bei dieser Grösse angehalten und gelöscht. Nichts wurde installiert.",
         "size_mismatch": "Der heruntergeladene Agent hat nicht die Grösse, die das signierte Manifest nennt: Er wurde nicht ausgeführt und ist gelöscht. Nichts wurde installiert.",
@@ -519,6 +520,9 @@
       "outdated_images": { "name": "Veraltete Images" },
       "hub_hosts_online": { "name": "Hosts verbunden" },
       "hub_hosts_with_problem": { "name": "Hosts mit Problem" },
+      "hub_hosts_with_updates": { "name": "Hosts mit Updates" },
+      "hub_hosts_with_security_updates": { "name": "Hosts mit Sicherheitsupdates" },
+      "hub_hosts_needing_reboot": { "name": "Hosts mit fälligem Neustart" },
       "hub_pending_approvals": { "name": "Wartende Freigaben" },
       "hub_vulnerability_data": { "name": "Schwachstellendaten" },
       "hub_connection": {
@@ -594,7 +598,14 @@
     "button": {
       "check": { "name": "Jetzt prüfen" },
       "install_security": { "name": "Sicherheitsupdates installieren" },
-      "reboot": { "name": "Neu starten" },
+      "reboot": {
+        "name": "Neu starten",
+        "state_attributes": {
+          "reboot_window": { "name": "Neustart-Fenster" },
+          "window_only": { "name": "Fenster auch mit Grund zu" },
+          "next_reboot": { "name": "Neustart möglich ab" }
+        }
+      },
       "install_app": { "name": "{app} installieren" }
     },
     "switch": {
@@ -636,6 +647,12 @@
     },
     "command_refused_rate_limited": {
       "message": "{node}: nicht installiert – sein letzter Lauf ist weniger lang her als sein Mindestabstand (install.min_interval_h). Wieder möglich ab {next}."
+    },
+    "reboot_window_closed": {
+      "message": "{node}: Neustart erst ab {next} möglich – bis dahin ist das Neustart-Fenster des Hosts (reboot.window) zu. Für einen Neustart jetzt die Aktion „Ausserhalb des Fensters ausführen“ mit einem Grund verwenden."
+    },
+    "reboot_window_only": {
+      "message": "{node}: Neustart erst ab {next} möglich – das Neustart-Fenster dieses Hosts (reboot.window) ist zu und lässt sich auch mit Grund nicht öffnen (reboot.window_only)."
     }
   },
   "issues": {
@@ -654,7 +671,9 @@
           "no_longer_needed": "{node} braucht keinen Neustart mehr.",
           "reboot_not_offered": "{node} erlaubt keinen Neustart über Vördr mehr. Bitte von Hand neu starten.",
           "command_refused": "Die Leitstelle hat den Neustart von {node} abgelehnt (Code {code}).",
-          "command_refused_role_forbids": "Die Leitstelle hat den Neustart von {node} abgelehnt: Dieses Home Assistant darf ihn nicht auslösen - seine Rolle an der Leitstelle erlaubt es nicht (vordr-hub client-role)."
+          "command_refused_role_forbids": "Die Leitstelle hat den Neustart von {node} abgelehnt: Dieses Home Assistant darf ihn nicht auslösen - seine Rolle an der Leitstelle erlaubt es nicht (vordr-hub client-role).",
+          "reboot_window_closed": "{node} lässt sich erst ab {next} neu starten: Sein Neustart-Fenster (reboot.window) ist bis dahin zu. Dann noch einmal versuchen oder jetzt mit der Aktion „Ausserhalb des Fensters ausführen“ und einem Grund neu starten.",
+          "reboot_window_only": "{node} lässt sich erst ab {next} neu starten: Sein Neustart-Fenster (reboot.window) ist zu und lässt sich auch mit Grund nicht öffnen (reboot.window_only). Dann noch einmal versuchen."
         }
       }
     },
@@ -989,7 +1008,7 @@
     },
     "press_outside_window": {
       "name": "Ausserhalb des Fensters ausführen",
-      "description": "Drückt einen Vördr-Knopf (Sicherheitsupdates installieren, App installieren, Neu starten) mit eigenem Grund. Ein Neustart ausserhalb des Fensters des Hosts braucht ihn; die Installieren-Knöpfe laufen ohnehin auch ausserhalb. Neu starten braucht weiterhin die Rolle admin an der Leitstelle.",
+      "description": "Drückt einen Vördr-Knopf (Sicherheitsupdates installieren, App installieren, Neu starten) mit eigenem Grund. Ein Neustart ausserhalb des Fensters des Hosts braucht ihn, ausser der Host hält sein Neustart-Fenster auch für einen Grund geschlossen (reboot.window_only); die Installieren-Knöpfe laufen ohnehin auch ausserhalb. Neu starten braucht weiterhin die Rolle admin an der Leitstelle.",
       "fields": {
         "reason": {
           "name": "Grund",

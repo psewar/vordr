@@ -218,5 +218,11 @@ Generated from the files by `python3 docs/adr/check_index.py --write`. `build.sh
 | [0182](0182-the-repairs-fix-installs-a-failed-home-assistant-update-at-once.md) | The repair's fix installs a failed Home Assistant update at once | accepted | 2026-11-17 |
 | [0183](0183-device-firmware-and-the-radio-adapter-get-two-hours-to-report-their-version.md) | Device firmware and the radio adapter get two hours to report their version | accepted | 2026-11-17 |
 | [0184](0184-with-ai-explanations-off-nothing-is-sent-and-no-event-is-fired.md) | With AI explanations off, nothing is sent and no event is fired | accepted | 2026-11-17 |
-| [0185](0185-the-agent-install-starts-from-an-add-host-button-and-stores-no-subentry.md) | The agent install starts from an "Add host" button and stores no subentry | proposed | 2026-11-18 |
+| [0185](0185-the-agent-install-starts-from-an-add-host-button-and-stores-no-subentry.md) | The agent install starts from an "Add host" button and stores no subentry | accepted | 2026-11-18 |
+| [0186](0186-the-ssh-install-asks-for-the-ed25519-host-key-first-and-never-for-sha-1-signatures.md) | The SSH install asks for the ED25519 host key first and never for SHA-1 signatures | proposed | 2026-11-18 |
+| [0187](0187-the-agent-reports-its-reboot-window-and-home-assistant-says-when-a-reboot-can-run.md) | The agent reports its reboot window, and Home Assistant says when a reboot can run | proposed | 2026-11-18 |
+| [0188](0188-the-hub-device-counts-the-hosts-with-updates-and-a-reboot-due.md) | The hub device counts the hosts with updates and a reboot due | proposed | 2026-11-18 |
+| [0189](0189-the-diagnostics-download-names-no-site.md) | The diagnostics download names no site | proposed | 2026-11-18 |
+| [0190](0190-one-public-check-runs-the-install-script-as-root-under-the-real-systemd.md) | One public check runs the install script as root under the real systemd | proposed | 2026-11-18 |
+| [0191](0191-the-hub-bounds-every-field-of-an-agents-hello-before-it-keeps-it.md) | The hub bounds every field of an agent's hello before it keeps it | proposed | 2026-11-18 |
 <!-- adr-index:end -->

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+import json
 from typing import Any
 
 from homeassistant.components.recorder.db_schema import MAX_STATE_ATTRS_BYTES, StateAttributes
@@ -19,7 +20,7 @@ import voluptuous as vol
 
 from custom_components.vordr.const import DOMAIN, EVENT_PROBLEM, EVENT_RUN_FINISHED
 from custom_components.vordr.coordinator import local_time
-from custom_components.vordr.diagnostics import async_get_config_entry_diagnostics
+from custom_components.vordr.diagnostics import async_get_config_entry_diagnostics, hub_address
 
 from .conftest import FakeHub, host_view, wait_until
 
@@ -38,6 +39,9 @@ HUB_IDS = [
     "binary_sensor.vordr_hub_online",
     "sensor.vordr_hub_hosts_online",
     "sensor.vordr_hub_hosts_with_problem",
+    "sensor.vordr_hub_hosts_with_updates",
+    "sensor.vordr_hub_hosts_with_security_updates",
+    "sensor.vordr_hub_hosts_needing_reboot",
     "sensor.vordr_hub_pending_approvals",
     "sensor.vordr_hub_connection",
 ]
@@ -104,6 +108,54 @@ async def test_values_and_unknowns(hass: HomeAssistant, fake_hub: FakeHub, entry
     assert prob.attributes["reason"] == "check_failed" and prob.attributes["next_step"] == "precheck_repo_unreachable"
     assert hass.states.get("update.vordr_golf_system").attributes["release_summary"] is None
     assert hass.states.get("sensor.vordr_hub_hosts_with_problem").state == "1"
+
+
+async def test_the_hub_counts_the_hosts_to_update(
+    hass: HomeAssistant, fake_hub: FakeHub, entry: MockConfigEntry
+) -> None:
+    """ADR-0188: the hub device counts the hosts with updates (system, images, pip/npm), with security updates and
+    with a reboot due, names them, and lists apart the hosts for which it cannot be said (no report yet, a failed
+    system check); a comparison the host does not make (images or packages not compared) is no unknown. It follows
+    every push."""
+    current = {"pending": 0, "security": 0}
+    fake_hub.hosts["alpha"] = host_view("alpha")  # 2 pending, 1 security
+    fake_hub.hosts["bravo"] = host_view("bravo", **current, containers={"outdated": 0}, packages={"outdated": 0})
+    fake_hub.hosts["charlie"] = host_view(
+        "charlie",
+        **current,
+        containers={"outdated": 3},
+        packages={"outdated": 1},
+        reboot={"required": True, "reason": "kernel", "checked": ["kernel"], "since": "2026-11-10T00:00:00Z"},
+    )
+    fake_hub.hosts["delta"] = host_view("delta", pending=None, security=None)  # the check failed
+    fake_hub.hosts["echo"] = host_view("echo", last_report=None, pending=None, security=None)  # no report yet
+    fake_hub.hosts["foxtrot"] = host_view("foxtrot", pending=None, security=None, system=None)  # no package source
+    # images and packages that the host does not compare: no count, and nothing unknown about it
+    fake_hub.hosts["golf"] = host_view("golf", **current, containers={"outdated": None}, packages={"outdated": None})
+    # an inventory before the first report: its outdated images count, the rest cannot be said yet
+    fake_hub.hosts["hotel"] = host_view(
+        "hotel", last_report=None, pending=None, security=None, containers={"outdated": 2}
+    )
+    await setup(hass, entry)
+
+    updates = hass.states.get("sensor.vordr_hub_hosts_with_updates")
+    assert updates.state == "3"
+    assert updates.attributes["hosts"] == [
+        {"node": "alpha", "system": 2},
+        {"node": "charlie", "images": 3, "packages": 1},
+        {"node": "hotel", "images": 2},
+    ]
+    assert updates.attributes["unknown"] == ["delta", "echo"]
+    security = hass.states.get("sensor.vordr_hub_hosts_with_security_updates")
+    assert security.state == "1" and security.attributes["hosts"] == [{"node": "alpha", "security": 1}]
+    assert security.attributes["unknown"] == ["delta", "echo", "hotel"]
+    reboot = hass.states.get("sensor.vordr_hub_hosts_needing_reboot")
+    assert reboot.state == "1" and reboot.attributes["hosts"] == [{"node": "charlie", "since": "2026-11-10T00:00:00Z"}]
+    assert reboot.attributes["unknown"] == ["echo", "hotel"]
+
+    await fake_hub.push_host(host_view("alpha", **current))
+    await wait_until(lambda: hass.states.get("sensor.vordr_hub_hosts_with_security_updates").state == "0")
+    assert hass.states.get("sensor.vordr_hub_hosts_with_updates").state == "2"
 
 
 async def test_problem_shows_the_failed_install(hass: HomeAssistant, fake_hub: FakeHub, entry: MockConfigEntry) -> None:
@@ -847,6 +899,66 @@ async def test_outside_window_actions(hass: HomeAssistant, fake_hub: FakeHub, en
     assert err.value.translation_placeholders == {"node": "h", "next": local_time(nxt)}
 
 
+REBOOT_CAPS = {**host_view("h")["capabilities"], "reboot": True, "install_security": True, "outside_window": True}
+WORKDAYS = {"days": ["mon", "tue", "wed", "thu", "fri"], "start": "06:00", "end": "16:00", "tz": "Europe/Paris"}
+
+
+async def test_reboot_button_waits_for_the_reboot_window(
+    hass: HomeAssistant, fake_hub: FakeHub, entry: MockConfigEntry
+) -> None:
+    """ADR-0187: while the host's reboot window is closed, the reboot button sends nothing and says from when the reboot
+    runs; with reboot.window_only a reason does not help either, without it the action with a reason still goes out.
+    The button shows the window and the time. Once the time has come, and from a hub that does not say, it sends."""
+    nxt = dt_util.utcnow().replace(microsecond=0) + timedelta(hours=3)
+    only = {**WORKDAYS, "window_only": True}
+    view = {"capabilities": REBOOT_CAPS, "reboot_window": only, "next_reboot": nxt.isoformat()}
+    fake_hub.hosts["h"] = host_view("h", **view)
+    await setup(hass, entry)
+    attrs = hass.states.get("button.vordr_h_reboot").attributes
+    assert attrs["next_reboot"] == nxt.isoformat() and attrs["window_only"] is True
+    assert attrs["reboot_window"] == {"days": WORKDAYS["days"], "start": "06:00", "end": "16:00", "tz": "Europe/Paris"}
+    assert "next_reboot" not in hass.states.get("button.vordr_h_check").attributes
+
+    press = {"entity_id": "button.vordr_h_reboot"}
+    shown = {"node": "h", "next": local_time(nxt)}
+    with pytest.raises(HomeAssistantError) as err:
+        await hass.services.async_call("button", "press", press, blocking=True)
+    assert err.value.translation_key == "reboot_window_only" and err.value.translation_placeholders == shown
+    with pytest.raises(HomeAssistantError) as err:
+        await hass.services.async_call(DOMAIN, "press_outside_window", {**press, "reason": "now"}, blocking=True)
+    assert err.value.translation_key == "reboot_window_only" and err.value.translation_placeholders == shown
+    assert fake_hub.commands == []
+    # The other buttons have no reboot window.
+    await hass.services.async_call("button", "press", {"entity_id": "button.vordr_h_install_security"}, blocking=True)
+    assert [c["command"] for c in fake_hub.commands] == ["install_security"]
+
+    # Without window_only the button still waits - it carries no reason (ADR-0109) - but a reason opens the window.
+    await fake_hub.push_host(host_view("h", **{**view, "reboot_window": {**WORKDAYS, "window_only": False}}))
+    await wait_until(lambda: hass.states.get("button.vordr_h_reboot").attributes["window_only"] is False)
+    with pytest.raises(HomeAssistantError) as err:
+        await hass.services.async_call("button", "press", press, blocking=True)
+    assert err.value.translation_key == "reboot_window_closed" and err.value.translation_placeholders == shown
+    assert len(fake_hub.commands) == 1
+    await hass.services.async_call(DOMAIN, "press_outside_window", {**press, "reason": "now"}, blocking=True)
+    assert (fake_hub.commands[-1]["command"], fake_hub.commands[-1]["reason"]) == ("reboot", "now")
+
+    # The window has opened since the hub's last view: the time lies behind, the button sends.
+    past = dt_util.utcnow().replace(microsecond=0) - timedelta(seconds=5)
+    await fake_hub.push_host(host_view("h", **{**view, "next_reboot": past.isoformat()}))
+    await wait_until(lambda: hass.states.get("button.vordr_h_reboot").attributes["next_reboot"] == past.isoformat())
+    await hass.services.async_call("button", "press", press, blocking=True)
+    assert fake_hub.commands[-1]["command"] == "reboot" and "reason" not in fake_hub.commands[-1]
+
+    # Inside the window the hub sends no time; a hub or agent before ADR-0187 sends neither: as before.
+    for over in ({"reboot_window": only}, {}):
+        await fake_hub.push_host(host_view("h", capabilities=REBOOT_CAPS, **over))
+        await wait_until(lambda: "next_reboot" not in (hass.states.get("button.vordr_h_reboot").attributes))
+        sent = len(fake_hub.commands)
+        await hass.services.async_call("button", "press", press, blocking=True)
+        assert len(fake_hub.commands) == sent + 1 and fake_hub.commands[-1]["command"] == "reboot"
+    await wait_until(lambda: "reboot_window" not in hass.states.get("button.vordr_h_reboot").attributes)
+
+
 def test_local_time_names_the_day_only_when_it_is_not_today() -> None:
     now = dt_util.now()
     assert local_time(None) == "?"
@@ -873,6 +985,92 @@ async def test_diagnostics_hide_the_key(hass: HomeAssistant, fake_hub: FakeHub, 
     diag: dict[str, Any] = await async_get_config_entry_diagnostics(hass, entry)
     assert diag["entry"]["private_key"] == "**REDACTED**"
     assert diag["connection"] == "approved" and len(diag["fingerprint"]) == 64
+
+
+async def test_diagnostics_name_no_site(hass: HomeAssistant, fake_hub: FakeHub, entry: MockConfigEntry) -> None:
+    """ADR-0189: the download names no host, address, path, image repository, location id, log or free text, and
+    keeps what a diagnosis needs: the structure, counts, codes, versions, package names. Host names and location ids
+    become stable placeholders, also inside texts and in any case, but not inside longer names ("vordr-agent" keeps its
+    "agent"), and field names stay even where a host is named like one."""
+    run = {
+        "job_id": "j1",
+        "verb": "install",
+        "state": "failed",
+        "by": "ha:homeassistant",
+        "reason": "bad_parameters",  # a code
+        "outside_window": "before the backup to db.example.org",  # free text
+        "log_excerpt": "connect to 192.0.2.10 (WEB-01) failed",
+        "summary": {"log_file": "/var/log/vordr/web-01.log", "package_count": 3},
+    }
+    location = "pip-user-someone"
+    fake_hub.hosts["web-01"] = host_view(
+        "web-01",
+        last_run=run,
+        problem={"reason": "stale", "reasons": ["stale"]},
+        packages={
+            "outdated": 0,
+            "locations": [{"id": location, "ecosystem": "PyPI", "path": "/home/someone/app/.venv", "packages": 3}],
+            "findings": [{"location": location, "name": "requests", "version": "2.0.0", "severity": "high"}],
+        },
+        containers={"outdated": 1, "updates": [{"image": "registry.example.org/team/app", "tag": "1.2"}]},
+        backup={"state": "exempt", "exempt": "copied to nas.example.org by hand"},
+    )
+    fake_hub.hosts["agent"] = host_view(
+        "agent", device={"name": "Vördr agent", "model": "vordr-agent test box", "agent_version": "1.0"}
+    )
+    fake_hub.hosts["system"] = host_view("system", backup={"state": "ok", "before_install": "pve-x"})
+    fake_hub.hub["waiting"] = [{"node": "new-box", "fingerprint": "ab" * 32, "os": "linux"}]
+    await setup(hass, entry)
+    diag: dict[str, Any] = await async_get_config_entry_diagnostics(hass, entry)
+    dumped = json.dumps(diag)
+    for site in (
+        "web-01",
+        "WEB-01",
+        "new-box",
+        "someone",
+        "registry.example.org",
+        "192.0.2.10",
+        "example.org",
+        "pve-x",
+    ):
+        assert site not in dumped, site
+    assert "127.0.0.1" not in dumped and "homeassistant" not in dumped
+
+    # agent, new-box, system, web-01: in the order of the names
+    assert sorted(diag["hosts"]) == ["host-1", "host-3", "host-4"] and diag["hub"]["waiting"][0]["node"] == "host-2"
+    web = diag["hosts"]["host-4"]
+    assert web["node"] == "host-4" and web["device"]["name"] == "Vördr host-4" and web["pending"] == 2
+    assert web["last_run"]["by"] == "ha:client" and web["last_run"]["state"] == "failed"
+    assert web["last_run"]["reason"] == "bad_parameters"
+    assert web["last_run"]["outside_window"] == web["last_run"]["log_excerpt"] == "**REDACTED**"
+    assert web["last_run"]["summary"] == {"log_file": "**REDACTED**", "package_count": 3}
+    assert web["packages"]["locations"][0] == {
+        "id": "location-1",
+        "ecosystem": "PyPI",
+        "path": "**REDACTED**",
+        "packages": 3,
+    }
+    assert web["packages"]["findings"][0] == {
+        "location": "location-1",
+        "name": "requests",
+        "version": "2.0.0",
+        "severity": "high",
+    }
+    assert web["containers"]["updates"][0] == {"image": "**REDACTED**", "tag": "1.2"}
+    assert web["backup"] == {"state": "exempt", "exempt": "**REDACTED**"}
+    agent = diag["hosts"]["host-1"]
+    assert agent["device"] == {"name": "Vördr host-1", "model": "vordr-agent test box", "agent_version": "1.0"}
+    named_like_a_field = diag["hosts"]["host-3"]
+    assert named_like_a_field["node"] == "host-3" and "system" in named_like_a_field and "pending" in named_like_a_field
+    assert named_like_a_field["backup"] == {"state": "ok", "before_install": "**REDACTED**"}  # no host of the hub
+    assert diag["hub"]["waiting"][0]["fingerprint"] == "ab" * 32
+    assert diag["entry"]["url"] == f"wss://hub.invalid:{fake_hub.port}/v1/ha" and diag["entry"]["name"] == "client"
+    assert diag["entry"]["private_key"] == diag["entry"]["ca_pem"] == "**REDACTED**"
+
+
+def test_the_hub_address_keeps_no_credentials() -> None:
+    assert hub_address("wss://someone:pw@hub.example.org:8443/v1/ha") == "wss://hub.invalid:8443/v1/ha"
+    assert hub_address("") == hub_address(None) == "**REDACTED**"
 
 
 async def test_system_update_only_when_installable(

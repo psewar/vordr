@@ -28,6 +28,15 @@ type HostView struct {
 	// NextInstall: while the agent's minimum interval since its last run that changed packages still runs, when it
 	// takes an install of the system packages or an app again (ADR-0110); nil when now, or when the hub cannot tell.
 	NextInstall *time.Time `json:"next_install,omitempty"`
+	// RebootWindow: the host's reboot window as its agent reports it (ADR-0187); nil when the hub offers no reboot for
+	// the host, from an agent that does not report it, and when the hub did not take the window (the event
+	// reboot_window_refused says why). check-config requires reboot.window with reboot.allowed: a host that offers the
+	// reboot without one has an invalid configuration.
+	RebootWindow *RebootWindowView `json:"reboot_window,omitempty"`
+	// NextReboot: while that window is closed, when it opens next (ADR-0187). Until then the agent refuses a reboot
+	// without a reason, and with RebootWindow.WindowOnly also one with a reason. nil when it is open now, without a
+	// RebootWindow, and when the host names no time zone.
+	NextReboot *time.Time `json:"next_reboot,omitempty"`
 	// System is nil when the host has no package source - or no report yet, see LastReport.
 	System *SystemView `json:"system"`
 	Reboot RebootView  `json:"reboot"`
@@ -355,6 +364,17 @@ type RebootView struct {
 	// The kernel the host runs and the newest one installed, where the kernel signal answered (not in containers).
 	KernelRunning string `json:"kernel_running,omitempty"`
 	KernelNewest  string `json:"kernel_newest,omitempty"`
+}
+
+// RebootWindowView is reboot.window of the host's agent.yaml: days mon..sun, start and end HH:MM (end before start:
+// over midnight), in TZ, the host's time zone as an IANA name ("" when the host does not say). WindowOnly:
+// reboot.window_only, a reason does not open the window (ADR-0154).
+type RebootWindowView struct {
+	Days       []string `json:"days"`
+	Start      string   `json:"start"`
+	End        string   `json:"end"`
+	TZ         string   `json:"tz,omitempty"`
+	WindowOnly bool     `json:"window_only"`
 }
 
 type RunView struct {

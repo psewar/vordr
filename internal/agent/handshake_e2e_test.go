@@ -520,3 +520,26 @@ func TestNewAgentWithAnOlderHub(t *testing.T) {
 		c.WaitRuns()
 	}
 }
+
+// A hub that does not announce reboot_window gets no reboot window in the hello (ADR-0187): it would refuse the hello
+// with a field it does not know, and the host would stay away. The rest of the policy goes as before.
+func TestAnOlderHubGetsNoRebootWindow(t *testing.T) {
+	o := startOldHub(t, true)
+	c := o.client(t, "golf", &fakeChecker{})
+	c.Cfg.Reboot = policy.Reboot{Allowed: true, WindowOnly: true,
+		Window: &policy.Window{Days: []string{"mon"}, Start: "06:00", End: "16:00"}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer func() { cancel(); c.WaitRuns() }()
+	go c.Run(ctx)
+	hello := <-o.hello
+	var pol map[string]json.RawMessage
+	if err := json.Unmarshal(hello["policy"], &pol); err != nil {
+		t.Fatal(err)
+	}
+	if _, has := pol["reboot_window"]; has {
+		t.Fatalf("policy to an older hub: %s", hello["policy"])
+	}
+	if _, has := pol["reboot_window_only"]; has || string(pol["reboot_allowed"]) != "true" {
+		t.Fatalf("policy to an older hub: %s", hello["policy"])
+	}
+}

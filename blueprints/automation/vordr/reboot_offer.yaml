@@ -92,9 +92,11 @@ variables:
     en:
       reboot: "Reboot now"
       gone: "The reboot of {node} is no longer needed or offered; nothing was done."
+      closed: "{node} can be rebooted only from {next}: its reboot window is closed. Nothing was done."
     de:
       reboot: "Jetzt neu starten"
       gone: "Der Neustart von {node} ist nicht mehr nötig oder angeboten; es wurde nichts getan."
+      closed: "{node} lässt sich erst ab {next} neu starten: Sein Neustart-Fenster ist zu. Es wurde nichts getan."
   text: "{{ texts.get(language, texts.en) }}"
   body: >-
     {% set m = trigger.event.data.message or {} %}{{ m.get(language) or m.get('en') or node }}
@@ -148,9 +150,29 @@ actions:
                   {{ sensor_id != '' and is_state(sensor_id, 'on')
                      and states(button_id) != 'unavailable' }}
             then:
-              - action: button.press
-                target:
-                  entity_id: "{{ button_id }}"
+              - alias: From when the host's reboot window lets the reboot through, while it is closed (ADR-0187)
+                variables:
+                  reboot_from: >-
+                    {%- set at = as_timestamp(state_attr(button_id, 'next_reboot'), 0) -%}
+                    {%- if at > as_timestamp(now()) -%}
+                    {%- set day = at | timestamp_custom('%d.%m. ') -%}
+                    {{- ('' if day == now().strftime('%d.%m. ') else day) ~ (at | timestamp_custom('%H:%M')) -}}
+                    {%- endif -%}
+              - if:
+                  - alias: The reboot window is closed; the button would send nothing
+                    condition: template
+                    value_template: "{{ reboot_from not in ['', none] }}"
+                then:
+                  - action: "{{ notify_service }}"
+                    data:
+                      title: "Vördr {{ node }}"
+                      message: "{{ text.closed.format(node=node, next=reboot_from) }}"
+                      data:
+                        tag: "vordr_reboot_{{ node }}"
+                else:
+                  - action: button.press
+                    target:
+                      entity_id: "{{ button_id }}"
             else:
               - action: "{{ notify_service }}"
                 data:

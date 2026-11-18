@@ -94,6 +94,11 @@ python3 tools/check_neutral.py --text <file>                         # commit me
 
 - `ha/tests/test_e2e_real_hub.py` runs the real hub and agent from `dist/` and is skipped without them: run
   `./build.sh` first.
+- `ha/tests/test_install_under_systemd.py` runs the install script of "Add host" under the real `systemd-run`: in the
+  user's own systemd manager, or as root through `sudo -k -n` when `VORDR_TEST_SUDO=1` asks for it (the GitHub checks
+  set it; then a missing precondition fails the tests); without either it is skipped
+  ([ADR-0190](docs/adr/0190-one-public-check-runs-the-install-script-as-root-under-the-real-systemd.md)). A script
+  handed to `systemd-run` must not hold `${` or `$$`: systemd expands them.
 - Platform code lives in `*_windows.go` with a `*_linux.go` or `*_other.go` counterpart. File locking and the service
   manager only show on Windows. Build the test binary there with `GOOS=windows go test -c ./internal/<package>` and run
   it on a Windows machine from the package folder.

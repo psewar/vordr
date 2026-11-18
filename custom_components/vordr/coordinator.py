@@ -117,6 +117,28 @@ def refusal(node: str, host: dict[str, Any] | None, code: str) -> tuple[str, dic
     return "command_refused", {"node": node, "code": code}
 
 
+def next_reboot(host: dict[str, Any] | None) -> datetime | None:
+    """While the host's reboot window is closed, when it opens (ADR-0187); None while a reboot can be asked for, and
+    from a hub or agent that does not say - then the agent alone decides, as before."""
+    nxt = dt_util.parse_datetime((host or {}).get("next_reboot") or "")
+    if nxt is None or nxt <= dt_util.utcnow():
+        return None
+    return nxt
+
+
+def reboot_held(node: str, host: dict[str, Any] | None, reason: bool = False) -> tuple[str, dict[str, str]] | None:
+    """Why the host's reboot window would refuse a reboot of node asked for now, as a text key and its placeholders;
+    None when it would not (ADR-0187). The reboot button and the reboot repair carry no reason, so a closed window holds
+    them on every host. With a reason (vordr.press_outside_window) only a host with reboot.window_only holds it."""
+    nxt = next_reboot(host)
+    if nxt is None:
+        return None
+    window_only = bool(((host or {}).get("reboot_window") or {}).get("window_only"))
+    if reason and not window_only:
+        return None
+    return ("reboot_window_only" if window_only else "reboot_window_closed"), {"node": node, "next": local_time(nxt)}
+
+
 def reboot_required(host: dict[str, Any] | None) -> bool:
     """The host reports that it needs a reboot - True only for a definite yes, never for unknown."""
     return ((host or {}).get("reboot") or {}).get("required") is True

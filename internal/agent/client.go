@@ -326,7 +326,8 @@ func (c *Client) login(conn *wire.Conn, agentNonce []byte) (wire.Status, wire.Hu
 	pub := c.ID.Public()
 	hello := wire.Hello{T: wire.THello, Node: c.Cfg.Node, PublicKey: pub,
 		Signature: c.ID.Sign(wire.HelloSigned(ch.Nonce, c.Cfg.Node, pub)), AgentVersion: c.Version,
-		Facts: c.Facts, Verbs: c.Verbs(), Policy: Summary(c.Cfg), LastInstall: c.lastInstallAt()}
+		Facts: c.Facts, Verbs: c.Verbs(), Policy: Summary(c.Cfg, slices.Contains(ch.Features, wire.FeatureRebootWindow)),
+		LastInstall: c.lastInstallAt()}
 	if slices.Contains(ch.Features, wire.FeatureAck) {
 		// Only to a hub that said so: an older one refuses a hello with a field it does not know.
 		runs := c.runState()
@@ -695,8 +696,10 @@ type sender func(any) error
 
 func (s sender) Send(v any) error { return s(v) }
 
-// Summary is what the local policy allows, as announced to the hub.
-func Summary(cfg policy.Config) wire.PolicySummary {
+// Summary is what the local policy allows, as announced to the hub. rebootWindow: the hub takes the reboot window in
+// the hello (wire.FeatureRebootWindow, ADR-0187); an older hub refuses a hello with a field it does not know, so it
+// gets none, as from an agent before it.
+func Summary(cfg policy.Config, rebootWindow bool) wire.PolicySummary {
 	s := wire.PolicySummary{AllowedScopes: append([]string{}, cfg.Install.AllowedScopes...),
 		DefaultScope: cfg.Install.DefaultScope, Auto: cfg.Install.Auto, AutoScope: cfg.Install.AutoScope,
 		RebootAllowed: cfg.Reboot.Allowed,
@@ -706,6 +709,14 @@ func Summary(cfg policy.Config) wire.PolicySummary {
 	}
 	if w := cfg.Install.Window; w != nil {
 		s.Window = &wire.WindowInfo{Days: append([]string{}, w.Days...), Start: w.Start, End: w.End}
+	}
+	// Only where a reboot may go through Vördr at all: without reboot.allowed the window says nothing.
+	if rb := cfg.Reboot; rebootWindow && rb.Allowed && rb.Window != nil {
+		s.RebootWindow = &wire.WindowInfo{Days: append([]string{}, rb.Window.Days...), Start: rb.Window.Start,
+			End: rb.Window.End}
+		s.RebootWindowOnly = rb.WindowOnly
+	}
+	if s.Window != nil || s.RebootWindow != nil {
 		s.TZ = zoneName()
 	}
 	return s

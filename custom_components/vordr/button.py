@@ -11,7 +11,7 @@ from homeassistant.helpers import entity_platform
 import voluptuous as vol
 
 from .const import DOMAIN
-from .coordinator import VordrCoordinator, valid_reason
+from .coordinator import VordrCoordinator, reboot_held, valid_reason
 from .entity import HostEntities, VordrHostEntity, track_host_entities
 
 if TYPE_CHECKING:
@@ -68,18 +68,44 @@ class HostButton(VordrHostEntity, ButtonEntity):
         if key == "reboot":
             self._attr_device_class = ButtonDeviceClass.RESTART
 
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """The reboot button: the host's reboot window and, while it is closed, from when a reboot runs (ADR-0187), as
+        the hub sends them; none from a hub or agent that does not."""
+        if self.key != "reboot":
+            return None
+        attrs: dict[str, Any] = {}
+        if window := self.host.get("reboot_window"):
+            attrs["reboot_window"] = {k: window.get(k) for k in ("days", "start", "end", "tz")}
+            attrs["window_only"] = bool(window.get("window_only"))
+        if nxt := self.host.get("next_reboot"):
+            attrs["next_reboot"] = nxt
+        return attrs or None
+
+    def _window_refusal(self, reason: bool) -> HomeAssistantError | None:
+        """The error for a reboot the host's closed reboot window would refuse, decided before anything is sent: the
+        person learns from when it runs (ADR-0187) instead of from a refused run. None for anything else."""
+        if self._command != "reboot" or (held := reboot_held(self.node, self.host, reason)) is None:
+            return None
+        key, names = held
+        return HomeAssistantError(translation_domain=DOMAIN, translation_key=key, translation_placeholders=names)
+
     async def async_press(self) -> None:
+        if (refusal := self._window_refusal(reason=False)) is not None:
+            raise refusal
         code = await self.coordinator.command(self.node, self._command)
         if code != "ok":
             raise self.coordinator.refused(self.node, code)
 
     async def async_press_outside_window(self, reason: str) -> None:
         """Service vordr.press_outside_window: the button, also outside the host's window (ADR-0087). A check has no
-        window."""
+        window; a host with reboot.window_only keeps its reboot window shut also for a reason (ADR-0154)."""
         if self._command == "check":
             raise HomeAssistantError(
                 translation_domain=DOMAIN,
                 translation_key="outside_window_no_window",
                 translation_placeholders={"node": self.node},
             )
+        if (refusal := self._window_refusal(reason=True)) is not None:
+            raise refusal
         await self.coordinator.command_outside_window(self.node, self._command, reason)

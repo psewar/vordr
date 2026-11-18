@@ -6,13 +6,14 @@ where the host offers the reboot. A blueprint with a wrong event name fails the 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from datetime import timedelta
 from pathlib import Path
 import re
 import shutil
 import time
 from typing import Any
+import uuid
 
 from homeassistant.components.blueprint.models import Blueprint
 from homeassistant.components.blueprint.schemas import BLUEPRINT_SCHEMA
@@ -30,7 +31,7 @@ from pytest_homeassistant_custom_component.common import (
 )
 
 from custom_components.vordr.const import CODES, DOMAIN, EVENT_PROBLEM, EVENT_RUN_FINISHED, REASONS
-from custom_components.vordr.coordinator import host_device
+from custom_components.vordr.coordinator import host_device, local_time
 
 from .conftest import FakeHub, host_view, wait_until
 
@@ -162,14 +163,17 @@ async def setup(hass: HomeAssistant, entry: MockConfigEntry) -> None:
 @pytest.fixture
 async def installed(hass: HomeAssistant) -> AsyncIterator[Any]:
     """Puts blueprints into the config folder as a user's import would, and removes them afterwards. A run that still
-    waits for a tap or a timeout ends with the test."""
-    folder = Path(hass.config.path("blueprints", "automation", "vordr"))
+    waits for a tap or a timeout ends with the test. The config folder is the test package's own, shared by every test
+    process on the machine: each test has a folder of its own in it, so that two runs at once do not remove each
+    other's blueprints."""
+    own = f"vordr-{uuid.uuid4().hex[:12]}"
+    folder = Path(hass.config.path("blueprints", "automation", own))
 
     async def use(*uses: tuple[str, dict[str, Any]]) -> None:
         folder.mkdir(parents=True, exist_ok=True)
         for name, _ in uses:
             shutil.copy(BLUEPRINTS / name, folder / name)
-        config = [{"use_blueprint": {"path": f"vordr/{name}", "input": inputs}} for name, inputs in uses]
+        config = [{"use_blueprint": {"path": f"{own}/{name}", "input": inputs}} for name, inputs in uses]
         assert await async_setup_component(hass, "automation", {"automation": config})
         await hass.async_block_till_done()
 
@@ -192,9 +196,27 @@ async def settle(hass: HomeAssistant) -> None:
         await asyncio.sleep(0.05)
 
 
-async def later(hass: HomeAssistant, minutes: float) -> None:
+async def later(
+    hass: HomeAssistant, minutes: float, until: Callable[[], bool] | None = None, describe: Any = None
+) -> None:
+    """The clock moves on by `minutes`; with `until`, again and again until that holds (at most 5 s). A run starts in
+    a task of its own after the event the test saw, and sets the timer of its wait from the clock when it gets there:
+    a run that was not yet waiting when the clock moved would never time out. The next move catches it."""
     async_fire_time_changed(hass, dt_util.utcnow() + timedelta(minutes=minutes))
     await settle(hass)
+    if until is None:
+        return
+    deadline = time.monotonic() + 5.0
+    while not until():
+        if time.monotonic() > deadline:
+            raise TimeoutError(describe() if describe else f"not within 5.0 s after {minutes} minutes")
+        async_fire_time_changed(hass, dt_util.utcnow() + timedelta(minutes=minutes))
+        await asyncio.sleep(0.05)
+
+
+def running(hass: HomeAssistant) -> int:
+    """Runs of the test's automations that have not ended (the automations' attribute current)."""
+    return sum(state.attributes.get("current", 0) for state in hass.states.async_all("automation"))
 
 
 async def test_events_carry_the_fields_the_blueprints_read(
@@ -283,17 +305,16 @@ async def test_problem_waits_and_drops_a_problem_that_ends_or_changes(
     assert calls == []  # waiting
     await fake_hub.push_host(host_view("h"))  # h ends by itself; k does not
     await wait_until(lambda: len(problems) == 3)
-    await later(hass, 11)
-    await wait_until(lambda: len(calls) == 1, describe=lambda: str([c.data for c in calls]))
-    assert calls[0].data["title"] == "Vördr k"  # h was dropped, and k's wait was not cancelled by h's end
+    await later(hass, 11, until=lambda: len(calls) == 1, describe=lambda: str([c.data for c in calls]))
+    await settle(hass)
+    assert len(calls) == 1 and calls[0].data["title"] == "Vördr k"  # h was dropped; h's end did not cancel k's wait
 
     # A change inside the wait: the first run drops, the changed problem has its own wait.
     await fake_hub.push_host(host_view("h", problem=STALE))
     await wait_until(lambda: len(problems) == 4)
     await fake_hub.push_host(host_view("h", problem=OFFLINE))
     await wait_until(lambda: len(problems) == 5)
-    await later(hass, 22)
-    await wait_until(lambda: len(calls) == 2)
+    await later(hass, 22, until=lambda: len(calls) == 2, describe=lambda: str([c.data for c in calls]))
     await settle(hass)
     assert len(calls) == 2 and "Not connected to the hub" in calls[1].data["message"]
 
@@ -336,7 +357,8 @@ async def test_a_wrong_event_name_in_the_blueprint_notifies_nothing(
     fake_hub.hosts["h"] = host_view("h")
     await setup(hass, entry)
     calls = async_mock_service(hass, "notify", "test")
-    folder = Path(hass.config.path("blueprints", "automation", "vordr"))
+    own = f"vordr-{uuid.uuid4().hex[:12]}"  # a folder of its own, as the fixture installed gives each test
+    folder = Path(hass.config.path("blueprints", "automation", own))
     folder.mkdir(parents=True, exist_ok=True)
     source = (BLUEPRINTS / "problem.yaml").read_text(encoding="utf-8")
     (folder / "problem.yaml").write_text(
@@ -348,10 +370,11 @@ async def test_a_wrong_event_name_in_the_blueprint_notifies_nothing(
             "automation",
             {
                 "automation": [
-                    {"use_blueprint": {"path": "vordr/problem.yaml", "input": {"notify_service": "notify.test"}}}
+                    {"use_blueprint": {"path": f"{own}/problem.yaml", "input": {"notify_service": "notify.test"}}}
                 ]
             },
         )
+        assert hass.states.async_all("automation"), "the blueprint did not load: the test would prove nothing"
         problems = async_capture_events(hass, EVENT_PROBLEM)
         await fake_hub.push_host(host_view("h", problem=STALE))
         await wait_until(lambda: len(problems) == 1)
@@ -425,7 +448,8 @@ async def test_reboot_offer_expires_and_checks_again_at_the_tap(
     await fake_hub.push_host(host_view("h", capabilities=CAN, last_run=done, reboot=NEEDED))
     await wait_until(lambda: len(calls) == 1)
     first = calls[0].data["data"]["actions"][0]["action"]
-    await later(hass, 61)  # the offer has expired
+    assert running(hass) == 1  # the offer's run waits for a tap
+    await later(hass, 61, until=lambda: running(hass) == 0)  # the offer has expired: its run ended
     hass.bus.async_fire("mobile_app_notification_action", {"action": first})
     await settle(hass)
     assert fake_hub.commands == []
@@ -441,6 +465,49 @@ async def test_reboot_offer_expires_and_checks_again_at_the_tap(
     hass.bus.async_fire("mobile_app_notification_action", {"action": calls[1].data["data"]["actions"][0]["action"]})
     await wait_until(lambda: len(calls) == 3)  # it says that nothing was done
     assert fake_hub.commands == [] and "nothing was done" in calls[2].data["message"]
+
+
+async def test_reboot_offer_says_when_the_reboot_window_opens(
+    hass: HomeAssistant, fake_hub: FakeHub, entry: MockConfigEntry, installed: Any
+) -> None:
+    """ADR-0187: a tap while the host's reboot window is closed presses nothing and says from when the reboot runs;
+    once the window is open, or the time the hub named has passed, a tap presses the button."""
+    fake_hub.hosts["h"] = host_view("h", capabilities=CAN)
+    await setup(hass, entry)
+    calls = async_mock_service(hass, "notify", "test")
+    await installed(("reboot_offer.yaml", {"notify_service": "notify.test"}))
+    nxt = dt_util.utcnow().replace(microsecond=0) + timedelta(hours=3)
+    window = {"days": ["mon"], "start": "06:00", "end": "16:00", "tz": "Europe/Paris", "window_only": True}
+    closed = {"capabilities": CAN, "reboot": NEEDED, "reboot_window": window, "next_reboot": nxt.isoformat()}
+    done = {"job_id": "j1", "verb": "install", "scope": "all", "by": "admin", "state": "ok_reboot_required"}
+    await fake_hub.push_host(host_view("h", **closed, last_run=done))
+    await wait_until(lambda: len(calls) == 1)
+    hass.bus.async_fire("mobile_app_notification_action", {"action": calls[0].data["data"]["actions"][0]["action"]})
+    await wait_until(lambda: len(calls) == 2)
+    assert fake_hub.commands == []
+    said = f"h can be rebooted only from {local_time(nxt)}: its reboot window is closed. Nothing was done."
+    assert calls[1].data["message"] == said
+
+    # The next offer; by the tap the window is open (the hub sends no time any more).
+    await fake_hub.push_host(host_view("h", **closed, last_run={**done, "job_id": "j2"}))
+    await wait_until(lambda: len(calls) == 3)
+    await fake_hub.push_host(host_view("h", capabilities=CAN, reboot=NEEDED, reboot_window=window))
+    await wait_until(lambda: "next_reboot" not in hass.states.get("button.vordr_h_reboot").attributes)
+    hass.bus.async_fire("mobile_app_notification_action", {"action": calls[2].data["data"]["actions"][0]["action"]})
+    await wait_until(lambda: len(fake_hub.commands) == 1)
+    assert fake_hub.commands[0]["command"] == "reboot" and len(calls) == 3
+
+    # A third offer; by the tap the time the hub named has passed, before its next view says so: the tap presses.
+    third = {**done, "job_id": "j3"}
+    await fake_hub.push_host(host_view("h", **closed, last_run=third))
+    await wait_until(lambda: len(calls) == 4)
+    past = dt_util.utcnow().replace(microsecond=0) - timedelta(seconds=5)
+    await fake_hub.push_host(host_view("h", **{**closed, "next_reboot": past.isoformat()}, last_run=third))
+    reboot = "button.vordr_h_reboot"
+    await wait_until(lambda: hass.states.get(reboot).attributes.get("next_reboot") == past.isoformat())
+    hass.bus.async_fire("mobile_app_notification_action", {"action": calls[3].data["data"]["actions"][0]["action"]})
+    await wait_until(lambda: len(fake_hub.commands) == 2)
+    assert fake_hub.commands[1]["command"] == "reboot" and len(calls) == 4
 
 
 async def test_reboot_offer_has_no_action_where_the_host_does_not_offer_the_reboot(
@@ -501,9 +568,31 @@ async def test_hub_offline_notifies_after_the_wait_and_when_back(
     # The state is set as if it had been off for ten minutes: "now" in the template is the real clock.
     hass.states.async_set(hub, "off", timestamp=time.time() - 600)
     await hass.async_block_till_done()
-    await later(hass, 6)
-    await wait_until(lambda: len(calls) == 1, describe=lambda: str([c.data for c in calls]))
+    await later(hass, 6, until=lambda: len(calls) == 1, describe=lambda: str([c.data for c in calls]))
     assert calls[0].data["title"] == "Vördr hub unreachable" and "5 minutes" in calls[0].data["message"]
     hass.states.async_set(hub, "on")
     await wait_until(lambda: len(calls) == 2)
     assert calls[1].data["title"] == "Vördr hub reachable again"
+
+
+async def test_the_clock_catches_a_run_that_starts_its_wait_late(hass: HomeAssistant) -> None:
+    """The helper itself: a run that reaches its wait only after the clock moved. Here the first move ends the run's
+    delay, so its wait starts after that move and sets its timer from the clock as it is then; one move does not end
+    it, later(until=...) does. The delay is a minute, so that only the move ends it, never the real time a slow machine
+    takes."""
+    calls = async_mock_service(hass, "notify", "test")
+    late = {
+        "triggers": [{"trigger": "event", "event_type": "vordr_test_late"}],
+        "actions": [
+            {"delay": {"minutes": 1}},
+            {"wait_for_trigger": [{"trigger": "event", "event_type": "vordr_test_never"}], "timeout": {"minutes": 10}},
+            {"action": "notify.test", "data": {"message": "late"}},
+        ],
+    }
+    assert await async_setup_component(hass, "automation", {"automation": [late]})
+    hass.bus.async_fire("vordr_test_late")
+    await settle(hass)
+    await later(hass, 11)
+    assert calls == [] and running(hass) == 1  # one move: the run waits on
+    await later(hass, 11, until=lambda: len(calls) == 1)
+    assert running(hass) == 0

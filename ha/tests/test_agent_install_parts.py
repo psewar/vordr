@@ -15,12 +15,13 @@ import subprocess
 import sys
 from typing import Any
 
+import asyncssh
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from homeassistant.core import HomeAssistant
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.vordr import agent_install as ai
+from custom_components.vordr import agent_install as ai, ssh
 from custom_components.vordr.agent_install import LOGIN_FORM_ERRORS
 from custom_components.vordr.client import CODE_HUB_WITHOUT_DOWNLOAD
 
@@ -358,6 +359,22 @@ def test_the_install_reaches_the_host_as_it_is_written(with_ca: bool, sudo: str)
     assert expand(started, {"PATH": "/usr/bin"}) == started
 
 
+def test_the_host_key_types_and_their_files() -> None:
+    """ED25519 first, RSA only with SHA-2 signatures, no certificates, the same list for the key and the login, and the
+    host's file for every type that can be shown (ADR-0186)."""
+    assert ssh.HOST_KEY_ALGS[0] == "ssh-ed25519" and "ssh-rsa" not in ssh.HOST_KEY_ALGS
+    assert all(a == "ssh-ed25519" or a.startswith(("ecdsa-sha2-", "rsa-sha2-")) for a in ssh.HOST_KEY_ALGS)
+    assert ssh._common()["server_host_key_algs"] == list(ssh.HOST_KEY_ALGS)
+    for kind, file in [
+        ("ssh-ed25519", "ssh_host_ed25519_key.pub"),
+        ("ecdsa-sha2-nistp256", "ssh_host_ecdsa_key.pub"),
+        ("ecdsa-sha2-nistp384", "ssh_host_ecdsa_key.pub"),
+        ("ecdsa-sha2-nistp521", "ssh_host_ecdsa_key.pub"),
+        ("ssh-rsa", "ssh_host_rsa_key.pub"),
+    ]:
+        assert ssh.describe(asyncssh.generate_private_key(kind))["key_file"] == file
+
+
 @pytest.mark.skipif(shutil.which("sh") is None, reason="no POSIX shell")
 @pytest.mark.parametrize(
     "url",
@@ -510,7 +527,8 @@ def test_install_steps_have_their_texts(lang: str) -> None:
     assert set(steps) == {"user", "host_key", "login"}
     assert fields_of(steps["user"]["description"]) == {"client"}
     assert "`vordr-hub client-role {client} --role admin`" in steps["user"]["description"]
-    assert fields_of(steps["host_key"]["description"]) == {"host", "port", "algorithm", "fingerprint"}
+    assert fields_of(steps["host_key"]["description"]) == {"host", "port", "algorithm", "fingerprint", "key_file"}
+    assert "`ssh-keygen -lf /etc/ssh/{key_file}`" in steps["host_key"]["description"]
     assert set(steps["host_key"]["menu_options"]) == {"login", "host_key_rejected"}
     assert fields_of(steps["login"]["description"]) == {"host", "username"}
     assert set(host["progress"]) == {"install"} and fields_of(host["progress"]["install"]) == {"host"}

@@ -101,6 +101,9 @@ func printShow(w io.Writer, n hub.NodeView, loc *time.Location) {
 	if v.NextInstall != nil {
 		line("next install", "not before "+at(*v.NextInstall)+" (minimum interval)")
 	}
+	if v.NextReboot != nil {
+		line("next reboot", "not before "+at(*v.NextReboot)+" (reboot window)")
+	}
 	if b := v.Backup; b != nil {
 		text := b.State
 		if b.Last != nil {
@@ -244,6 +247,16 @@ func policyText(p wire.PolicySummary) string {
 	}
 	if p.RebootAllowed {
 		parts = append(parts, "reboot allowed")
+	}
+	if wi := p.RebootWindow; wi != nil {
+		window := "reboot window " + strings.Join(wi.Days, ",") + " " + wi.Start + "-" + wi.End
+		if p.TZ != "" {
+			window += " " + p.TZ
+		}
+		if p.RebootWindowOnly {
+			window += " (shut also for a reason)"
+		}
+		parts = append(parts, window)
 	}
 	if p.AgentUpdate {
 		parts = append(parts, "agent update allowed")

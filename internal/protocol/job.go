@@ -103,6 +103,10 @@ const (
 
 var jobIDPattern = regexp.MustCompile(`^[A-Za-z0-9-]{1,64}$`)
 
+// ValidJobID reports whether id is a well-formed job id: 1 to 64 letters, digits and "-". Every job an agent carries
+// out passed VerifyJob, which checks this; so does every id the agent names in its hello (ADR-0191).
+func ValidJobID(id string) bool { return jobIDPattern.MatchString(id) }
+
 // SignJob marshals j and signs it with the hub key; sign is the key's signing function, so the private key never
 // leaves its holder.
 func SignJob(j Job, sign func([]byte) []byte) (SignedJob, error) {

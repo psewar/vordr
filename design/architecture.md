@@ -190,10 +190,34 @@ The hub answers `hello` with `status` (`pending_approval`, `approved` or `reject
 only to approved hosts and only with verbs that the agent named in the `hello`.
 
 **Hub features** (since hub 0.18.0): Every `status` carries `features`, the message types this hub accepts beyond the
-base protocol (`inventory`, `vet`, `containers`, `image_contents`; `ack` announces itself already in the challenge,
-10.2). An older hub drops the connection on a message it does not know. The agent therefore sends a newer type only if
-the hub has named it; it does not try it out and does not read it from a dropped connection. So the order of the
-updates does not matter, yet the operating rule "hub before agent" stays.
+base protocol (`inventory`, `vet`, `containers`, `image_contents`). What the `hello` may carry beyond it is announced
+already in the challenge, because the hello comes before the status: `ack` (10.2) and `reboot_window` (10.2,
+[ADR-0187](../docs/adr/0187-the-agent-reports-its-reboot-window-and-home-assistant-says-when-a-reboot-can-run.md)). An
+older hub drops the connection on a message it does not know and refuses a hello with a field it does not know. The
+agent therefore sends a newer type or field only if the hub has named it; it does not try it out and does not read it
+from a dropped connection. So the order of the updates does not matter, yet the operating rule "hub before agent"
+stays.
+
+**Bounds of the hello**
+([ADR-0191](../docs/adr/0191-the-hub-bounds-every-field-of-an-agents-hello-before-it-keeps-it.md)):
+- The hub bounds every field of a `hello` before it stores, logs, computes with or shows anything of it, also for a
+  host that is not approved yet. The checks are in one place (`internal/hub/hello.go`).
+- Type, name, key and signature are the identity. Out of bounds, the hello is refused with `bad_hello`, as before.
+- Every other field is taken whole or not at all. One out of its bound is dropped as if the agent did not report it; a
+  fact becomes `unknown`, as from an agent that could not find it out. The host still connects. Examples: a fact over
+  255 bytes or with control characters, more than 16 verbs, more than 64 apps, more than 128 allowed scopes, an app
+  name with a tab, an install window `check-config` would refuse or one with more than 64 entries in its days (a day
+  repeated is taken, as `check-config` takes it), a minimum interval outside 0 to 168 hours, a zone name over 64
+  characters.
+- Once the register has taken the host (pending or approved), the event `hello_fields_dropped` names each dropped field
+  with its code (`too_long`, `too_many`, `characters`, `value`, for the install window `days` or `window`) and the
+  key's `fingerprint`. A hello the register refuses (another key under a known name, a rejected host, no room for
+  another pending one) logs no drops: it names a node that is not its own.
+- Verbs and scopes are bounded by their characters, not by the values this hub knows: a newer agent's verb is kept and
+  offers nothing.
+- The reboot window has its own check and event (10.2), the first of these bounds; it is checked first.
+- The bounds lie well above what agents send. A test checks the agent's own hello against them over a real tunnel;
+  another finds every field of the hello by itself and fails for a new one that has no bound.
 
 **Signed challenge** ([ADR-0170](../docs/adr/0170-the-hub-signs-its-challenge-and-the-agent-checks-its-key.md)):
 - The agent sends a nonce of its own, 32 random bytes in base64, in the header `Vordr-Challenge-Nonce` of the WebSocket
@@ -261,6 +285,9 @@ button. If a human wants a run now, they give a reason. For installs the hub doe
   only if needed, `install.min_interval_h`, one run at a time, the hub's backup check. A host with
   `reboot.window_only: true` keeps `reboot.window` shut also for a reason
   ([ADR-0154](../docs/adr/0154-a-host-can-keep-reboots-inside-its-window-even-with-a-reason.md)).
+- **Reboot button:** It carries no reason, so a closed `reboot.window` holds it on every host. Home Assistant learns
+  the window and says from when the reboot runs (10.2,
+  [ADR-0187](../docs/adr/0187-the-agent-reports-its-reboot-window-and-home-assistant-says-when-a-reboot-can-run.md)).
 - **Older agents** read jobs strictly and would reject the unknown field as `rejected_invalid_job`. The agent
   therefore announces it in the hello (`policy.outside_window`); to any other the hub sends no reason and
   answers HA with `outside_window_unsupported`.
@@ -425,7 +452,7 @@ Name "Vördr <node>", identifier `("vordr", "host:<node>")`, manufacturer "Vörd
 | `sensor.vordr_<id>_outdated_images` | sensor | Outdated images | images rebuilt under their tag or with a newer tag, also those that stay manual; attributes `ready`, `installable`, `updates` (not in the history), `compared_at`, `min_age_days` (11.5) | `packages.containers` on the host |
 | `button.vordr_<id>_check` | button | Check now | command `check` | the agent can do `check` |
 | `button.vordr_<id>_install_security` | button | Install security updates | command `install_security` | the agent can do `install`, `security` is allowed and not already the default scope |
-| `button.vordr_<id>_reboot` | button (restart) | Restart | command `reboot` | the agent can do `reboot` and `reboot.allowed` |
+| `button.vordr_<id>_reboot` | button (restart) | Restart | command `reboot`; attributes `reboot_window`, `window_only`, `next_reboot` (10.2) | the agent can do `reboot` and `reboot.allowed` |
 | `button.vordr_<id>_install_app_<app>` | button | name of the app | command `install_app:<app>` | the app is in `apps` and `app:<app>` is allowed |
 
 Buttons exist only for verbs that the agent announced in the hello **and** that its policy allows. A policy alone
@@ -439,6 +466,9 @@ created nor deleted (undecided); only a report decides.
 | `binary_sensor.vordr_hub_online` | binary_sensor (connectivity) | Hub | last will of the hub |
 | `sensor.vordr_hub_hosts_online` | sensor | Hosts connected | count |
 | `sensor.vordr_hub_hosts_with_problem` | sensor | Hosts with problem | count; attribute with the list |
+| `sensor.vordr_hub_hosts_with_updates` | sensor | Hosts with updates | count of hosts with system updates, outdated images or pip/npm packages; attributes `hosts` (per host the kinds above zero) and `unknown` ([ADR-0188](../docs/adr/0188-the-hub-device-counts-the-hosts-with-updates-and-a-reboot-due.md)) |
+| `sensor.vordr_hub_hosts_with_security_updates` | sensor | Hosts with security updates | count; attributes `hosts`, `unknown` |
+| `sensor.vordr_hub_hosts_needing_reboot` | sensor | Hosts needing a reboot | count; attribute `hosts` (with `since`) |
 | `sensor.vordr_hub_pending_approvals` | sensor | Pending approvals | count; attribute with names and fingerprints |
 | `sensor.vordr_hub_vulnerability_data` | sensor (timestamp) | Vulnerability data | when the hub last fetched its OSV data (the oldest ecosystem); per ecosystem state `ok`, `stale`, `missing` and error code (11.2) |
 
@@ -776,6 +806,26 @@ Active Backup for Business was examined for this and rejected
   - After the start, the agent proves the reboot with a new boot ID and checks that none is needed any more. Only then
     does it report `ok`; otherwise `failed_verification`, with the reason.
   - HA offers the button only for hosts that allow it. The client's role must be `admin` (12).
+  - Reboot window in Home Assistant
+    ([ADR-0187](../docs/adr/0187-the-agent-reports-its-reboot-window-and-home-assistant-says-when-a-reboot-can-run.md)):
+    - The agent reports `policy.reboot_window` (days, start, end) and `policy.reboot_window_only` with `policy.tz` in
+      the hello, only with `reboot.allowed` and a `reboot.window`, and only to a hub that announces `reboot_window` in
+      its challenge.
+    - Where the hub offers the reboot, `HostView.reboot_window` carries the window with `tz` and `window_only`, and
+      `HostView.next_reboot` while it is closed: the first minute at which the agent's own window check says yes,
+      tried minute by minute for up to 15 days in the host's zone, so also over midnight and on the nights daylight
+      saving time skips or repeats an hour; in UTC. Absent while the window is open, without a reported window, and
+      without a zone. The hub refuses no reboot because of it.
+    - The hub takes the reported window only within bounds: a window `check-config` would take (a day repeated too)
+      with at most 64 entries in its days
+      ([ADR-0191](../docs/adr/0191-the-hub-bounds-every-field-of-an-agents-hello-before-it-keeps-it.md)), a zone name
+      of at most 64 characters that it knows. Otherwise the host counts as one that reports none, and once the register
+      has taken the host the event `reboot_window_refused` names why (`reason`: `days`, `window` or `tz`) with the
+      key's `fingerprint`. The other fields of the hello have bounds of their own (6.2).
+    - The reboot button and the fix of the reboot repair send nothing before `next_reboot` and name the time; on a
+      host with `window_only` the text says that a reason does not open the window either.
+      `vordr.press_outside_window` holds a reboot only with `window_only`. Older parts send or read neither field
+      and behave as before.
   - A reboot does nothing for containers (LXC). They share the host's kernel, and the agent usually sees no need there.
 - **Reboot hints** follow the host's capability: If it does not allow a reboot through Vördr, the next step for
   `ok_reboot_required` and `reboot_pending` is "reboot manually". HA shows the running and newest kernel on the sensor
@@ -1855,7 +1905,8 @@ entry in `install.allowed_scopes`, Vördr only reports and pulls, starts or chan
   Results are fixed codes (`ok`, `unknown_node`, `fingerprint_mismatch`, `not_connected`, `not_approved`,
   `verb_unsupported_by_agent`, `timeout`, …). `vordr-hub key` shows the public hub key for `agent.yaml`.
 - Browser connections (with an `Origin` header) are rejected. At most `max_pending` hosts wait for approval; a known
-  host with a different key is rejected until it is removed with `forget`.
+  host with a different key is rejected until it is removed with `forget`. The register keeps the fields of a hello
+  only within their bounds (6.2).
 - Checks HA commands against the host's reported policy before it signs.
 - Reports problem cases: host silent (`offline`), `stale`, waiting approvals, failed agent updates.
 

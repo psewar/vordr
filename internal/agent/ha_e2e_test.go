@@ -387,6 +387,48 @@ func TestRateLimitFromHomeAssistant(t *testing.T) {
 	}
 }
 
+// The agent's reboot window reaches Home Assistant (ADR-0187): the hub announces in its challenge that it takes it,
+// the agent reports it with window_only and its zone, and the host view says when the closed window opens - the
+// minute the agent's own window says yes.
+func TestRebootWindowReachesHomeAssistant(t *testing.T) {
+	// The hub reads the window in the zone the agent announces; in one process that is this process's own.
+	oldZone := zoneName
+	zoneName = func() string { return "Local" }
+	defer func() { zoneName = oldZone }()
+	h := startHub(t, 5)
+	checker := &fakeChecker{}
+	agent := h.client(t, "host-a", checker)
+	closed := closedWindow()
+	agent.Cfg.Reboot = policy.Reboot{Allowed: true, Window: &closed, WindowOnly: true}
+	agent.Rebooter = (&fakeHost{boot: "boot-1"}).rebooter()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go agent.Run(ctx)
+	waitFor(t, "pending", func() bool { return state(h.reg, "host-a") == wire.StatePendingApproval })
+	h.srv.Admin(hub.AdminRequest{Cmd: "approve", Node: "host-a", Fingerprint: agent.ID.Fingerprint()})
+	waitFor(t, "first report", func() bool { return checker.calls() == 1 })
+
+	ha, _ := dialHA(t, h, wire.HAPath, "bravo", newHAKey(t), nil)
+	h.srv.Admin(hub.AdminRequest{Cmd: "approve-client", Client: "bravo", Fingerprint: ha.fp})
+	var snap wire.Snapshot
+	ha.until(wire.TSnapshot, &snap, nil)
+	if len(snap.Hosts) != 1 || !snap.Hosts[0].Capabilities.Reboot {
+		t.Fatalf("hosts: %+v", snap.Hosts)
+	}
+	hv := snap.Hosts[0]
+	if w := hv.RebootWindow; w == nil || !w.WindowOnly || w.TZ != "Local" || w.Start != closed.Start ||
+		w.End != closed.End || len(w.Days) != 7 {
+		t.Fatalf("reboot window: %+v", hv.RebootWindow)
+	}
+	want, ok := closed.Opens(time.Now().In(time.Local))
+	if !ok || hv.NextReboot == nil || !hv.NextReboot.Equal(want.UTC()) {
+		t.Fatalf("next reboot %v, want %v", hv.NextReboot, want)
+	}
+	if left := time.Until(*hv.NextReboot); left <= 0 || left > time.Hour {
+		t.Fatalf("next reboot in %s, want within the hour", left)
+	}
+}
+
 func TestHomeAssistantClientRefusals(t *testing.T) {
 	h := startHub(t, 5)
 	cases := map[string]struct {

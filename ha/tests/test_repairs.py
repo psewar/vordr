@@ -193,6 +193,48 @@ async def test_fix_checks_again_at_confirmation(hass: HomeAssistant, fake_hub: F
     assert len(fake_hub.commands) == sent
 
 
+async def test_fix_waits_for_the_reboot_window(hass: HomeAssistant, fake_hub: FakeHub, entry: MockConfigEntry) -> None:
+    """ADR-0187: the fix sends the button's reboot, without a reason. While the host's reboot window is closed it sends
+    nothing and says from when the reboot runs - when the dialog opens, and again at confirmation for a window that
+    closed in between. The text names reboot.window_only where the host sets it. Once the time has come it reboots."""
+    nxt = dt_util.utcnow().replace(microsecond=0) + timedelta(hours=10)
+    window = {"days": ["mon", "tue", "wed", "thu", "fri"], "start": "06:00", "end": "16:00", "tz": "Europe/Paris"}
+    closed = {"capabilities": CAN, "reboot": NEEDED, "next_reboot": nxt.isoformat()}
+    fake_hub.hosts["h"] = host_view("h", **closed, reboot_window={**window, "window_only": True})
+    await setup(hass, entry)
+    manager = repairs_flow_manager(hass)
+    assert manager is not None
+    shown = {"node": "h", "next": local_time(nxt)}
+
+    result = await manager.async_init(DOMAIN, data={"issue_id": "reboot_h"})
+    assert result["type"] is FlowResultType.ABORT and result["reason"] == "reboot_window_only"
+    assert result["description_placeholders"] == shown
+    await fake_hub.push_host(host_view("h", **closed, reboot_window={**window, "window_only": False}))
+    await wait_until(lambda: not entry.runtime_data.data.hosts["h"]["reboot_window"]["window_only"])
+    result = await manager.async_init(DOMAIN, data={"issue_id": "reboot_h"})
+    assert result["type"] is FlowResultType.ABORT and result["reason"] == "reboot_window_closed"
+    assert result["description_placeholders"] == shown
+    assert fake_hub.commands == [] and issue(hass, "reboot_h") is not None  # an abort leaves the repair
+
+    # Opened inside the window, confirmed after it closed.
+    await fake_hub.push_host(host_view("h", capabilities=CAN, reboot=NEEDED, reboot_window=window))
+    await wait_until(lambda: "next_reboot" not in entry.runtime_data.data.hosts["h"])
+    flow = await start_fix(hass, "reboot_h")
+    await fake_hub.push_host(host_view("h", **closed, reboot_window=window))
+    await wait_until(lambda: "next_reboot" in entry.runtime_data.data.hosts["h"])
+    result = await confirm(hass, flow)
+    assert result["type"] is FlowResultType.ABORT and result["reason"] == "reboot_window_closed"
+    assert result["description_placeholders"] == shown and fake_hub.commands == []
+
+    # The time has come since the hub's last view: the fix reboots.
+    past = dt_util.utcnow().replace(microsecond=0) - timedelta(seconds=5)
+    await fake_hub.push_host(host_view("h", **{**closed, "next_reboot": past.isoformat()}, reboot_window=window))
+    await wait_until(lambda: entry.runtime_data.data.hosts["h"]["next_reboot"] == past.isoformat())
+    result = await confirm(hass, await start_fix(hass, "reboot_h"))
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert [c["command"] for c in fake_hub.commands] == ["reboot"] and "reason" not in fake_hub.commands[0]
+
+
 async def test_kept_failed_install_is_one_fixable_repair(
     hass: HomeAssistant, fake_hub: FakeHub, entry: MockConfigEntry
 ) -> None:

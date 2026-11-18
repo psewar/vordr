@@ -517,8 +517,12 @@ def download_url(ha_url: str, path: str) -> str:
 # it goes from stdin into a file in the private folder that curl (-K) or wget (-i) reads, never on a command line, which
 # every user of the host sees in ps and sudo logs. Everything happens in a private temporary folder that goes in every
 # case. The download is bounded by the signed size (curl --max-filesize, and ulimit -f for both tools) and in time
-# (curl --max-time, timeout for wget). The binary runs only once its size and SHA-256 match the signed manifest. Its own
-# lines are key=value; after the agent ran, the line "step=agent exit=<n>" and then the agent's last line.
+# (curl --max-time, timeout for wget). Both give up on a connection to the hub after 20 s, wget without its retries; a
+# firewall that drops the host's packets shows in seconds, not after curl's default of five minutes or wget's twenty
+# tries. curl says whether it made a connection (%{num_connects}): none is download_unreachable. wget does not tell a
+# refused connection from a failed TLS handshake (exit 4 for both), so its failures stay download_failed with the
+# exit code. The binary runs only once its size and SHA-256 match the signed manifest. Its own lines are key=value;
+# after the agent ran, the line "step=agent exit=<n>" and then the agent's last line.
 # The script holds no "${" and no "$$": systemd-run replaces them before sh sees the script (SYSTEMD_RUN).
 INSTALL_SCRIPT: Final = """umask 077
 sha=$1 size=$2 hub=$3 hubkey=$4 node=$5 opkey=$6 backup=$7 capath=$8
@@ -549,14 +553,18 @@ big() { say "step=download code=download_too_large tool=$1 size=$(fsize)"; exit 
 if command -v curl >/dev/null 2>&1; then
   printf 'url = "%s"\\n' "$url" > "$d/curl.cfg" || { say 'step=temp code=temp_failed'; exit 2; }
   if [ -n "$cacert" ]; then
-    http=$( (ulimit -f "$blocks" && exec curl -sS --proto =https --max-time 900 --max-filesize "$size" \\
-      --cacert "$cacert" -o "$f" -w '%{http_code}' -K "$d/curl.cfg") 2>/dev/null)
+    (ulimit -f "$blocks" && exec curl -sS --proto =https --connect-timeout 20 --max-time 900 --max-filesize "$size" \\
+      --cacert "$cacert" -o "$f" -w '%{http_code} %{num_connects}\\n' -K "$d/curl.cfg") > "$d/w" 2>/dev/null
   else
-    http=$( (ulimit -f "$blocks" && exec curl -sS --proto =https --max-time 900 --max-filesize "$size" \\
-      -o "$f" -w '%{http_code}' -K "$d/curl.cfg") 2>/dev/null)
+    (ulimit -f "$blocks" && exec curl -sS --proto =https --connect-timeout 20 --max-time 900 --max-filesize "$size" \\
+      -o "$f" -w '%{http_code} %{num_connects}\\n' -K "$d/curl.cfg") > "$d/w" 2>/dev/null
   fi
   rc=$?
+  read -r http conns < "$d/w" || http= conns=
   if [ "$rc" = 63 ] || [ "$(fsize)" -gt "$size" ]; then big curl; fi
+  if [ "$rc" != 0 ] && [ "$conns" = 0 ]; then
+    say "step=download code=download_unreachable tool=curl exit=$rc"; exit 2
+  fi
   [ "$rc" = 0 ] || { say "step=download code=download_failed tool=curl exit=$rc"; exit 2; }
   if [ "$http" != 200 ]; then
     reason=$(head -c 32 "$f" 2>/dev/null | tr -cd 'a-z_')
@@ -566,10 +574,11 @@ if command -v curl >/dev/null 2>&1; then
 else
   printf '%s\\n' "$url" > "$d/url" || { say 'step=temp code=temp_failed'; exit 2; }
   if [ -n "$cacert" ]; then
-    (ulimit -f "$blocks" && exec timeout 900 wget -q --https-only --timeout=60 --ca-certificate="$cacert" \\
-      -O "$f" -i "$d/url") 2>/dev/null
+    (ulimit -f "$blocks" && exec timeout 900 wget -q --https-only --tries=1 --timeout=60 --connect-timeout=20 \\
+      --ca-certificate="$cacert" -O "$f" -i "$d/url") 2>/dev/null
   else
-    (ulimit -f "$blocks" && exec timeout 900 wget -q --https-only --timeout=60 -O "$f" -i "$d/url") 2>/dev/null
+    (ulimit -f "$blocks" && exec timeout 900 wget -q --https-only --tries=1 --timeout=60 --connect-timeout=20 \\
+      -O "$f" -i "$d/url") 2>/dev/null
   fi
   rc=$?
   if [ "$(fsize)" -gt "$size" ]; then big wget; fi
@@ -664,6 +673,7 @@ SCRIPT_CODES: Final = (
     "ca_failed",
     "ca_differs",
     "download_failed",
+    "download_unreachable",
     "download_refused",
     "download_too_large",
     "size_mismatch",
@@ -762,6 +772,7 @@ ABORTS: Final = {
     "ca_failed": (),
     "ca_differs": ("ca_path",),
     "download_failed": ("tool", "exit"),
+    "download_unreachable": ("tool", "exit", "hub"),
     "download_refused": ("http", "reason"),
     "download_too_large": ("tool",),
     "size_mismatch": (),

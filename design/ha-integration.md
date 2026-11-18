@@ -219,7 +219,12 @@ runs `vordr-agent install`. The hub has nothing to do with SSH and never sees th
   suggestion before adding, proven by a test against the HA version (6a).
 - **Repair issues** (section 11): one issue per host with a problem, with the reason and the next step; it disappears
   as soon as the problem is gone.
-- **Diagnostics download:** connection, versions, host list – without keys.
+- **Diagnostics download:** connection, versions, host list – without keys, and naming no site, as people attach it to
+  public issues: the hub's address becomes `hub.invalid`, host names and this Home Assistant's name at the hub become
+  placeholders (`host-1`, `host-2` … in the order of the names, `client`), so do the ids of the pip/npm locations
+  (`location-1` …); paths, image repositories, log excerpts, log files and free text (`outside_window`, `exempt`)
+  are redacted, field names and codes stay. The repair issues that Home Assistant adds to the download still name
+  the hosts in their ids ([ADR-0189](../docs/adr/0189-the-diagnostics-download-names-no-site.md)).
 - **Translations:** en and de for the config flow, entities and issues.
 - **Dependencies:** what HA brings (`aiohttp` for the WebSocket, `cryptography` for Ed25519), and `asyncssh` for
   installing the agent over SSH (6d), as a range (`>=2.24.0,<3`) that holds the version HA pins for its own
@@ -247,7 +252,11 @@ runs `vordr-agent install`. The hub has nothing to do with SSH and never sees th
     otherwise "restart by hand" (`reboot_required_manual`);
   - warning, from the hub's `reboot_pending` an error; if the problem consists only of `reboot_pending`, `problem_<node>`
     is omitted for it (problem sensor and `vordr_problem` stay);
-  - after an accepted "Fix" it stays away until the reboot run ends, at most 30 minutes.
+  - after an accepted "Fix" it stays away until the reboot run ends, at most 30 minutes;
+  - while the host's reboot window is closed (`HostView.next_reboot`), "Fix" sends nothing: the dialog ends when it
+    opens, and again at confirmation, with the time from when the reboot runs and, with `window_only`, that a reason
+    does not open the window either
+    ([ADR-0187](../docs/adr/0187-the-agent-reports-its-reboot-window-and-home-assistant-says-when-a-reboot-can-run.md)).
 - **Install again as a repair issue** `install_again_<node>` while the hub keeps a failed install of the host
   (`failed_install`, ADR-0124) and offers the install (capability `install`)
   ([ADR-0148](../docs/adr/0148-a-kept-failed-install-is-a-repair-that-installs-again.md)):
@@ -273,6 +282,11 @@ runs `vordr-agent install`. The hub has nothing to do with SSH and never sees th
   `rate_limited` with the time from `HostView.next_install`, the backup check with what is missing. Any other names its
   code (`command_refused`). A fix dialog says why only for the codes the hub can send for its command, the reboot only
   for `role_forbids`. The update entity has `INSTALL` only with the capability `install`.
+- **Reboot window** ([ADR-0187](../docs/adr/0187-the-agent-reports-its-reboot-window-and-home-assistant-says-when-a-reboot-can-run.md)): the reboot button
+  sends nothing while `HostView.next_reboot` lies ahead and raises `reboot_window_closed` or, on a host with
+  `window_only`, `reboot_window_only`, with the time in Home Assistant's local time. `vordr.press_outside_window` holds
+  a reboot only with `window_only`. The button has the attributes `reboot_window` (`days`, `start`, `end`, `tz`),
+  `window_only` and `next_reboot`. Without the fields (an older hub or agent) everything is as before.
 - **Known exploitation** ([ADR-0168](../docs/adr/0168-known-exploitation-comes-from-the-kev-catalog-fetched-whole-at-the-hub.md)):
   the KEV fields of each finding (`known_exploited`, `kev_cves`, `kev_added`, `kev_ransomware`) pass through in the
   attribute `findings` of `_vulnerable_packages` and `_malicious_packages`; `_vulnerable_packages` has the host's count
@@ -419,11 +433,11 @@ threat comparison). Linux with systemd and apt only.
 |---|---|---|
 | Start (`user`) | the SSH library installed, entry loaded, operator key stored, hub connected, its status names `agent_download`; each checked before the form shows. The form names the role the hub asks for (`vordr-hub client-role <client> --role admin`): the hub's status does not tell a client its role | `install_needs_ssh_library`, `entry_not_loaded`, `install_needs_operator_key` (names Configure → Operator keys), `hub_not_connected`, `hub_without_download` |
 | Target (`user`) | host, SSH port, user (`root`), node (empty: the host's own name) | form errors; `ssh_unreachable`, `ssh_timeout`, `ssh_failed` |
-| Host key (`host_key`) | fetched without logging in (`asyncssh.get_server_host_key`), shown as algorithm and SHA256 fingerprint; a menu: the same (`login`), or stop (`host_key_rejected`) | `host_key_rejected` |
+| Host key (`host_key`) | fetched without logging in (`asyncssh.get_server_host_key`), asking for ED25519, then ECDSA, then RSA with SHA-2 signatures, never `ssh-rsa` with SHA-1 signatures ([ADR-0186](../docs/adr/0186-the-ssh-install-asks-for-the-ed25519-host-key-first-and-never-for-sha-1-signatures.md)); shown as algorithm and SHA256 fingerprint with the host's file to compare it with (`ssh-keygen -lf /etc/ssh/ssh_host_<type>_key.pub`); the login asks for the same types and accepts only the confirmed key; a menu: the same (`login`), or stop (`host_key_rejected`) | `host_key_rejected` |
 | Login (`login`) | password or pasted private key with its passphrase, sudo's password (empty: the login password); the login accepts only the confirmed key, nothing goes to a `known_hosts` file | form errors `ssh_auth_failed`, `ssh_key_invalid`, `sudo_failed`, `sudo_needs_password`; `ssh_host_key_changed` |
 | Probe | as the user, `key=value` facts: `uname -s`, `uname -m`, `id -u`, systemd, `apt-get`, `curl`/`wget`, `sha256sum`, `base64`, `mktemp`, `timeout`, `systemd-run`, `sudo`; then `sudo -k -n true`, else `sudo -k -S` with the password on stdin | `not_linux`, `unknown_arch`, `no_systemd`, `no_apt`, `no_download_tool`, `missing_tools`, `no_sudo`, `probe_failed` |
 | Release | `agent_download` for `linux/<arch>` (`x86_64` → `amd64`, `aarch64` → `arm64`, `armv7l`/`armv8l` → `arm`); the operator's signature over `vordr/agent-manifest/v1\0` + manifest with the stored keys; the manifest read as strictly as the agent's `VerifyManifest`; file, SHA-256 and size only from it; the download path must open that file; not older than the newest release an install of this entry took (kept in `.storage/vordr.agent_release.<entry_id>`, compared as the agent's `NewerRelease`) | the hub's codes (`role_forbids` with `vordr-hub client-role <client> --role admin`, `no_release`, `too_many_downloads`, …), `hub_refused`, `manifest_signature_invalid`, `manifest_invalid`, `no_binary_for_platform`, `release_too_old`, `download_invalid` |
-| Install (`install`, progress) | as root, as a transient service of its own (`systemd-run --pipe --wait --collect`), outside the login session; one script, with no `${…}` and no `$$` in it or its values, as systemd expands them in a service's command line; a private temporary folder (`mktemp -d`, umask 077, refused if nothing may run from it); download over HTTPS from the integration's host and port with the hub's CA if it has one, the URL read from a file in that folder (`curl -K`, `wget -i`), bounded by the signed size (`curl --max-filesize`, `ulimit -f` for both) and in time (`curl --max-time 900`, `timeout 900 wget`); size and SHA-256 compared before anything runs; the hub's CA to `/etc/vordr/hub-ca.pem` (compared if there, removed again after a refusal); `vordr-agent install --hub wss://<host>:<port>/v1/tunnel --hub-key <from the answer> --operator-key … [--backup-operator-key] [--node] [--ca-file]`; the folder removed by a trap in every case | `size_mismatch`, `hash_mismatch`, `download_failed`, `download_refused`, `download_too_large`, `ca_differs`, `ca_failed`, `temp_noexec`, `temp_failed`, `bad_input`; the agent's codes as `agent_<code>`, others as `agent_refused`/`agent_failed`; `agent_no_result`, `install_no_result`, `ssh_lost`, `ssh_timeout` |
+| Install (`install`, progress) | as root, as a transient service of its own (`systemd-run --pipe --wait --collect`), outside the login session; one script, with no `${…}` and no `$$` in it or its values, as systemd expands them in a service's command line; a private temporary folder (`mktemp -d`, umask 077, refused if nothing may run from it); download over HTTPS from the integration's host and port with the hub's CA if it has one, the URL read from a file in that folder (`curl -K`, `wget -i`), bounded by the signed size (`curl --max-filesize`, `ulimit -f` for both) and in time (`curl --max-time 900`, `timeout 900 wget`); both give up on a connection after 20 s (`--connect-timeout`, wget with `--tries=1`); curl without a connection made (`%{num_connects}` is 0) stops with `download_unreachable`, every other failure, and every wget failure (wget's exit 4 does not tell a refused connection from a failed TLS handshake), with `download_failed`; size and SHA-256 compared before anything runs; the hub's CA to `/etc/vordr/hub-ca.pem` (compared if there, removed again after a refusal); `vordr-agent install --hub wss://<host>:<port>/v1/tunnel --hub-key <from the answer> --operator-key … [--backup-operator-key] [--node] [--ca-file]`; the folder removed by a trap in every case | `size_mismatch`, `hash_mismatch`, `download_failed`, `download_unreachable`, `download_refused`, `download_too_large`, `ca_differs`, `ca_failed`, `temp_noexec`, `temp_failed`, `bad_input`; the agent's codes as `agent_<code>`, others as `agent_refused`/`agent_failed`; `agent_no_result`, `install_no_result`, `ssh_lost`, `ssh_timeout` |
 | End (`result`) | the agent's last line `result=installed node=<n> fingerprint=<hex>`; an abort, also on success: no subentry is stored | `agent_installed` with node, fingerprint and version; the repair `waiting_<node>` then names the approval command, and once approved the host is a device of the entry |
 
 - **What is read from the host:** only `key=value` fields: the probe's lines, the script's own last line
@@ -515,7 +529,7 @@ Four automation blueprints in `blueprints/automation/vordr/` turn the events and
 |---|---|---|
 | `problem.yaml` | `vordr_problem` | `message.<language>` of the problem to a notify service; optional wait (a problem that ends or changes inside the wait is dropped), ignored reasons, a note when it ends (without a wait only) |
 | `run_failed.yaml` | `vordr_run_finished`, `state` not `ok` | `message.<language>` of the result; filter by kind of run and by ignored results (`ok_reboot_required` by default) |
-| `reboot_offer.yaml` | `vordr_run_finished` with `ok_reboot_required`; `vordr_problem` with `reboot_pending` | the text, and the action "Reboot now" where the host has a reboot button; a tap presses that button |
+| `reboot_offer.yaml` | `vordr_run_finished` with `ok_reboot_required`; `vordr_problem` with `reboot_pending` | the text, and the action "Reboot now" where the host has a reboot button; a tap presses that button, or, while the host's reboot window is closed, says from when the reboot runs (ADR-0187) |
 | `hub_offline.yaml` | the hub's online entity off for N minutes | a notice, and one when the connection is back |
 
 - Inputs are selectors: the notify service (text), hosts (device selector of this integration, empty means every

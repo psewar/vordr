@@ -1,7 +1,7 @@
 ---
-status: proposed
+status: accepted
 date: 2026-11-18
-decision-makers: kay (2026-11-18, asked why adding a device sits in the configure dialog and decided to rebuild it as an "Add host" button); proposed by Claude
+decision-makers: kay (2026-11-18, asked why adding a device sits in the configure dialog and decided to rebuild it as an "Add host" button); proposed by Claude; kay (2026-11-18, merged with #161)
 ---
 
 # The agent install starts from an "Add host" button and stores no subentry

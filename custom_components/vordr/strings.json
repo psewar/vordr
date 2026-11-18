@@ -64,7 +64,7 @@
         },
         "host_key": {
           "title": "Check the host key",
-          "description": "{host}:{port} presents this host key ({algorithm}):\n\n`{fingerprint}`\n\nCompare it with the host's own, on its console: `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` (for another type, its file in /etc/ssh). Go on only if they are the same: otherwise someone may sit between Home Assistant and the host. The login accepts only this key; nothing is written to a known_hosts file.",
+          "description": "{host}:{port} presents this host key ({algorithm}):\n\n`{fingerprint}`\n\nCompare it with the host's own, on its console: `ssh-keygen -lf /etc/ssh/{key_file}`. Go on only if they are the same: otherwise someone may sit between Home Assistant and the host. The login accepts only this key; nothing is written to a known_hosts file.",
           "menu_options": {
             "login": "They are the same: log in",
             "host_key_rejected": "They differ: stop"
@@ -100,7 +100,7 @@
         "sudo_password_invalid": "A password on one line.",
         "ssh_unreachable": "The host is not reachable: check the name, the address and the port.",
         "ssh_timeout": "The host does not answer in time.",
-        "ssh_failed": "The other side does not speak SSH as expected.",
+        "ssh_failed": "The other side does not speak SSH as expected, or offers no host key type the install accepts (ED25519, ECDSA, RSA with SHA-2).",
         "ssh_no_host_key": "The host presented no host key.",
         "ssh_auth_failed": "The login was refused: user, password or key wrong, or the host does not allow this way of logging in.",
         "ssh_lost": "The connection to the host ended. Nothing was changed.",
@@ -144,6 +144,7 @@
         "ca_failed": "The hub's CA certificate could not be put on the host. Nothing was installed.",
         "ca_differs": "`{ca_path}` is on the host already and differs from this hub's CA certificate: compare them there. Nothing was changed on the host.",
         "download_failed": "The host could not download the agent from the hub (`{tool}`, exit {exit}): does it reach the hub at the address Home Assistant uses? Nothing was installed.",
+        "download_unreachable": "The host gets no connection to the hub at `{hub}` (`{tool}`, exit {exit}): the hub's name does not resolve there, or a firewall at the hub or between the two blocks this host. Allow it there and try again. Nothing was installed.",
         "download_refused": "The hub refused the download (HTTP {http}, `{reason}`): try again. Nothing was installed.",
         "download_too_large": "The hub sent more than the signed size of the agent (`{tool}`): the host stopped the download at that size and deleted it. Nothing was installed.",
         "size_mismatch": "The downloaded agent does not have the size the signed manifest names: it was not run and is deleted. Nothing was installed.",
@@ -519,6 +520,9 @@
       "outdated_images": { "name": "Outdated images" },
       "hub_hosts_online": { "name": "Hosts connected" },
       "hub_hosts_with_problem": { "name": "Hosts with problem" },
+      "hub_hosts_with_updates": { "name": "Hosts with updates" },
+      "hub_hosts_with_security_updates": { "name": "Hosts with security updates" },
+      "hub_hosts_needing_reboot": { "name": "Hosts needing a reboot" },
       "hub_pending_approvals": { "name": "Pending approvals" },
       "hub_vulnerability_data": { "name": "Vulnerability data" },
       "hub_connection": {
@@ -594,7 +598,14 @@
     "button": {
       "check": { "name": "Check now" },
       "install_security": { "name": "Install security updates" },
-      "reboot": { "name": "Reboot" },
+      "reboot": {
+        "name": "Reboot",
+        "state_attributes": {
+          "reboot_window": { "name": "Reboot window" },
+          "window_only": { "name": "Window shut also for a reason" },
+          "next_reboot": { "name": "Reboot possible from" }
+        }
+      },
       "install_app": { "name": "Install {app}" }
     },
     "switch": {
@@ -636,6 +647,12 @@
     },
     "command_refused_rate_limited": {
       "message": "{node}: not installed - its last run was less than its minimum interval (install.min_interval_h) ago. Possible again from {next}."
+    },
+    "reboot_window_closed": {
+      "message": "{node}: reboot only from {next} - the host's reboot window (reboot.window) is closed until then. To reboot now, use the action “Run outside the window” with a reason."
+    },
+    "reboot_window_only": {
+      "message": "{node}: reboot only from {next} - the host's reboot window (reboot.window) is closed and does not open even with a reason (reboot.window_only)."
     }
   },
   "issues": {
@@ -654,7 +671,9 @@
           "no_longer_needed": "{node} no longer needs a reboot.",
           "reboot_not_offered": "{node} no longer allows reboots through Vördr. Reboot it by hand.",
           "command_refused": "The hub refused the reboot of {node} (code {code}).",
-          "command_refused_role_forbids": "The hub refused the reboot of {node}: this Home Assistant may not start it - its role at the hub does not allow it (vordr-hub client-role)."
+          "command_refused_role_forbids": "The hub refused the reboot of {node}: this Home Assistant may not start it - its role at the hub does not allow it (vordr-hub client-role).",
+          "reboot_window_closed": "{node} can be rebooted only from {next}: its reboot window (reboot.window) is closed until then. Try again then, or reboot now with the action “Run outside the window” and a reason.",
+          "reboot_window_only": "{node} can be rebooted only from {next}: its reboot window (reboot.window) is closed and does not open even with a reason (reboot.window_only). Try again then."
         }
       }
     },
@@ -989,7 +1008,7 @@
     },
     "press_outside_window": {
       "name": "Run outside the window",
-      "description": "Presses a Vördr button (install security updates, install an app, reboot) with a reason of your own. A reboot outside the host's window needs it; the install buttons run outside the window anyway. Rebooting still needs the admin role at the hub.",
+      "description": "Presses a Vördr button (install security updates, install an app, reboot) with a reason of your own. A reboot outside the host's window needs it, unless the host keeps its reboot window shut even for a reason (reboot.window_only); the install buttons run outside the window anyway. Rebooting still needs the admin role at the hub.",
       "fields": {
         "reason": {
           "name": "Reason",

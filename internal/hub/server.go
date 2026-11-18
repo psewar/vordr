@@ -3,7 +3,6 @@ package hub
 import (
 	"bytes"
 	"context"
-	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -170,8 +169,9 @@ func (s *Server) login(conn *wire.Conn, remote string, agentNonce []byte) (*sess
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, false
 	}
-	// The hello comes before the status: what it may carry beyond the base protocol is announced here (ADR-0114).
-	ch := wire.Challenge{T: wire.TChallenge, Nonce: nonce, Features: []string{wire.FeatureAck}}
+	// The hello comes before the status: what it may carry beyond the base protocol is announced here (ADR-0114,
+	// ADR-0187).
+	ch := wire.Challenge{T: wire.TChallenge, Nonce: nonce, Features: []string{wire.FeatureAck, wire.FeatureRebootWindow}}
 	if agentNonce != nil {
 		ch.HubSig = s.Key.Sign(wire.ChallengeSigned(nonce, agentNonce))
 	}
@@ -190,18 +190,20 @@ func (s *Server) login(conn *wire.Conn, remote string, agentNonce []byte) (*sess
 	var h wire.Hello
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
-	if t != wire.THello || dec.Decode(&h) != nil || !nodePattern.MatchString(h.Node) ||
-		len(h.PublicKey) != ed25519.PublicKeySize ||
-		!ed25519.Verify(h.PublicKey, wire.HelloSigned(nonce, h.Node, h.PublicKey), h.Signature) {
+	if t != wire.THello || dec.Decode(&h) != nil || !helloIdentityHolds(h, nonce) {
 		s.Events.Log("", "hello_refused", map[string]any{"reason": wire.ReasonBadHello, "remote": remote})
 		_ = conn.Send(wire.Status{T: wire.TStatus, State: wire.StateRejected, Reason: wire.ReasonBadHello})
 		return nil, false
 	}
+	drops := takeHello(&h) // bounded before anything of it is kept (ADR-0187, ADR-0191)
 	fp := identity.Fingerprint(h.PublicKey)
 	state, reason, err := s.Reg.Admit(h, fp, s.Now(), s.MaxPending)
 	if err != nil {
 		s.Log.Printf("register: %v", err)
 		return nil, false
+	}
+	if state != wire.StateRejected {
+		s.logDrops(h.Node, fp, drops) // a refused hello names a node that is not its own
 	}
 	s.Events.Log(h.Node, "hello", map[string]any{"state": state, "reason": reason, "fingerprint": fp,
 		"agent_version": h.AgentVersion, "remote": remote})

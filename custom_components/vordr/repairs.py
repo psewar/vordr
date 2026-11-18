@@ -15,6 +15,7 @@ from .coordinator import (
     failed_install,
     failed_install_names,
     install_again_offered,
+    reboot_held,
     reboot_required,
     refusal,
 )
@@ -47,6 +48,11 @@ class _HostFlow(RepairsFlow):
     def _asked(self, coordinator: VordrCoordinator) -> None:
         """The hub took the command."""
 
+    def _held(self, host: dict[str, Any]) -> tuple[str, dict[str, str]] | None:
+        """Why the command cannot run right now although the fix still applies, as an abort reason and its
+        placeholders; None while it can. Asked when the dialog opens and again at confirmation."""
+        return None
+
     def _shown(self, host: dict[str, Any] | None) -> dict[str, str]:
         """What the confirm step names besides the host, from the host's state as the hub last sent it (None: not
         known right now)."""
@@ -65,7 +71,10 @@ class _HostFlow(RepairsFlow):
     async def async_step_confirm(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         names = {"node": self._node}
         if user_input is None:
-            shown = {**names, **self._shown(self._host())}
+            host = self._host()
+            if host is not None and (held := self._held(host)) is not None:
+                return self.async_abort(reason=held[0], description_placeholders=held[1])
+            shown = {**names, **self._shown(host)}
             return self.async_show_form(step_id="confirm", data_schema=vol.Schema({}), description_placeholders=shown)
         entry = self.hass.config_entries.async_get_entry(self._entry_id)
         if entry is None or entry.state is not ConfigEntryState.LOADED:
@@ -78,6 +87,8 @@ class _HostFlow(RepairsFlow):
             return self.async_abort(reason="host_gone", description_placeholders=names)
         if reason := self._still(host):
             return self.async_abort(reason=reason, description_placeholders=names)
+        if (held := self._held(host)) is not None:
+            return self.async_abort(reason=held[0], description_placeholders=held[1])
         code = await coordinator.command(self._node, self.command)
         if code != "ok":
             if code not in self.refusals:
@@ -102,6 +113,10 @@ class RebootFlow(_HostFlow):
         if not can_reboot(host):
             return "reboot_not_offered"
         return ""
+
+    def _held(self, host: dict[str, Any]) -> tuple[str, dict[str, str]] | None:
+        # The fix sends the button's reboot, without a reason: a closed reboot window holds it (ADR-0187).
+        return reboot_held(self._node, host)
 
     def _asked(self, coordinator: VordrCoordinator) -> None:
         coordinator.reboot_asked(self._node)

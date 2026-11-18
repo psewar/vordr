@@ -857,16 +857,51 @@ func (w *Window) check(field string) []Issue {
 func (w *Window) Valid() bool { return len(w.check("window")) == 0 }
 
 // Contains reports whether t (in the host's local time) lies inside the window. The window must be valid.
-func (w *Window) Contains(t time.Time) bool {
-	s, _ := minutes(w.Start)
-	e, _ := minutes(w.End)
-	m := t.Hour()*60 + t.Minute()
-	today := slices.Contains(w.Days, dayNames[t.Weekday()])
-	if s < e {
-		return today && m >= s && m < e
+func (w *Window) Contains(t time.Time) bool { return w.clock().contains(t) }
+
+// windowClock is a window read once: its days by time.Weekday, start and end in minutes of the day.
+type windowClock struct {
+	days       [7]bool
+	start, end int
+}
+
+func (w *Window) clock() windowClock {
+	var c windowClock
+	c.start, _ = minutes(w.Start)
+	c.end, _ = minutes(w.End)
+	for i, name := range dayNames {
+		c.days[i] = slices.Contains(w.Days, name)
 	}
-	yesterday := slices.Contains(w.Days, dayNames[(t.Weekday()+6)%7])
-	return (today && m >= s) || (yesterday && m < e)
+	return c
+}
+
+// contains: t's wall clock in the window - on one of its days from start to end, or, for a window over midnight
+// (end before start), after midnight until end when the day before is one of its days.
+func (c windowClock) contains(t time.Time) bool {
+	h, mi, _ := t.Clock()
+	m, day := h*60+mi, t.Weekday()
+	if c.start < c.end {
+		return c.days[day] && m >= c.start && m < c.end
+	}
+	return (c.days[day] && m >= c.start) || (c.days[(day+6)%7] && m < c.end)
+}
+
+// opensWithin bounds Opens. A valid window opens at least once a week; where the change to summer time skips the whole
+// of a weekly window, the next opening is a week later.
+const opensWithin = 15 * 24 * time.Hour
+
+// Opens is the first whole minute after t at which Contains says yes, in t's location (the host's local time), and
+// false for none within opensWithin (a window that is not valid). Found by trying each minute in turn (ADR-0187): the
+// answer is the agent's own also where daylight saving time skips or repeats an hour of the clock.
+func (w *Window) Opens(t time.Time) (time.Time, bool) {
+	c := w.clock()
+	u := t.Truncate(time.Minute).Add(time.Minute)
+	for until := u.Add(opensWithin); u.Before(until); u = u.Add(time.Minute) {
+		if c.contains(u) {
+			return u, true
+		}
+	}
+	return time.Time{}, false
 }
 
 func minutes(hhmm string) (int, bool) {

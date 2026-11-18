@@ -49,6 +49,7 @@ func (s *Server) HostView(e Entry, now time.Time) wire.HostView {
 	online, _ := s.Online(e.Node)
 	v := wire.HostView{Node: e.Node, Device: deviceView(e), Online: online, Capabilities: capabilities(e),
 		Reboot: wire.RebootView{Checked: []string{}}, NextInstall: nextInstall(e, now)}
+	v.RebootWindow, v.NextReboot = rebootWindowView(e.Policy, v.Capabilities), nextReboot(e.Policy, v.Capabilities, now)
 
 	var reasons []string
 	var failedCode protocol.Code

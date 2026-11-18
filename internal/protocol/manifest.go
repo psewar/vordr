@@ -53,6 +53,11 @@ func VerifyManifestWith(raw, sig []byte, keys []ed25519.PublicKey) (Manifest, bo
 	return Manifest{}, false
 }
 
+// ValidVersion reports whether v is a version a signed manifest may carry: up to 64 letters, digits, ".", "+" and "-",
+// starting with a letter or digit. Releases (X.Y.Z) and hand builds ("0.0.0-pr", "dev") are; the hub takes an agent's
+// version in its hello only in this form (ADR-0191).
+func ValidVersion(v string) bool { return versionPattern.MatchString(v) }
+
 // IsRelease reports whether v is a release version X.Y.Z.
 func IsRelease(v string) bool { return releasePattern.MatchString(v) }
 

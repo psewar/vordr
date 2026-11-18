@@ -198,11 +198,39 @@ Der Hub antwortet auf `hello` mit `status` (`pending_approval`, `approved` oder 
 schickt er nur an freigegebene Hosts und nur mit Verben, die der Agent im `hello` genannt hat.
 
 **Merkmale der Leitstelle** (seit Leitstelle 0.18.0): Jeder `status` trägt `features`, die Nachrichtenarten, die diese
-Leitstelle über das Grundprotokoll hinaus annimmt (`inventory`, `vet`, `containers`, `image_contents`; `ack` kündigt
-sie schon in der Challenge an, 10.2). Eine ältere Leitstelle trennt die Verbindung bei
-einer Nachricht, die sie nicht kennt. Der Agent schickt eine neuere Art deshalb nur, wenn die Leitstelle sie genannt
-hat; er probiert nicht aus und liest es nicht aus einem Abbruch. So ist die Reihenfolge der Updates egal, die Betriebsregel
-„Leitstelle vor Agent“ bleibt trotzdem.
+Leitstelle über das Grundprotokoll hinaus annimmt (`inventory`, `vet`, `containers`, `image_contents`). Was das `hello`
+darüber hinaus tragen darf, kündigt sie schon in der Challenge an, weil das Hello vor dem Status kommt: `ack` (10.2)
+und `reboot_window` (10.2,
+[ADR-0187](../docs/adr/0187-the-agent-reports-its-reboot-window-and-home-assistant-says-when-a-reboot-can-run.md)). Eine
+ältere Leitstelle trennt die Verbindung bei einer Nachricht, die sie nicht kennt, und lehnt ein Hello mit einem Feld
+ab, das sie nicht kennt. Der Agent schickt eine neuere Art oder ein neueres Feld deshalb nur, wenn die Leitstelle es
+genannt hat; er probiert nicht aus und liest es nicht aus einem Abbruch. So ist die Reihenfolge der Updates egal, die
+Betriebsregel „Leitstelle vor Agent“ bleibt trotzdem.
+
+**Grenzen des Hello**
+([ADR-0191](../docs/adr/0191-the-hub-bounds-every-field-of-an-agents-hello-before-it-keeps-it.md)):
+- Die Leitstelle begrenzt jedes Feld eines `hello`, bevor sie etwas davon speichert, protokolliert, damit rechnet oder
+  anzeigt, auch bei einem Host, der noch nicht freigegeben ist. Die Prüfungen stehen an einer Stelle
+  (`internal/hub/hello.go`).
+- Typ, Name, Schlüssel und Signatur sind die Identität. Ausserhalb ihrer Grenzen wird das Hello wie bisher mit
+  `bad_hello` abgelehnt.
+- Jedes andere Feld nimmt sie ganz oder gar nicht. Eines ausserhalb seiner Grenze fällt weg, als hätte der Agent es
+  nicht gemeldet; ein Fakt wird zu `unknown`, wie von einem Agenten, der ihn nicht herausfinden konnte. Der Host
+  verbindet sich trotzdem. Beispiele: ein Fakt über 255 Bytes oder mit Steuerzeichen, mehr als 16 Verben, mehr als 64
+  Apps, mehr als 128 erlaubte Umfänge, ein App-Name mit einem Tabulator, ein Fenster `install.window`, das
+  `check-config` ablehnen würde oder dessen Tage mehr als 64 Einträge haben (ein wiederholter Tag gilt, wie
+  `check-config` ihn annimmt), ein Mindestabstand ausserhalb von 0 bis 168 Stunden, ein Zonenname über 64 Zeichen.
+- Sobald das Register den Host aufgenommen hat (wartend oder freigegeben), nennt das Ereignis `hello_fields_dropped`
+  jedes weggefallene Feld mit seinem Code (`too_long`, `too_many`, `characters`, `value`, beim Fenster `install.window`
+  `days` oder `window`) und dem `fingerprint` des Schlüssels. Ein Hello, das das Register ablehnt (ein anderer Schlüssel
+  unter einem bekannten Namen, ein abgelehnter Host, kein Platz für einen weiteren wartenden), protokolliert nichts
+  Weggefallenes: es nennt einen Knoten, der nicht seiner ist.
+- Verben und Umfänge sind durch ihre Zeichen begrenzt, nicht durch die Werte, die diese Leitstelle kennt: das Verb
+  eines neueren Agenten bleibt und bietet nichts an.
+- Das Neustart-Fenster hat seine eigene Prüfung und sein eigenes Ereignis (10.2), die erste dieser Grenzen; es wird
+  zuerst geprüft.
+- Die Grenzen liegen weit über dem, was Agenten schicken. Ein Test prüft das Hello des Agenten selbst über einen echten
+  Tunnel dagegen; ein anderer findet jedes Feld des Hello selbst und schlägt bei einem neuen ohne Grenze fehl.
 
 **Signierte Challenge** ([ADR-0170](../docs/adr/0170-the-hub-signs-its-challenge-and-the-agent-checks-its-key.md)):
 - Der Agent schickt eine eigene Nonce, 32 Zufallsbytes in Base64, im Header `Vordr-Challenge-Nonce` der
@@ -273,6 +301,9 @@ ihn ([ADR-0109](../docs/adr/0109-the-install-button-installs-at-once.md)):
   nur wenn nötig, `install.min_interval_h`, ein Lauf zur Zeit, die Backup-Prüfung der Leitstelle. Ein Host mit
   `reboot.window_only: true` hält `reboot.window` auch für einen Grund geschlossen
   ([ADR-0154](../docs/adr/0154-a-host-can-keep-reboots-inside-its-window-even-with-a-reason.md)).
+- **Neustart-Knopf:** Er trägt keinen Grund, also hält ihn ein geschlossenes `reboot.window` auf jedem Host zurück.
+  Home Assistant kennt das Fenster und sagt, ab wann der Neustart läuft (10.2,
+  [ADR-0187](../docs/adr/0187-the-agent-reports-its-reboot-window-and-home-assistant-says-when-a-reboot-can-run.md)).
 - **Ältere Agenten** lesen Aufträge streng und würden das unbekannte Feld als `rejected_invalid_job` ablehnen. Der
   Agent kündigt es darum im Hello an (`policy.outside_window`); einem anderen schickt die Leitstelle keinen Grund und
   antwortet HA mit `outside_window_unsupported`.
@@ -438,7 +469,7 @@ Name „Vördr <node>“, Kennung `("vordr", "host:<node>")`, Hersteller „Vör
 | `sensor.vordr_<id>_outdated_images` | sensor | Veraltete Images | Images, unter ihrem Tag neu gebaut oder mit neuerem Tag, auch die, die Handarbeit bleiben; Attribute `ready`, `installable`, `updates` (nicht in der Historie), `compared_at`, `min_age_days` (11.5) | `packages.containers` am Host |
 | `button.vordr_<id>_check` | button | Jetzt prüfen | Befehl `check` | der Agent kann `check` |
 | `button.vordr_<id>_install_security` | button | Sicherheitsupdates installieren | Befehl `install_security` | der Agent kann `install`, `security` ist erlaubt und nicht schon Standardumfang |
-| `button.vordr_<id>_reboot` | button (restart) | Neu starten | Befehl `reboot` | der Agent kann `reboot` und `reboot.allowed` |
+| `button.vordr_<id>_reboot` | button (restart) | Neu starten | Befehl `reboot`; Attribute `reboot_window`, `window_only`, `next_reboot` (10.2) | der Agent kann `reboot` und `reboot.allowed` |
 | `button.vordr_<id>_install_app_<app>` | button | Name der App | Befehl `install_app:<app>` | die App steht in `apps` und `app:<app>` ist erlaubt |
 
 Knöpfe entstehen nur für Verben, die der Agent im Hello angekündigt hat **und** die seine Richtlinie erlaubt. Eine
@@ -452,6 +483,9 @@ Paket-Entitäten weder angelegt noch gelöscht (unentschieden); erst ein Bericht
 | `binary_sensor.vordr_hub_online` | binary_sensor (connectivity) | Leitstelle | Last Will des Hubs |
 | `sensor.vordr_hub_hosts_online` | sensor | Hosts verbunden | Anzahl |
 | `sensor.vordr_hub_hosts_with_problem` | sensor | Hosts mit Problem | Anzahl; Attribut mit der Liste |
+| `sensor.vordr_hub_hosts_with_updates` | sensor | Hosts mit Updates | Anzahl der Hosts mit System-Updates, veralteten Images oder pip/npm-Paketen; Attribute `hosts` (je Host die Arten über null) und `unknown` ([ADR-0188](../docs/adr/0188-the-hub-device-counts-the-hosts-with-updates-and-a-reboot-due.md)) |
+| `sensor.vordr_hub_hosts_with_security_updates` | sensor | Hosts mit Sicherheitsupdates | Anzahl; Attribute `hosts`, `unknown` |
+| `sensor.vordr_hub_hosts_needing_reboot` | sensor | Hosts mit fälligem Neustart | Anzahl; Attribut `hosts` (mit `since`) |
 | `sensor.vordr_hub_pending_approvals` | sensor | Wartende Freigaben | Anzahl; Attribut mit Namen und Fingerprints |
 | `sensor.vordr_hub_vulnerability_data` | sensor (timestamp) | Schwachstellendaten | wann die Leitstelle ihre OSV-Daten zuletzt geholt hat (das älteste Ökosystem); je Ökosystem Zustand `ok`, `stale`, `missing` und Fehlercode (11.2) |
 
@@ -801,6 +835,27 @@ Active Backup for Business wurde dafür geprüft und verworfen
   - Der Agent nach dem Start belegt den Neustart mit einer neuen Boot-Kennung und prüft, dass keiner mehr nötig ist.
     Erst dann meldet er `ok`; sonst `failed_verification`, mit dem Grund.
   - HA bietet den Knopf nur bei Hosts, die es erlauben. Die Rolle des Clients muss `admin` sein (12).
+  - Neustart-Fenster in Home Assistant
+    ([ADR-0187](../docs/adr/0187-the-agent-reports-its-reboot-window-and-home-assistant-says-when-a-reboot-can-run.md)):
+    - Der Agent meldet `policy.reboot_window` (Tage, Beginn, Ende) und `policy.reboot_window_only` mit `policy.tz` im
+      Hello, nur mit `reboot.allowed` und einem `reboot.window` und nur an eine Leitstelle, die `reboot_window` in
+      ihrer Challenge ankündigt.
+    - Wo die Leitstelle den Neustart anbietet, trägt `HostView.reboot_window` das Fenster mit `tz` und `window_only`,
+      und `HostView.next_reboot`, solange es zu ist: die erste Minute, in der die eigene Fensterprüfung des Agenten
+      ja sagt, Minute für Minute bis 15 Tage weit in der Zone des Hosts gesucht, also auch über Mitternacht und in
+      den Nächten, in denen die Sommerzeit eine Stunde überspringt oder doppelt zeigt; in UTC. Fehlt, solange das
+      Fenster offen ist, ohne gemeldetes Fenster und ohne Zone. Die Leitstelle lehnt deswegen keinen Neustart ab.
+    - Die Leitstelle nimmt das gemeldete Fenster nur in Grenzen: ein Fenster, das `check-config` annähme (auch mit
+      einem wiederholten Tag), mit höchstens 64 Einträgen in seinen Tagen
+      ([ADR-0191](../docs/adr/0191-the-hub-bounds-every-field-of-an-agents-hello-before-it-keeps-it.md)), ein
+      Zonenname von höchstens 64 Zeichen, den sie kennt. Sonst gilt der Host als einer, der keines meldet, und sobald
+      das Register den Host aufgenommen hat, nennt das Ereignis `reboot_window_refused` den Grund (`reason`: `days`,
+      `window` oder `tz`) mit dem `fingerprint` des Schlüssels. Die übrigen Felder des Hello haben eigene Grenzen
+      (6.2).
+    - Der Neustart-Knopf und „Beheben“ des Neustart-Hinweises schicken vor `next_reboot` nichts und nennen die
+      Uhrzeit; bei einem Host mit `window_only` sagt der Text, dass auch ein Grund das Fenster nicht öffnet.
+      `vordr.press_outside_window` hält einen Neustart nur mit `window_only` zurück. Ältere Teile schicken oder
+      lesen keines der Felder und verhalten sich wie bisher.
   - Containern (LXC) bringt ein Neustart nichts. Sie teilen den Kernel des Hosts, und der Agent sieht dort meist
     keinen Bedarf.
 - **Neustart-Hinweise** folgen der Fähigkeit des Hosts: Erlaubt er keinen Neustart über Vördr, heisst der nächste
@@ -1911,7 +1966,8 @@ Aktualisieren von Compose-Diensten auf den Neubau ihres Tags per Knopf
   `verb_unsupported_by_agent`, `timeout`, …). `vordr-hub key` zeigt den öffentlichen Hub-Schlüssel für
   `agent.yaml`.
 - Browser-Verbindungen (mit `Origin`-Kopfzeile) werden abgewiesen. Höchstens `max_pending` Hosts warten auf Freigabe;
-  ein bekannter Host mit anderem Schlüssel wird abgewiesen, bis er mit `forget` entfernt ist.
+  ein bekannter Host mit anderem Schlüssel wird abgewiesen, bis er mit `forget` entfernt ist. Das Register behält die
+  Felder eines Hello nur innerhalb ihrer Grenzen (6.2).
 - Prüft HA-Befehle gegen die gemeldete Richtlinie des Hosts, bevor er signiert.
 - Meldet Problemfälle: Host stumm (`offline`), `stale`, wartende Freigaben, gescheiterte Agent-Updates.
 

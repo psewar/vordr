@@ -89,6 +89,9 @@ const (
 	// agent reads them only for a hub that announced this: reading costs the host a little, and an older hub would
 	// only carry them around.
 	FeatureImageContents = "image_contents"
+	// FeatureRebootWindow: the hub takes PolicySummary.RebootWindow and RebootWindowOnly in the hello (ADR-0187).
+	// Announced in the challenge, like FeatureAck: an older hub refuses a hello with fields it does not know.
+	FeatureRebootWindow = "reboot_window"
 )
 
 // Runs is what the agent knows about its runs, in the hello to a hub that announced FeatureAck in its challenge
@@ -170,8 +173,14 @@ type PolicySummary struct {
 	Apps          []AppInfo `json:"apps,omitempty"`
 	// Window and TZ: when the local policy lets installs run, in the host's own time zone (IANA name). The hub plans
 	// install.auto: hub runs inside it instead of asking and being refused (design 10.3). Agents before 0.7.4: none.
+	// TZ comes with either window, this one or RebootWindow.
 	Window *WindowInfo `json:"window,omitempty"`
 	TZ     string      `json:"tz,omitempty"`
+	// RebootWindow and RebootWindowOnly: reboot.window and reboot.window_only (ADR-0154) of a host with reboot.allowed,
+	// in TZ, so that Home Assistant can say when a reboot runs (ADR-0187). Only to a hub that announced
+	// FeatureRebootWindow in its challenge; agents before it, and hosts without a reboot window, send none.
+	RebootWindow     *WindowInfo `json:"reboot_window,omitempty"`
+	RebootWindowOnly bool        `json:"reboot_window_only,omitempty"`
 	// OutsideWindow: install and reboot jobs that carry a reason run outside the windows too (ADR-0087). Agents before
 	// it: false, and the hub sends them no such job (they would refuse the unknown field as an invalid job).
 	OutsideWindow bool `json:"outside_window,omitempty"`
@@ -192,6 +201,8 @@ type AppInfo struct {
 	Name string `json:"name"`
 }
 
+// Hello is the agent's first message. The hub takes each field only within its bound, before it keeps anything of it
+// (internal/hub/hello.go, ADR-0191); a new field gets its bound there.
 type Hello struct {
 	T            string          `json:"t"`
 	Node         string          `json:"node"`

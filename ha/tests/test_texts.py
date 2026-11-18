@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 import json
 from pathlib import Path
 import re
@@ -11,12 +12,13 @@ from typing import Any
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.selector import SelectSelector
+from homeassistant.util import dt as dt_util
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.vordr import agent_install as ai, ai_explain as ax, ha_updates as hu, ha_updates_installer as hi
 from custom_components.vordr.const import CODES, DOMAIN, REASONS
-from custom_components.vordr.coordinator import refusal, waiting_hosts
+from custom_components.vordr.coordinator import reboot_held, refusal, waiting_hosts
 from custom_components.vordr.repairs import InstallAgainFlow, RebootFlow
 from custom_components.vordr.texts import TEXT_KEYS, Texts, placeholders, problem_key
 
@@ -135,6 +137,29 @@ def test_repair_refusals_have_their_texts(lang: str) -> None:
             assert "node" in fields and fields <= set(names), (issue, code, fields)
             used.add(key)
         assert used == {k for k in abort if k.startswith("command_refused")}, issue
+
+
+@pytest.mark.parametrize("lang", sorted(LANGS))
+def test_reboot_window_texts(lang: str) -> None:
+    """ADR-0187: the reboot button's error and the reboot repair's abort have a text for each key reboot_held gives,
+    rendered with exactly the placeholders it fills: the host and the time. Only the text for window_only says that a
+    reason does not help; the other points to the action with a reason."""
+    data = LANGS[lang]
+    later = (dt_util.utcnow() + timedelta(hours=2)).isoformat()
+    window = {"days": ["mon"], "start": "06:00", "end": "16:00", "tz": "Europe/Paris"}
+    seen = set()
+    for only in (True, False):
+        host = {"next_reboot": later, "reboot_window": {**window, "window_only": only}}
+        held = reboot_held("n", host)
+        assert held is not None
+        key, names = held
+        seen.add(key)
+        assert (reboot_held("n", host, reason=True) is None) is not only
+        for text in (data["exceptions"][key]["message"], data["issues"]["reboot_required"]["fix_flow"]["abort"][key]):
+            assert {f for _, f, _, _ in string.Formatter().parse(text) if f} == set(names) == {"node", "next"}
+            assert ("reboot.window_only" in text) is only
+    assert seen == {"reboot_window_only", "reboot_window_closed"}
+    assert reboot_held("n", {}) is None and reboot_held("n", None) is None
 
 
 @pytest.mark.parametrize("lang", sorted(LANGS))

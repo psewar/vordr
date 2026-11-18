@@ -1,4 +1,5 @@
-"""Sensors: last report, last run, pending and security updates per host; the hub's counts and connection."""
+"""Sensors: last report, last run, pending and security updates per host; the hub's counts over all hosts and its
+connection."""
 
 from __future__ import annotations
 
@@ -36,6 +37,9 @@ async def async_setup_entry(
         [
             HubHostsOnline(coordinator),
             HubHostsWithProblem(coordinator),
+            HubHostsWithUpdates(coordinator),
+            HubHostsWithSecurityUpdates(coordinator),
+            HubHostsNeedingReboot(coordinator),
             HubPendingApprovals(coordinator),
             HubConnection(coordinator),
             HubVulnerabilityData(coordinator),
@@ -327,6 +331,112 @@ class HubHostsWithProblem(VordrHubEntity, SensorEntity):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         return {"problems": self._problems()}
+
+
+def _count(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def host_updates(host: dict[str, Any]) -> tuple[dict[str, int], bool]:
+    """What a host has to update, by kind, only the kinds above zero: system (pending updates of its package source),
+    images (container images with a newer build or tag), packages (pip/npm with a newer release); and whether it cannot
+    be said: no report yet, or the system check failed (pending absent while the host has a package source). Images
+    and packages count where the host compares them; their count is absent while it does not (switched off, no
+    container engine), which is no failure. The same fields as the host's own sensors (ADR-0188)."""
+    kinds: dict[str, int] = {}
+    unsure = host.get("last_report") is None
+    if host.get("system") is not None:
+        pending = _count(host.get("pending"))
+        if pending is None:
+            unsure = True
+        elif pending:
+            kinds["system"] = pending
+    for kind, field in (("images", "containers"), ("packages", "packages")):
+        view = host.get(field)
+        outdated = _count(view.get("outdated")) if isinstance(view, dict) else None
+        if outdated:
+            kinds[kind] = outdated
+    return kinds, unsure
+
+
+def host_security(host: dict[str, Any]) -> tuple[int, bool]:
+    """Security updates of the host's package source, and whether they are unknown (no report yet, or the check
+    failed). A host without a package source has none."""
+    if host.get("last_report") is None:
+        return 0, True
+    if host.get("system") is None:
+        return 0, False
+    security = _count(host.get("security"))
+    return security or 0, security is None
+
+
+class HubFleetCount(VordrHubEntity, SensorEntity):
+    """A count over all hosts of the hub (ADR-0188): how many have something; the attribute hosts names them, the
+    attribute unknown the hosts for which it cannot be said (no report yet, or the check failed). An unknown host is
+    neither counted nor taken as done."""
+
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _unrecorded_attributes = frozenset({"hosts", "unknown"})  # grow with the fleet (ADR-0101)
+
+    def _rows(self) -> tuple[list[dict[str, Any]], list[str]]:
+        raise NotImplementedError
+
+    @property
+    def native_value(self) -> int:
+        return len(self._rows()[0])
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        rows, unknown = self._rows()
+        return {"hosts": rows, "unknown": unknown}
+
+
+class HubHostsWithUpdates(HubFleetCount):
+    def __init__(self, coordinator: VordrCoordinator) -> None:
+        super().__init__(coordinator, "hosts_with_updates", PLATFORM)
+
+    def _rows(self) -> tuple[list[dict[str, Any]], list[str]]:
+        rows, unknown = [], []
+        for node, host in sorted(self.coordinator.data.hosts.items()):
+            kinds, unsure = host_updates(host)
+            if kinds:
+                rows.append({"node": node, **kinds})
+            elif unsure:
+                unknown.append(node)
+        return rows, unknown
+
+
+class HubHostsWithSecurityUpdates(HubFleetCount):
+    def __init__(self, coordinator: VordrCoordinator) -> None:
+        super().__init__(coordinator, "hosts_with_security_updates", PLATFORM)
+
+    def _rows(self) -> tuple[list[dict[str, Any]], list[str]]:
+        rows, unknown = [], []
+        for node, host in sorted(self.coordinator.data.hosts.items()):
+            security, unsure = host_security(host)
+            if security:
+                rows.append({"node": node, "security": security})
+            elif unsure:
+                unknown.append(node)
+        return rows, unknown
+
+
+class HubHostsNeedingReboot(HubFleetCount):
+    """Hosts whose reboot is required. Unknown: hosts without a report yet. A reporting host where no signal answers
+    (e.g. a container) is not unknown here: it has no reboot to wait for."""
+
+    def __init__(self, coordinator: VordrCoordinator) -> None:
+        super().__init__(coordinator, "hosts_needing_reboot", PLATFORM)
+
+    def _rows(self) -> tuple[list[dict[str, Any]], list[str]]:
+        rows, unknown = [], []
+        for node, host in sorted(self.coordinator.data.hosts.items()):
+            reboot = host.get("reboot")
+            if isinstance(reboot, dict) and reboot.get("required") is True:
+                rows.append({"node": node, **({"since": reboot["since"]} if reboot.get("since") else {})})
+            elif host.get("last_report") is None:
+                unknown.append(node)
+        return rows, unknown
 
 
 class HubPendingApprovals(VordrHubEntity, SensorEntity):

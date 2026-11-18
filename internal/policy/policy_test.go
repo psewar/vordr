@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -254,6 +255,161 @@ func TestWindowContains(t *testing.T) {
 	for _, c := range cases {
 		if got := c.w.Contains(c.t); got != c.want {
 			t.Errorf("%v.Contains(%s) = %v, want %v", c.w, c.t.Format("Mon 15:04"), got, c.want)
+		}
+	}
+}
+
+// When a closed window opens next (ADR-0187): later the same day, on the next of its days, a week later, past midnight,
+// in the host's own zone, and where daylight saving time skips or repeats the start - always the first minute the
+// agent's own Contains says yes, never earlier.
+func TestWindowOpens(t *testing.T) {
+	zone := func(name string) *time.Location {
+		loc, err := time.LoadLocation(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return loc
+	}
+	paris, newYork := zone("Europe/Paris"), zone("America/New_York")
+	utc := func(month time.Month, day, h, m int) time.Time {
+		return time.Date(2026, month, day, h, m, 0, 0, time.UTC)
+	}
+	every := []string{"mon", "tue", "wed", "thu", "fri", "sat", "sun"}
+	workdays := &Window{Days: []string{"mon", "tue", "wed", "thu", "fri"}, Start: "06:00", End: "16:00"}
+	monday := &Window{Days: []string{"mon"}, Start: "02:00", End: "05:00"}
+	overMidnight := &Window{Days: []string{"sat"}, Start: "23:00", End: "02:00"}
+	// 2026-11-16 is a Monday. In Paris, summer time of 2026 begins at 01:00 UTC of 29 March (02:00 becomes 03:00) and
+	// ends at 01:00 UTC of 25 October (03:00 becomes 02:00).
+	at := func(loc *time.Location, month time.Month, day, h, m int) time.Time {
+		return time.Date(2026, month, day, h, m, 0, 0, loc)
+	}
+	cases := []struct {
+		name string
+		w    *Window
+		t    time.Time
+		want time.Time
+	}{
+		{"later the same day", workdays, at(paris, 11, 16, 5, 59), at(paris, 11, 16, 6, 0)},
+		{"seconds before the start", workdays, at(paris, 11, 16, 5, 59).Add(30 * time.Second), at(paris, 11, 16, 6, 0)},
+		{"the next morning", workdays, at(paris, 11, 16, 20, 0), at(paris, 11, 17, 6, 0)},
+		{"after friday comes monday", workdays, at(paris, 11, 20, 16, 0), at(paris, 11, 23, 6, 0)},
+		{"a week later", monday, at(paris, 11, 16, 5, 0), at(paris, 11, 23, 2, 0)},
+		{"over midnight, before it", overMidnight, at(paris, 11, 21, 22, 0), at(paris, 11, 21, 23, 0)},
+		{"over midnight, after it", overMidnight, at(paris, 11, 22, 2, 0), at(paris, 11, 28, 23, 0)},
+		{"in the host's zone", workdays, at(newYork, 11, 20, 17, 0), utc(11, 23, 11, 0)},
+		// The clock jumps from 02:00 to 03:00: a start at 02:30 never shows, the window is open from 03:00 on.
+		{"start skipped", &Window{Days: every, Start: "02:30", End: "04:00"}, utc(3, 29, 0, 0).In(paris),
+			utc(3, 29, 1, 0)},
+		// The clock shows 02:00 to 03:00 twice: the window opens at the first 02:30, and again at the second.
+		{"start repeated, first", &Window{Days: every, Start: "02:30", End: "02:45"}, utc(10, 25, 0, 0).In(paris),
+			utc(10, 25, 0, 30)},
+		{"start repeated, second", &Window{Days: every, Start: "02:30", End: "02:45"}, utc(10, 25, 0, 50).In(paris),
+			utc(10, 25, 1, 30)},
+		// Over midnight, ending in the repeated hour: after the first 02:30 the window is closed, and at the second 02:00
+		// it is open again, still as the night of the day before.
+		{"back over midnight", &Window{Days: every, Start: "23:00", End: "02:30"}, utc(10, 25, 0, 40).In(paris),
+			utc(10, 25, 1, 0)},
+		{"back over midnight, one night", &Window{Days: []string{"sat"}, Start: "23:00", End: "02:30"},
+			utc(10, 25, 0, 40).In(paris), utc(10, 25, 1, 0)},
+		{"back over midnight in New York", &Window{Days: every, Start: "23:00", End: "01:30"},
+			utc(11, 1, 5, 40).In(newYork), utc(11, 1, 6, 0)},
+		{"back over midnight in New York, one night", &Window{Days: []string{"sat"}, Start: "23:00", End: "01:30"},
+			utc(11, 1, 5, 40).In(newYork), utc(11, 1, 6, 0)},
+		// A weekly window inside the hour the change to summer time skips: that week it never opens, the next it does.
+		{"a week skipped", &Window{Days: []string{"sun"}, Start: "02:00", End: "02:30"}, at(paris, 3, 23, 12, 0),
+			utc(4, 5, 0, 0)},
+		{"a week skipped in New York", &Window{Days: []string{"sun"}, Start: "02:00", End: "02:30"},
+			at(newYork, 3, 2, 12, 0), utc(3, 15, 6, 0)},
+	}
+	for _, c := range cases {
+		if c.w.Contains(c.t) {
+			t.Fatalf("%s: the window is open at %s", c.name, c.t)
+		}
+		got, ok := c.w.Opens(c.t)
+		if !ok || !got.Equal(c.want) {
+			t.Errorf("%s: opens %s %v, want %s", c.name, got, ok, c.want)
+			continue
+		}
+		before := got.Add(-time.Minute)
+		if !c.w.Contains(got) || (before.After(c.t) && c.w.Contains(before)) {
+			t.Errorf("%s: %s is not the first open minute", c.name, got)
+		}
+	}
+	if _, ok := (&Window{Days: []string{"someday"}, Start: "02:00", End: "03:00"}).Opens(at(paris, 11, 16, 0, 0)); ok {
+		t.Fatal("a window without a valid day opens")
+	}
+}
+
+// Opens is the first whole minute after t at which the window says yes, by construction (ADR-0187). Checked against a
+// minute-by-minute search with a reading of the window of its own: around each change of daylight saving time of 2026
+// and once a week through the year, in zones that change forward and back, by an hour and by half an hour, north and
+// south, for windows over midnight, of one night, and inside the hour a change skips or repeats.
+func TestWindowOpensIsTheFirstMinuteTheWindowSaysYes(t *testing.T) {
+	every := []string{"mon", "tue", "wed", "thu", "fri", "sat", "sun"}
+	windows := []*Window{
+		{Days: every, Start: "23:00", End: "02:30"},
+		{Days: []string{"sat"}, Start: "23:00", End: "02:30"},
+		{Days: []string{"sun"}, Start: "02:00", End: "02:30"},
+		{Days: every, Start: "02:30", End: "02:45"},
+		{Days: []string{"mon", "tue", "wed", "thu", "fri"}, Start: "06:00", End: "16:00"},
+	}
+	// The window as its definition reads, looked up anew for each minute.
+	says := func(w *Window, u time.Time) bool {
+		s, _ := minutes(w.Start)
+		e, _ := minutes(w.End)
+		m := u.Hour()*60 + u.Minute()
+		on := func(d time.Weekday) bool { return slices.Contains(w.Days, dayNames[d]) }
+		if s < e {
+			return on(u.Weekday()) && s <= m && m < e
+		}
+		return (on(u.Weekday()) && m >= s) || (on((u.Weekday()+6)%7) && m < e)
+	}
+	year := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for _, name := range []string{"Europe/Paris", "America/New_York", "Australia/Sydney", "Australia/Lord_Howe"} {
+		loc, err := time.LoadLocation(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var probes []time.Time
+		changes := 0
+		for u := year; u.Year() == 2026; u = u.Add(time.Hour) {
+			_, before := u.In(loc).Zone()
+			_, after := u.Add(time.Hour).In(loc).Zone()
+			if before != after {
+				changes++
+				for p := u.Add(-36 * time.Hour); p.Before(u.Add(36 * time.Hour)); p = p.Add(20 * time.Minute) {
+					probes = append(probes, p.In(loc))
+				}
+			}
+		}
+		if changes != 2 {
+			t.Fatalf("%s: %d changes of daylight saving time in 2026", name, changes)
+		}
+		for p := year.Add(5*time.Hour + 7*time.Minute); p.Year() == 2026; p = p.Add(7*24*time.Hour + 61*time.Minute) {
+			probes = append(probes, p.In(loc))
+		}
+		slices.SortFunc(probes, func(a, b time.Time) int { return a.Compare(b) })
+		for _, w := range windows {
+			// The first minute the window says yes after each probe, found by walking forward; probes come in order.
+			var next time.Time
+			for _, p := range probes {
+				if from := p.Truncate(time.Minute).Add(time.Minute); next.Before(from) {
+					for next = from; !says(w, next); next = next.Add(time.Minute) {
+						if next.Sub(from) > opensWithin {
+							t.Fatalf("%s %v: never opens after %s", name, w, p)
+						}
+					}
+				}
+				got, ok := w.Opens(p)
+				if !ok || !got.Equal(next) || got.Location() != loc {
+					t.Fatalf("%s %v at %s: opens %s %v, the window first says yes at %s", name, w,
+						p.Format("Mon 2006-01-02 15:04 MST"), got.Format("Mon 01-02 15:04 MST"), ok,
+						next.Format("Mon 01-02 15:04 MST"))
+				}
+				if w.Contains(p) != says(w, p) {
+					t.Fatalf("%s %v: Contains at %s differs from the definition", name, w, p)
+				}
+			}
 		}
 	}
 }

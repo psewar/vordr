@@ -38,6 +38,20 @@ for a do
 done
 exec REAL "$@"
 """
+# curl whose connections all go to PORT on this machine: port 1 refuses (no connection, as behind a firewall that
+# rejects), the SSH server's port accepts and then speaks no TLS (a connection, but no hub).
+CURL_TO_PORT = """#!/bin/sh
+exec REAL --connect-to ::127.0.0.1:PORT "$@"
+"""
+# wget the same way: the URL file it is given (-i) points to PORT on this machine.
+WGET_TO_PORT = """#!/bin/sh
+prev=
+for a do
+  if [ "$prev" = -i ]; then printf 'https://127.0.0.1:PORT/v1/agent-download/x\\n' > "$a"; fi
+  prev=$a
+done
+exec REAL "$@"
+"""
 
 OTHER = {"other_item": {"kept": True}}  # another menu item's options, kept by every save
 OPERATOR = Ed25519PrivateKey.generate()
@@ -314,6 +328,7 @@ async def test_install_with_password_and_sudo(
         "port": str(fake_host.port),
         "algorithm": "ssh-ed25519",
         "fingerprint": fake_host.host_key.get_fingerprint("sha256"),
+        "key_file": "ssh_host_ed25519_key.pub",
     }
     assert fake_host.logins == []  # the host key came without logging in
     flow_handler = handler(hass, result["flow_id"])
@@ -370,12 +385,13 @@ async def test_install_with_password_and_sudo(
     # Neither did any process the scripts started: the download tool read the URL from a file in the private folder.
     argv = fake_host.argv()
     assert re.search(rf"^{tool} ", argv, re.M) and re.search(r"^sha256sum", argv, re.M)  # the recording works
-    # The download is bounded in size and time: curl by its own options, wget by timeout.
+    # The download is bounded in size and time: curl by its own options, wget by timeout; both give up on a connection
+    # to the hub after 20 s.
     size = len(fake_hub.release.served["vordr-agent-linux-amd64"])
     if tool == "curl":
-        assert re.search(rf"^curl .*--max-time 900 --max-filesize {size} ", argv, re.M), argv
+        assert re.search(rf"^curl .*--connect-timeout 20 --max-time 900 --max-filesize {size} ", argv, re.M), argv
     else:
-        assert re.search(r"^timeout 900 wget ", argv, re.M), argv
+        assert re.search(r"^timeout 900 wget .*--tries=1 .*--connect-timeout=20 ", argv, re.M), argv
     assert TOKEN.search(argv) is None and not any(token in argv for token in fake_hub.tokens)
     assert f"127.0.0.1:{fake_hub.port}/v1/agent-download" not in argv
     assert PASSWORD not in argv and SUDO_PASSWORD not in argv
@@ -464,6 +480,46 @@ async def test_host_key_changed_after_it_was_confirmed(
     assert result["type"] is FlowResultType.ABORT and result["reason"] == "ssh_host_key_changed"
     assert not any(method == "password" for _, method in fake_host.logins)
     assert fake_host.commands == [] and fake_hub.download_requests == []
+
+
+async def test_the_ed25519_key_is_asked_for_first(
+    hass: HomeAssistant, ready: MockConfigEntry, fake_hub: FakeHub, fake_host: FakeHost
+) -> None:
+    """A host with an RSA and an ED25519 key shows the ED25519 one, with the file to compare it with, and the login
+    takes that key (ADR-0186). asyncssh's own list would ask for RSA first."""
+    fake_host.present(asyncssh.generate_private_key("ssh-rsa"), fake_host.host_key)
+    result = await to_host_key(hass, ready, fake_host)
+    names = result["description_placeholders"]
+    assert (names["algorithm"], names["key_file"]) == ("ssh-ed25519", "ssh_host_ed25519_key.pub")
+    assert names["fingerprint"] == fake_host.host_key.get_fingerprint("sha256")
+    result = await finish(hass, await log_in(hass, result, password=PASSWORD, sudo_password=SUDO_PASSWORD))
+    assert result["reason"] == "agent_installed"
+
+
+async def test_a_host_with_an_rsa_key_only(
+    hass: HomeAssistant, ready: MockConfigEntry, fake_hub: FakeHub, fake_host: FakeHost
+) -> None:
+    """A host with only an RSA key shows it (signed with SHA-2: ssh-rsa is not asked for) and names its file."""
+    rsa = asyncssh.generate_private_key("ssh-rsa")
+    fake_host.present(rsa)
+    result = await to_host_key(hass, ready, fake_host)
+    names = result["description_placeholders"]
+    assert (names["algorithm"], names["key_file"]) == ("ssh-rsa", "ssh_host_rsa_key.pub")
+    assert names["fingerprint"] == rsa.get_fingerprint("sha256")
+    result = await finish(hass, await log_in(hass, result, password=PASSWORD, sudo_password=SUDO_PASSWORD))
+    assert result["reason"] == "agent_installed"
+
+
+async def test_a_host_without_a_key_type_the_install_asks_for(
+    hass: HomeAssistant, ready: MockConfigEntry, fake_hub: FakeHub, fake_host: FakeHost
+) -> None:
+    """A host that offers none of the types (here a DSA key only) is refused at the first step with ssh_failed: no
+    key shown, no login, nothing asked of the hub (ADR-0186)."""
+    fake_host.present(asyncssh.generate_private_key("ssh-dss"))
+    result = await to_host_key(hass, ready, fake_host)
+    assert result["type"] is FlowResultType.FORM and result["step_id"] == "user"
+    assert result["errors"] == {"base": "ssh_failed"}
+    assert fake_host.logins == [] and fake_host.commands == [] and fake_hub.download_requests == []
 
 
 # --- the login
@@ -722,6 +778,57 @@ async def test_download_refused_by_the_hub(
     result = await install(hass, ready, fake_host, password=PASSWORD, sudo_password=SUDO_PASSWORD)
     assert result["reason"] == "download_refused"
     assert result["description_placeholders"] == {"http": "409", "reason": "token_used"}
+    assert fake_host.file("agent-args") is None and fake_host.leftovers() == []
+
+
+async def test_a_host_that_gets_no_connection_to_the_hub(
+    hass: HomeAssistant, ready: MockConfigEntry, fake_hub: FakeHub, fake_host: FakeHost
+) -> None:
+    """curl gets no connection to the hub (a firewall between them): the download stops with its own code and the
+    hub's address instead of a general failure, and nothing runs."""
+    if not fake_host.has("curl"):
+        pytest.skip("no curl on this machine")
+    real = (fake_host.bin / "curl").resolve()
+    fake_host.replace("curl", CURL_TO_PORT.replace("REAL", str(real)).replace("PORT", "1"))
+    result = await install(hass, ready, fake_host, password=PASSWORD, sudo_password=SUDO_PASSWORD)
+    assert result["reason"] == "download_unreachable"
+    assert result["description_placeholders"] == {
+        "tool": "curl",
+        "exit": "7",
+        "hub": f"wss://127.0.0.1:{fake_hub.port}/v1/tunnel",
+    }
+    assert fake_host.file("agent-args") is None and fake_host.leftovers() == []
+
+
+@pytest.mark.parametrize("target", ["refused", "no_tls"])
+async def test_wget_failures_stay_download_failed(
+    hass: HomeAssistant, ready: MockConfigEntry, fake_hub: FakeHub, fake_host: FakeHost, target: str
+) -> None:
+    """The real wget exits 4 both for a refused connection and for a port that speaks no TLS: it cannot say which, so
+    both stay download_failed with the exit code, and nothing runs."""
+    if not fake_host.has("wget"):
+        pytest.skip("no wget on this machine")
+    fake_host.without("curl")
+    port = "1" if target == "refused" else str(fake_host.port)
+    real = (fake_host.bin / "wget").resolve()
+    fake_host.replace("wget", WGET_TO_PORT.replace("REAL", str(real)).replace("PORT", port))
+    result = await install(hass, ready, fake_host, password=PASSWORD, sudo_password=SUDO_PASSWORD)
+    assert result["reason"] == "download_failed"
+    assert result["description_placeholders"] == {"tool": "wget", "exit": "4"}
+    assert fake_host.file("agent-args") is None and fake_host.leftovers() == []
+
+
+async def test_a_connection_to_something_else_stays_a_download_failure(
+    hass: HomeAssistant, ready: MockConfigEntry, fake_hub: FakeHub, fake_host: FakeHost
+) -> None:
+    """curl reaches the address, but what answers speaks no TLS: a connection was made, so it is no firewall case."""
+    if not fake_host.has("curl"):
+        pytest.skip("no curl on this machine")
+    real = (fake_host.bin / "curl").resolve()
+    fake_host.replace("curl", CURL_TO_PORT.replace("REAL", str(real)).replace("PORT", str(fake_host.port)))
+    result = await install(hass, ready, fake_host, password=PASSWORD, sudo_password=SUDO_PASSWORD)
+    assert result["reason"] == "download_failed"
+    assert result["description_placeholders"]["tool"] == "curl"
     assert fake_host.file("agent-args") is None and fake_host.leftovers() == []
 
 

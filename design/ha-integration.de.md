@@ -226,7 +226,12 @@ Geräts nie.
   als Vorschlag setzen, per Test gegen die HA-Version belegt (6a).
 - **Reparaturhinweise** (Abschnitt 11): je Host mit Problem ein Hinweis mit Grund und nächstem Schritt; er
   verschwindet, sobald das Problem weg ist.
-- **Diagnose-Download:** Verbindung, Versionen, Hostliste – ohne Schlüssel.
+- **Diagnose-Download:** Verbindung, Versionen, Hostliste – ohne Schlüssel und ohne Hinweis auf den Standort, weil er
+  an öffentliche Issues angehängt wird: Die Adresse der Leitstelle wird `hub.invalid`, Hostnamen und der Name dieses
+  Home Assistant an der Leitstelle werden Platzhalter (`host-1`, `host-2` … in der Reihenfolge der Namen, `client`),
+  ebenso die IDs der pip/npm-Orte (`location-1` …); Pfade, Image-Repositories, Log-Auszüge, Log-Dateien und freier
+  Text (`outside_window`, `exempt`) werden geschwärzt, Feldnamen und Codes bleiben. Die Reparaturhinweise, die Home
+  Assistant selbst beilegt, nennen die Hosts weiter in ihren IDs ([ADR-0189](../docs/adr/0189-the-diagnostics-download-names-no-site.md)).
 - **Übersetzungen:** en und de für Config-Flow, Entitäten und Hinweise.
 - **Abhängigkeiten:** was HA mitbringt (`aiohttp` für den WebSocket, `cryptography` für Ed25519), und `asyncssh` für
   das Installieren des Agenten über SSH (6d), als Bereich (`>=2.24.0,<3`), der die Version enthält, die HA für seine
@@ -255,7 +260,11 @@ Geräts nie.
     Grund; sonst „von Hand neu starten“ (`reboot_required_manual`);
   - Warnung, ab `reboot_pending` der Leitstelle Fehler; besteht das Problem nur aus `reboot_pending`, entfällt dafür
     `problem_<node>` (Problem-Sensor und `vordr_problem` bleiben);
-  - nach einem angenommenen „Beheben“ bleibt er weg, bis der Neustart-Lauf endet, höchstens 30 Minuten.
+  - nach einem angenommenen „Beheben“ bleibt er weg, bis der Neustart-Lauf endet, höchstens 30 Minuten;
+  - solange das Neustart-Fenster des Hosts zu ist (`HostView.next_reboot`), schickt „Beheben“ nichts: Der Dialog
+    endet beim Öffnen und erneut beim Bestätigen mit der Uhrzeit, ab der der Neustart läuft, und mit `window_only`
+    damit, dass auch ein Grund das Fenster nicht öffnet
+    ([ADR-0187](../docs/adr/0187-the-agent-reports-its-reboot-window-and-home-assistant-says-when-a-reboot-can-run.md)).
 - **Erneut installieren als Reparaturhinweis** `install_again_<node>`, solange die Leitstelle einen gescheiterten Install
   des Hosts festhält (`failed_install`, ADR-0124) und den Install anbietet (Fähigkeit `install`)
   ([ADR-0148](../docs/adr/0148-a-kept-failed-install-is-a-repair-that-installs-again.md)):
@@ -285,6 +294,12 @@ Geräts nie.
   dem, was fehlt. Jeder andere nennt seinen Code (`command_refused`). Ein Dialog sagt den Grund nur für die Codes, die
   die Leitstelle für seinen Befehl schicken kann, der Neustart nur für `role_forbids`. Die update-Entität hat `INSTALL`
   nur mit der Fähigkeit `install`.
+- **Neustart-Fenster** ([ADR-0187](../docs/adr/0187-the-agent-reports-its-reboot-window-and-home-assistant-says-when-a-reboot-can-run.md)): Der Neustart-Knopf
+  schickt nichts, solange `HostView.next_reboot` vor uns liegt, und meldet `reboot_window_closed` oder, bei einem Host
+  mit `window_only`, `reboot_window_only`, mit der Uhrzeit in der lokalen Zeit von Home Assistant.
+  `vordr.press_outside_window` hält einen Neustart nur mit `window_only` zurück. Der Knopf hat die Attribute
+  `reboot_window` (`days`, `start`, `end`, `tz`), `window_only` und `next_reboot`. Ohne die Felder (eine ältere
+  Leitstelle oder ein älterer Agent) bleibt alles wie bisher.
 - **Bekannte Ausnutzung** ([ADR-0168](../docs/adr/0168-known-exploitation-comes-from-the-kev-catalog-fetched-whole-at-the-hub.md)):
   Die KEV-Felder jedes Funds (`known_exploited`, `kev_cves`, `kev_added`, `kev_ransomware`) gehen im Attribut
   `findings` von `_vulnerable_packages` und `_malicious_packages` durch; `_vulnerable_packages` hat die Zahl des Hosts
@@ -443,11 +458,11 @@ Bedrohungsvergleich). Nur Linux mit systemd und apt.
 |---|---|---|
 | Start (`user`) | die SSH-Bibliothek installiert, Eintrag geladen, Betreiberschlüssel gespeichert, Leitstelle verbunden, ihr Status nennt `agent_download`; jedes geprüft, bevor das Formular erscheint. Das Formular nennt die Rolle, die die Leitstelle verlangt (`vordr-hub client-role <client> --role admin`): Der Status der Leitstelle sagt einem Client seine Rolle nicht | `install_needs_ssh_library`, `entry_not_loaded`, `install_needs_operator_key` (nennt Konfigurieren → Betreiberschlüssel), `hub_not_connected`, `hub_without_download` |
 | Ziel (`user`) | Host, SSH-Port, Benutzer (`root`), Knoten (leer: der eigene Name des Hosts) | Formularfehler; `ssh_unreachable`, `ssh_timeout`, `ssh_failed` |
-| Host-Schlüssel (`host_key`) | ohne Anmeldung geholt (`asyncssh.get_server_host_key`), gezeigt als Algorithmus und SHA256-Fingerprint; ein Menü: gleich (`login`), oder abbrechen (`host_key_rejected`) | `host_key_rejected` |
+| Host-Schlüssel (`host_key`) | ohne Anmeldung geholt (`asyncssh.get_server_host_key`), gefragt nach ED25519, dann ECDSA, dann RSA mit SHA-2-Signaturen, nie `ssh-rsa` mit SHA-1-Signaturen ([ADR-0186](../docs/adr/0186-the-ssh-install-asks-for-the-ed25519-host-key-first-and-never-for-sha-1-signatures.md)); gezeigt als Algorithmus und SHA256-Fingerprint mit der Datei des Hosts zum Vergleich (`ssh-keygen -lf /etc/ssh/ssh_host_<typ>_key.pub`); die Anmeldung fragt nach denselben Typen und nimmt nur den bestätigten Schlüssel an; ein Menü: gleich (`login`), oder abbrechen (`host_key_rejected`) | `host_key_rejected` |
 | Anmeldung (`login`) | Passwort oder eingefügter privater Schlüssel mit Passphrase, Passwort für sudo (leer: das der Anmeldung); die Anmeldung nimmt nur den bestätigten Schlüssel an, in keine `known_hosts`-Datei wird geschrieben | Formularfehler `ssh_auth_failed`, `ssh_key_invalid`, `sudo_failed`, `sudo_needs_password`; `ssh_host_key_changed` |
 | Erkundung | als Benutzer, Fakten als `key=value`: `uname -s`, `uname -m`, `id -u`, systemd, `apt-get`, `curl`/`wget`, `sha256sum`, `base64`, `mktemp`, `timeout`, `systemd-run`, `sudo`; dann `sudo -k -n true`, sonst `sudo -k -S` mit dem Passwort auf stdin | `not_linux`, `unknown_arch`, `no_systemd`, `no_apt`, `no_download_tool`, `missing_tools`, `no_sudo`, `probe_failed` |
 | Release | `agent_download` für `linux/<arch>` (`x86_64` → `amd64`, `aarch64` → `arm64`, `armv7l`/`armv8l` → `arm`); die Signatur des Betreibers über `vordr/agent-manifest/v1\0` + Manifest mit den gespeicherten Schlüsseln; das Manifest so streng gelesen wie `VerifyManifest` des Agenten; Datei, SHA-256 und Grösse nur daraus; der Download-Pfad muss genau diese Datei öffnen; nicht älter als das neuste Release, das eine Installation dieses Eintrags genommen hat (gehalten in `.storage/vordr.agent_release.<entry_id>`, verglichen wie `NewerRelease` des Agenten) | die Codes der Leitstelle (`role_forbids` mit `vordr-hub client-role <client> --role admin`, `no_release`, `too_many_downloads`, …), `hub_refused`, `manifest_signature_invalid`, `manifest_invalid`, `no_binary_for_platform`, `release_too_old`, `download_invalid` |
-| Installation (`install`, Fortschritt) | als root, als eigener vorübergehender Dienst (`systemd-run --pipe --wait --collect`), ausserhalb der Anmeldesitzung; ein Skript, ohne `${…}` und `$$` in ihm und seinen Werten, da systemd sie in der Befehlszeile eines Dienstes ersetzt; ein privater temporärer Ordner (`mktemp -d`, umask 077, abgelehnt, wenn daraus nichts laufen darf); Download über HTTPS von Host und Port der Integration, mit der CA der Leitstelle, falls sie eine hat, die URL aus einer Datei in diesem Ordner gelesen (`curl -K`, `wget -i`), begrenzt auf die signierte Grösse (`curl --max-filesize`, `ulimit -f` für beide) und in der Zeit (`curl --max-time 900`, `timeout 900 wget`); Grösse und SHA-256 verglichen, bevor etwas läuft; die CA der Leitstelle nach `/etc/vordr/hub-ca.pem` (verglichen, wenn sie schon da ist, nach einer Ablehnung wieder entfernt); `vordr-agent install --hub wss://<host>:<port>/v1/tunnel --hub-key <aus der Antwort> --operator-key … [--backup-operator-key] [--node] [--ca-file]`; der Ordner in jedem Fall per trap entfernt | `size_mismatch`, `hash_mismatch`, `download_failed`, `download_refused`, `download_too_large`, `ca_differs`, `ca_failed`, `temp_noexec`, `temp_failed`, `bad_input`; die Codes des Agenten als `agent_<code>`, andere als `agent_refused`/`agent_failed`; `agent_no_result`, `install_no_result`, `ssh_lost`, `ssh_timeout` |
+| Installation (`install`, Fortschritt) | als root, als eigener vorübergehender Dienst (`systemd-run --pipe --wait --collect`), ausserhalb der Anmeldesitzung; ein Skript, ohne `${…}` und `$$` in ihm und seinen Werten, da systemd sie in der Befehlszeile eines Dienstes ersetzt; ein privater temporärer Ordner (`mktemp -d`, umask 077, abgelehnt, wenn daraus nichts laufen darf); Download über HTTPS von Host und Port der Integration, mit der CA der Leitstelle, falls sie eine hat, die URL aus einer Datei in diesem Ordner gelesen (`curl -K`, `wget -i`), begrenzt auf die signierte Grösse (`curl --max-filesize`, `ulimit -f` für beide) und in der Zeit (`curl --max-time 900`, `timeout 900 wget`); beide geben eine Verbindung nach 20 s auf (`--connect-timeout`, wget mit `--tries=1`); curl ohne zustande gekommene Verbindung (`%{num_connects}` ist 0) endet mit `download_unreachable`, jeder andere Fehler und jeder Fehler von wget (sein Exit 4 unterscheidet eine abgewiesene Verbindung nicht von einem gescheiterten TLS-Handshake) mit `download_failed`; Grösse und SHA-256 verglichen, bevor etwas läuft; die CA der Leitstelle nach `/etc/vordr/hub-ca.pem` (verglichen, wenn sie schon da ist, nach einer Ablehnung wieder entfernt); `vordr-agent install --hub wss://<host>:<port>/v1/tunnel --hub-key <aus der Antwort> --operator-key … [--backup-operator-key] [--node] [--ca-file]`; der Ordner in jedem Fall per trap entfernt | `size_mismatch`, `hash_mismatch`, `download_failed`, `download_unreachable`, `download_refused`, `download_too_large`, `ca_differs`, `ca_failed`, `temp_noexec`, `temp_failed`, `bad_input`; die Codes des Agenten als `agent_<code>`, andere als `agent_refused`/`agent_failed`; `agent_no_result`, `install_no_result`, `ssh_lost`, `ssh_timeout` |
 | Ende (`result`) | die letzte Zeile des Agenten `result=installed node=<n> fingerprint=<hex>`; ein Abbruch, auch beim Erfolg: Kein Subentry wird gespeichert | `agent_installed` mit Knoten, Fingerprint und Version; der Reparaturhinweis `waiting_<node>` nennt dann den Befehl zur Freigabe, und nach der Freigabe ist der Host ein Gerät des Eintrags |
 
 - **Was vom Host gelesen wird:** nur `key=value`-Felder: die Zeilen der Erkundung, die eigene letzte Zeile des Skripts
@@ -546,7 +561,7 @@ sie (`ha/README.de.md`); die Integration installiert sie nicht, und ihre Version
 |---|---|---|
 | `problem.yaml` | `vordr_problem` | `message.<Sprache>` des Problems an einen Benachrichtigungsdienst; optional Wartezeit (ein Problem, das in der Wartezeit endet oder sich ändert, entfällt), ignorierte Gründe, ein Hinweis beim Ende (nur ohne Wartezeit) |
 | `run_failed.yaml` | `vordr_run_finished`, `state` nicht `ok` | `message.<Sprache>` des Ergebnisses; Filter nach Art des Laufs und nach ignorierten Ergebnissen (standardmässig `ok_reboot_required`) |
-| `reboot_offer.yaml` | `vordr_run_finished` mit `ok_reboot_required`; `vordr_problem` mit `reboot_pending` | der Text und die Aktion „Jetzt neu starten“, wo der Host einen Neustart-Knopf hat; ein Tipp drückt diesen Knopf |
+| `reboot_offer.yaml` | `vordr_run_finished` mit `ok_reboot_required`; `vordr_problem` mit `reboot_pending` | der Text und die Aktion „Jetzt neu starten“, wo der Host einen Neustart-Knopf hat; ein Tipp drückt diesen Knopf oder sagt bei geschlossenem Neustart-Fenster, ab wann der Neustart läuft (ADR-0187) |
 | `hub_offline.yaml` | Online-Entität der Leitstelle seit N Minuten aus | ein Hinweis und einer, wenn die Verbindung wieder steht |
 
 - Eingaben sind Selektoren: der Benachrichtigungsdienst (Text), Hosts (Geräteauswahl dieser Integration, leer heisst

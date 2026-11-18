@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 import logging
-from typing import Any
+from typing import Any, Final
 
 import asyncssh
 
@@ -36,6 +36,26 @@ LOST = "ssh_lost"  # the connection ended while a command ran
 KEY_INVALID = "ssh_key_invalid"
 OUTPUT_TOO_LONG = "host_output_too_long"
 
+# The host key types asked for, in this order (ADR-0186): ED25519, then ECDSA, then RSA with SHA-2 signatures. Not
+# ssh-rsa (SHA-1 signatures), certificates or security-key host keys: the person compares a plain key with the host's
+# own file. asyncssh's default list starts with RSA, so a host with several keys showed its RSA key.
+HOST_KEY_ALGS: Final = (
+    "ssh-ed25519",
+    "ecdsa-sha2-nistp256",
+    "ecdsa-sha2-nistp384",
+    "ecdsa-sha2-nistp521",
+    "rsa-sha2-512",
+    "rsa-sha2-256",
+)
+# The file in /etc/ssh with the host's own key of a type (the key's type, as SSHKey.get_algorithm names it).
+KEY_FILES: Final = {
+    "ssh-ed25519": "ssh_host_ed25519_key.pub",
+    "ecdsa-sha2-nistp256": "ssh_host_ecdsa_key.pub",
+    "ecdsa-sha2-nistp384": "ssh_host_ecdsa_key.pub",
+    "ecdsa-sha2-nistp521": "ssh_host_ecdsa_key.pub",
+    "ssh-rsa": "ssh_host_rsa_key.pub",
+}
+
 HostKey = asyncssh.SSHKey
 Connection = asyncssh.SSHClientConnection
 
@@ -50,8 +70,14 @@ class Ran:
 
 
 def describe(key: HostKey) -> dict[str, str]:
-    """The host key as `ssh-keygen -l` shows it: algorithm and SHA256 fingerprint."""
-    return {"algorithm": key.get_algorithm(), "fingerprint": key.get_fingerprint("sha256")}
+    """The host key as `ssh-keygen -l` shows it: algorithm and SHA256 fingerprint, and the file in /etc/ssh to compare
+    it with."""
+    algorithm = key.get_algorithm()
+    return {
+        "algorithm": algorithm,
+        "fingerprint": key.get_fingerprint("sha256"),
+        "key_file": KEY_FILES.get(algorithm, "ssh_host_*_key.pub"),
+    }
 
 
 def _failure(err: BaseException) -> str:
@@ -70,8 +96,10 @@ def _failure(err: BaseException) -> str:
 
 
 def _common() -> dict[str, Any]:
-    """Options of every connection: nothing from files, the user's agent or default keys."""
+    """Options of every connection: nothing from files, the user's agent or default keys; the host key types in our
+    order, for fetching the key and for the login that accepts only the confirmed one."""
     return {
+        "server_host_key_algs": list(HOST_KEY_ALGS),
         "config": None,
         "agent_path": None,
         "x509_trusted_certs": None,
@@ -86,7 +114,10 @@ async def host_key(host: str, port: int) -> tuple[str, HostKey | None]:
     """The host key the server presents, without logging in: nothing secret is sent."""
     try:
         options = await asyncssh.SSHClientConnectionOptions.construct(known_hosts=None, client_keys=None, **_common())
-        key = await asyncssh.get_server_host_key(host, port, options=options, config=None)
+        # get_server_host_key sets the host key types from its own argument over those of the options: given again.
+        key = await asyncssh.get_server_host_key(
+            host, port, options=options, config=None, server_host_key_algs=list(HOST_KEY_ALGS)
+        )
     except (asyncssh.Error, OSError) as err:  # network and the other side: only known by trying
         return _failure(err), None
     if key is None:

@@ -24,12 +24,19 @@ jobs; the integration shows its views and requests commands.
 
 | Device | Entities |
 |---|---|
-| "Vördr-Leitstelle" or "Vördr hub" (system language) | `binary_sensor.vordr_hub_online`, `sensor.vordr_hub_hosts_online`, `_hosts_with_problem`, `_pending_approvals`, `_connection` (diagnostic) |
+| "Vördr-Leitstelle" or "Vördr hub" (system language) | `binary_sensor.vordr_hub_online`, `sensor.vordr_hub_hosts_online`, `_hosts_with_problem`, `_hosts_with_updates`, `_hosts_with_security_updates`, `_hosts_needing_reboot`, `_pending_approvals`, `_connection` (diagnostic) |
 | "Vördr Home Assistant" | `sensor.vordr_ha_updates_ready` "Updates ready": Home Assistant's own updates that Vördr's rules let through now; `sensor.vordr_ha_updates_last_run` "Last run": what Vördr installed last and how it ended; `switch.vordr_ha_updates_paused` "Pause Home Assistant updates". Nothing installs until you switch it on (see below) |
 | "Vördr <node>" per host | `binary_sensor.vordr_<id>_online`, `_problem`, `_reboot_required`; `sensor.vordr_<id>_last_report`, `_last_run`; with a package source `update.vordr_<id>_system`, `sensor.vordr_<id>_pending_updates`, `_security_updates`; buttons depending on capability (`_check`, `_install_security`, `_reboot`, `_agent_update`, `_install_app_<app>`); with `packages.containers` `update.vordr_<id>_containers` "Container images", reported; it installs only if agent.yaml allows Compose services (`image:<project>/<service>` in `install.allowed_scopes`), and then only the rebuild of their tag (a single service through the action `vordr.update_image`); "on" only while that install button would take something, so a newer tag or a service not allowed leaves it off; `sensor.vordr_<id>_outdated_images` "Outdated images" counts every outdated image, also those that stay manual (attributes `ready`, `installable`, `updates`); with `Debian` or `Alpine` in `osv.ecosystems` of the hub also known vulnerabilities in the images (attribute `vulnerable`; "on" only if a newer image is available to install, vulnerabilities alone do not turn it on; the summary says per image whether a newer image is ready; reports about the image's kernel do not count and are listed per image as `kernel`) |
 
 Unknown stays unknown: a failed check makes `update.*_system` and the counters "unknown", never "up to date"; a host
 without a reboot signal (container) has `reboot_required` "unknown", never "off".
+
+**Is everything up to date?** The hub device counts over all hosts: `sensor.vordr_hub_hosts_with_updates` (system
+updates, outdated images or pip/npm packages), `_hosts_with_security_updates` and `_hosts_needing_reboot`, each with the
+attribute `hosts`. A host whose system check failed or that has not reported yet is listed in the attribute `unknown`
+and is not counted; images and packages count where the host compares them. "0" with an empty `unknown` means every host
+was checked and has nothing to update, e.g. as a template condition
+`{{ is_state('sensor.vordr_hub_hosts_with_updates', '0') and not state_attr('sensor.vordr_hub_hosts_with_updates', 'unknown') }}`.
 
 **For automations:**
 - Event `vordr_problem` `{node, active, reason, reasons, check_failed_code, message}` for every new, changed or ended
@@ -45,6 +52,11 @@ without a reboot signal (container) has `reboot_required` "unknown", never "off"
   After `reboot_pending_after_days` of the hub (default 7) it becomes an error and replaces the problem hint
   `reboot_pending`
   ([ADR-0132](../docs/adr/0132-a-needed-reboot-is-a-repair-from-the-first-report.md)).
+- Outside a host's reboot window, the reboot button and "Fix" send nothing and say from when the reboot runs; the
+  button shows the window and the time as attributes (`reboot_window`, `next_reboot`). On a host with
+  `reboot.window_only` a reason does not help either; on any other the action `vordr.press_outside_window` with a
+  reason reboots at once
+  ([ADR-0187](../docs/adr/0187-the-agent-reports-its-reboot-window-and-home-assistant-says-when-a-reboot-can-run.md)).
 - A failed install that the hub keeps as a problem until an install goes through shows up as the repair hint "install
   again" where Vördr may install: once the cause is fixed, "Fix" installs again, and a run that goes through clears it,
   even with nothing left to install
@@ -154,7 +166,8 @@ library missing. Otherwise:
 
 1. host, SSH port, user and node name (empty: the host's own name);
 2. the host key the server presents: compare it with the host's own on its console
-   (`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`) and confirm only if they are the same;
+   (the dialog names the file, e.g. `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`; it asks for ED25519 first) and
+   confirm only if they are the same;
 3. a password or a private key (with its passphrase), and sudo's password if it differs from the login password. Use a
    key or a password made for this if you can: Home Assistant holds the login's password and key in memory until it is
    logged in, sudo's password until the install starts, and stores them nowhere. Closing the dialog while it logs in
@@ -225,7 +238,8 @@ entities above into notifications
   when it ends.
 - `run_failed.yaml`: a run ends with a result other than `ok`.
 - `reboot_offer.yaml`: a host needs a reboot; where Vördr may reboot it, the notification has the action "Reboot now",
-  which presses the host's reboot button when you tap it (Companion app).
+  which presses the host's reboot button when you tap it (Companion app); while the host's reboot window is closed,
+  the tap says from when instead.
 - `hub_offline.yaml`: the hub's online entity is off for N minutes.
 
 Import: *Settings → Automations & scenes → Blueprints → Import blueprint*, with the address of the file in the

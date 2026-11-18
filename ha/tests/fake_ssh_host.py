@@ -150,6 +150,7 @@ class FakeHost:
         self.users: dict[str, str] = {}
         self.keys: dict[str, list[asyncssh.SSHKey]] = {}
         self.host_key = asyncssh.generate_private_key("ssh-ed25519")
+        self.other_host_keys: list[asyncssh.SSHKey] = []
         self.logins: list[tuple[str, str]] = []
         self.commands: list[str] = []
         self.stdins: list[str] = []
@@ -219,6 +220,12 @@ class FakeHost:
         self.host_key = asyncssh.generate_private_key("ssh-ed25519")
         asyncio.run_coroutine_threadsafe(self._restart(), self._loop).result(10)
 
+    def present(self, *keys: asyncssh.SSHKey) -> None:
+        """The server holds these host keys from now on, in this order; the client's list decides which one it shows.
+        host_key is the last one."""
+        self.host_key, self.other_host_keys = keys[-1], list(keys[:-1])
+        asyncio.run_coroutine_threadsafe(self._restart(), self._loop).result(10)
+
     # --- the server
 
     def start(self) -> None:
@@ -247,7 +254,7 @@ class FakeHost:
             "127.0.0.1",
             port,
             server_factory=lambda: _Server(self),
-            server_host_keys=[self.host_key],
+            server_host_keys=[*self.other_host_keys, self.host_key],
             process_factory=self._process,
             encoding=None,
         )
