@@ -136,8 +136,11 @@ type ImageOS struct {
 	Packages []OSPackage `json:"packages,omitempty"`
 }
 
+// MaxOSPackages bounds ImageOS.Packages: what the agent reports of one image; the hub takes no more (ADR-0195).
+const MaxOSPackages = 5000
+
 // Codes of ImageOS, besides CodeUnreadable (the engine did not hand the files out) and CodeTooManyPackages (more than
-// the agent reports per image; the rest is left out).
+// MaxOSPackages; the rest is left out).
 const (
 	CodeNoPackageDB    = "no_package_db"   // neither a dpkg nor an apk database: distroless, scratch, another kind
 	CodeUnknownRelease = "unknown_release" // no os-release: the distribution and its release are unknown

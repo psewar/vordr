@@ -202,6 +202,10 @@ func TestWindowsPlaces(t *testing.T) {
 		{`D:\Users\bob\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\LocalCache\local-packages\Python312\site-packages`,
 			KindPipSite, "store-pip-user-python312-bob"},
 		{`D:\Users\bob\AppData\Roaming\Python\Python312\site-packages`, KindPipSite, "pip-user-python312-bob"},
+		// A long profile folder (user, domain, a number Windows adds): the id stays within 32 like every other (ADR-0195).
+		{`D:\Users\firstname.lastname.EXAMPLE-DOMAIN.001\AppData\Roaming\npm\node_modules`, KindNpmGlobal,
+			"npm-global-firstname-lastname-ex"},
+		{`D:\Users\alice\AppData\Roaming\npm\node_modules`, KindNpmGlobal, "npm-global-alice"},
 	} {
 		var ids []string
 		for _, p := range ps {

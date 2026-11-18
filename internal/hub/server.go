@@ -71,9 +71,11 @@ type Server struct {
 	backupSem chan struct{}
 	backingUp map[string]bool
 	// claims: per host, the session whose hello named the jobs the agent runs or reports (ADR-0114).
-	claims   map[string]*session
-	started  time.Time
-	upgrader websocket.Upgrader
+	claims map[string]*session
+	// boundsLogged: per host and event, when logBounds last logged what the hub did not take (ADR-0195).
+	boundsLogged map[string]map[string]*boundsLog
+	started      time.Time
+	upgrader     websocket.Upgrader
 	// conns: the tunnel and Home Assistant connections being served; work counts them and the goroutines the server
 	// started (spawn), and Close waits for it; closing: Close has begun, nothing new starts (close.go, ADR-0142).
 	// conns and closing under mu. closed ends when Close begins (endClosed); the waits for jobs listen to it.
@@ -106,7 +108,8 @@ type session struct {
 }
 
 // NewServer starts with the default limits of hub.yaml; the caller may set Limits and Version before serving. An
-// install that a previous hub left waiting for its backup ends here (endOrphanedBackups).
+// install that a previous hub left waiting for its backup ends here (endOrphanedBackups), and what OpenRegistry did not
+// take of the reports a previous hub stored goes into the service log.
 func NewServer(reg *Registry, clients *ClientRegistry, events *Events, key *identity.Identity, maxPending int,
 	logger *log.Logger) *Server {
 	s := &Server{
@@ -127,6 +130,9 @@ func NewServer(reg *Registry, clients *ClientRegistry, events *Events, key *iden
 		},
 	}
 	s.closed, s.endClosed = context.WithCancel(context.Background())
+	for _, line := range reg.outOfBounds {
+		logger.Printf("register: %s", line) // the reports an earlier hub stored, bounded on load (ADR-0195)
+	}
 	s.endOrphanedBackups()
 	return s
 }
@@ -353,24 +359,40 @@ func (s *Server) loop(sess *session) {
 				s.Events.Log(sess.node, "protocol_violation", map[string]any{"type": t})
 				return
 			}
-			if e, ok := s.Reg.Get(sess.node); !ok || e.State != wire.StateApproved {
+			e, ok := s.Reg.Get(sess.node)
+			if !ok || e.State != wire.StateApproved {
 				continue // pending hosts do not report; ignore rather than store
 			}
-			if err := s.Reg.SetReportAt(sess.node, rep, s.Now()); err != nil {
-				s.Log.Printf("register: %v", err)
+			bounds := boundReport(&rep) // before anything of it is kept (ADR-0195)
+			s.logBounds(sess.node, e.Fingerprint, "report", bounds)
+			if bounds.taken() {
+				if err := s.Reg.SetReportAt(sess.node, rep, s.Now()); err != nil {
+					s.Log.Printf("register: %v", err)
+				}
 			}
+			// The check that follows the agent's start is over, also when the hub refused its report (ADR-0147).
 			sess.mu.Lock()
 			sess.reported = true
 			sess.mu.Unlock()
-			s.Events.Log(sess.node, "report", reportFields(rep))
-			s.changed(sess.node)
+			if bounds.taken() {
+				s.Events.Log(sess.node, "report", reportFields(rep))
+				s.changed(sess.node)
+			}
 		case wire.TJobStatus:
 			var st wire.JobStatus
 			if json.Unmarshal(raw, &st) != nil {
 				s.Events.Log(sess.node, "protocol_violation", map[string]any{"type": t})
 				return
 			}
-			s.deliver(sess, st)
+			bounds := boundJobStatus(&st) // before anything of it is kept or logged (ADR-0195)
+			if !bounds.whole() {
+				if e, ok := s.Reg.Get(sess.node); ok && e.State == wire.StateApproved {
+					s.logBounds(sess.node, e.Fingerprint, "job_status", bounds)
+				}
+			}
+			if bounds.taken() {
+				s.deliver(sess, st)
+			}
 		case wire.TVet:
 			var req wire.Vet
 			if s.Packages == nil || !s.Packages.OSVOn() || json.Unmarshal(raw, &req) != nil ||
@@ -387,9 +409,13 @@ func (s *Server) loop(sess *session) {
 				s.Events.Log(sess.node, "protocol_violation", map[string]any{"type": t})
 				return // without Packages the hub never announced the feature
 			}
-			if e, ok := s.Reg.Get(sess.node); !ok || e.State != wire.StateApproved {
+			e, ok := s.Reg.Get(sess.node)
+			if !ok || e.State != wire.StateApproved {
 				continue
 			}
+			// Before anything of it is kept (ADR-0195). An inventory is never refused as a whole: what is out of bounds is
+			// dropped, the locations beyond the bound too.
+			s.logBounds(sess.node, e.Fingerprint, "inventory", boundInventory(&inv))
 			if err := s.Packages.SetInventory(sess.node, inv); err != nil {
 				s.Log.Printf("packages: %v", err)
 			}

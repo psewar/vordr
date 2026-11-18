@@ -110,6 +110,11 @@ Reparaturhinweis („Leitstelle zu alt/zu neu“) statt halb zu funktionieren.
 - **Abgewiesen vor dem Register** (`status` `rejected`, Verbindung zu): Hello mit falscher Signatur, `role` ≠ `ha`,
   Name nicht `^[a-z0-9][a-z0-9.-]{0,62}$` (`bad_hello`); andere `protocol`-Version (`protocol_mismatch`). Ein
   Agenten-Hello auf `/v1/ha` und ein HA-Hello auf `/v1/tunnel` scheitern beide als `bad_hello`.
+- **Version der Integration** ([ADR-0195](../docs/adr/0195-the-hub-bounds-reports-inventories-and-the-home-assistant-hello.md)):
+  leer oder eine Version, wie ein signiertes Manifest sie trägt (bis 64 Buchstaben, Ziffern, `.`, `+`, `-`, beginnend
+  mit einem Buchstaben oder einer Ziffer). Sonst lässt die Leitstelle sie weg, und der Client verbindet sich; bei einem
+  freigegebenen Client nennt das Ereignis `ha_hello_fields_dropped` sie mit ihrem Code und dem `fingerprint` des
+  Schlüssels (nicht bei einem wartenden, der das Protokoll mit jeder neuen Verbindung verdoppeln könnte).
 - **Im Register abgewiesen:** anderer Schlüssel unter bekanntem Namen (`key_mismatch`), abgelehnter Client
   (`rejected`), mehr als 5 wartende Clients (`too_many_pending`).
 - **Wartender Client:** bekommt nur seinen `status` und Antworten auf Heartbeats. Ein `command` von ihm wird mit

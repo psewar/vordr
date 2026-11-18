@@ -1,7 +1,7 @@
 ---
-status: proposed
+status: accepted
 date: 2026-11-18
-decision-makers: proposed by Claude (2026-11-18), for the maintainer to accept or reject
+decision-makers: kay (2026-11-18, accepted: the repair issues' ids stay as they are, renaming them needs a migration of existing repairs); proposed by Claude
 ---
 
 # The diagnostics download names no site

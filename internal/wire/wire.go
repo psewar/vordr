@@ -114,7 +114,8 @@ type Ack struct {
 }
 
 // Inventory lists the packages of language package managers on the host (design 11.2). The hub matches them against
-// its OSV data; they go nowhere else.
+// its OSV data; they go nowhere else. The hub takes each field only within its bound, before it keeps anything of it
+// (internal/hub/bounds.go, ADR-0195); a new field here or in the types it holds gets its bound there.
 type Inventory struct {
 	T         string               `json:"t"`
 	CheckedAt time.Time            `json:"checked_at"`
@@ -265,6 +266,8 @@ type Heartbeat struct {
 	T string `json:"t"`
 }
 
+// Report is the result of a check. The hub takes each field only within its bound, before it keeps anything of it
+// (internal/hub/bounds.go, ADR-0195); a new field here or in the types it holds gets its bound there.
 type Report struct {
 	T         string          `json:"t"`
 	CheckedAt time.Time       `json:"checked_at"`
@@ -277,7 +280,8 @@ type JobMsg struct {
 	Job protocol.SignedJob `json:"job"`
 }
 
-// JobStatus reports a phase while the job runs, and a code once it is done (then Phase is empty).
+// JobStatus reports a phase while the job runs, and a code once it is done (then Phase is empty). The hub takes each
+// field only within its bound (internal/hub/bounds.go, ADR-0195); a new field gets its bound there.
 type JobStatus struct {
 	T      string                 `json:"t"`
 	JobID  string                 `json:"job_id"`

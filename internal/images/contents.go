@@ -31,8 +31,9 @@ const (
 var (
 	maxOSRelease int64 = 64 << 10
 	maxPackageDB int64 = 16 << 20
-	// MaxOSPackages: packages one image reports; past it the rest is left out and the code says so.
-	MaxOSPackages = 5000
+	// MaxOSPackages: packages one image reports; past it the rest is left out and the code says so. The hub takes no
+	// more than inventory.MaxOSPackages (ADR-0195).
+	MaxOSPackages = inventory.MaxOSPackages
 )
 
 type archiveAnswer int

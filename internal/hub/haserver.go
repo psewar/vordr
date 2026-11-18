@@ -3,7 +3,6 @@ package hub
 import (
 	"bytes"
 	"context"
-	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
 	"net/http"
@@ -104,20 +103,25 @@ func (s *Server) loginHA(conn *wire.Conn, remote string) (*haSession, bool) {
 		_ = conn.Send(wire.Status{T: wire.TStatus, State: wire.StateRejected, Reason: reason})
 		return nil, false
 	}
-	if t != wire.THello || dec.Decode(&h) != nil || h.Role != wire.RoleHA || !nodePattern.MatchString(h.Name) ||
-		len(h.PublicKey) != ed25519.PublicKeySize ||
-		!ed25519.Verify(h.PublicKey, wire.HAHelloSigned(nonce, h.Name, h.PublicKey), h.Signature) {
+	if t != wire.THello || dec.Decode(&h) != nil || !haHelloIdentityHolds(h, nonce) {
 		return refuse(wire.ReasonBadHello)
 	}
 	if h.Protocol != wire.HAProtocol {
 		// Before the register: a client that cannot speak this protocol is not one to approve.
 		return refuse(wire.ReasonProtocolMismatch)
 	}
+	dropped := boundHAHello(&h) // bounded before anything of it is kept (ADR-0195)
 	fp := identity.Fingerprint(h.PublicKey)
 	state, reason, err := s.Clients.Admit(h, fp, s.Now())
 	if err != nil {
 		s.Log.Printf("client register: %v", err)
 		return nil, false
+	}
+	if state == wire.StateApproved && len(dropped) > 0 {
+		// Only for an approved client, as for what an agent sends after its hello: a waiting one could double the log
+		// with every reconnect, and one the register refuses names a client that is not its own.
+		s.Events.Log("", "ha_hello_fields_dropped", map[string]any{"client": h.Name, "fields": dropped,
+			"fingerprint": fp})
 	}
 	s.Events.Log("", "ha_hello", map[string]any{"client": h.Name, "state": state, "reason": reason, "fingerprint": fp,
 		"integration_version": h.IntegrationVersion, "remote": remote})

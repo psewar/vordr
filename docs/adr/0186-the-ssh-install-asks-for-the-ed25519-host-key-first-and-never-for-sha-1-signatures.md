@@ -1,7 +1,7 @@
 ---
-status: proposed
+status: accepted
 date: 2026-11-18
-decision-makers: proposed by Claude (2026-11-18), for the maintainer to accept or reject
+decision-makers: kay (2026-11-18, accepted: where an SSH server offers only ssh-rsa, deploy/install-agent.sh sets up the agent); proposed by Claude
 ---
 
 # The SSH install asks for the ED25519 host key first and never for SHA-1 signatures

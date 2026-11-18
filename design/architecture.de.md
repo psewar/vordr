@@ -175,7 +175,7 @@ Die Verbmenge ist geschlossen. Was hier nicht steht, gibt es nicht
 | `install` | `scope`: `security`, `all`, `app:<id>`, `pkg:<ort>[/<name>]` (pip/npm, 11.4), `image:<projekt>/<dienst>` oder `images` (Container-Images, 11.5); `outside_window` (6.4) | Updates einspielen | Umfang steht in `install.allowed_scopes` (bei `pkg:` der Ort in `packages.update`; bei `images` jeder Dienst, den ein `image:`-Eintrag nennt), Fenster offen oder ein Grund, Vorbedingungen erfüllt |
 | `reboot` | `outside_window` (6.4) | Neustart | `reboot.allowed`, Fenster offen oder ein Grund (nicht mit `reboot.window_only`), ein Neustart ist tatsächlich nötig, der letzte ist nicht gescheitert, und `reboot.idle_check` sagt „frei“ (10.2) |
 | `agent_update` | signiertes Manifest, Einmal-Token | Agent tauscht sich selbst | `agent_update.enabled`; Manifest vom Betreiber signiert |
-| `cancel` | `job_id` | Lauf abbrechen | nur bis zum Beginn der Paketinstallation; danach läuft der Paketmanager zu Ende, sonst bliebe das System halb aktualisiert |
+| `cancel` | `job_id` | Lauf abbrechen; **nicht gebaut** ([ADR-0193](../docs/adr/0193-the-cancel-verb-is-not-built-until-a-run-needs-stopping.md)): im Protokoll festgelegt, die Leitstelle sendet es nicht, und ein Agent beantwortet es mit `rejected_unsupported` | gälte nur bis zum Beginn der Paketinstallation; danach läuft der Paketmanager zu Ende, sonst bliebe das System halb aktualisiert |
 | `backup` | `guest`: `vm/<id>` oder `ct/<id>` | nur der Agent des Hypervisors: ein Backup dieses Gastes nach PBS, direkt vor dessen Install (10.2) | `guest_backup` in der `agent.yaml`; der Gast liegt auf diesem Host; höchstens ein Backup je Gast in 10 min |
 
 `app:<id>` verweist auf einen Eintrag der App-Liste, die der Agent selbst aus seiner Konfiguration meldet. Paketnamen
@@ -232,6 +232,44 @@ Betriebsregel „Leitstelle vor Agent“ bleibt trotzdem.
   zuerst geprüft.
 - Die Grenzen liegen weit über dem, was Agenten schicken. Ein Test prüft das Hello des Agenten selbst über einen echten
   Tunnel dagegen; ein anderer findet jedes Feld des Hello selbst und schlägt bei einem neuen ohne Grenze fehl.
+- `check-config` lehnt eine `agent.yaml` ab, die die Leitstelle nicht ganz nähme: mehr als 64 Apps, einen App-Namen über
+  255 Bytes oder mit einem Steuerzeichen, mehr als 128 erlaubte Umfänge, mehr als 64 Einträge in den Tagen eines
+  Fensters (9). Beide lesen diese Grenzen aus `internal/protocol`
+  ([ADR-0195](../docs/adr/0195-the-hub-bounds-reports-inventories-and-the-home-assistant-hello.md)).
+
+**Grenzen dessen, was auf das Hello folgt**
+([ADR-0195](../docs/adr/0195-the-hub-bounds-reports-inventories-and-the-home-assistant-hello.md)):
+- Die Leitstelle begrenzt jedes Feld eines `report`, eines `inventory` und eines `job_status`, bevor sie etwas davon
+  speichert, protokolliert, damit rechnet oder anzeigt, an einer Stelle je Nachrichtentyp (`internal/hub/bounds.go`).
+  Was eine frühere Leitstelle gespeichert hat - der letzte Bericht im Register, die Inventare auf der Platte -, begrenzt
+  sie beim Laden ebenso; einen gespeicherten Bericht, den sie ablehnt, zeigt sie nicht, bis der Host wieder berichtet,
+  und das Dienstprotokoll hat eine Zeile je solchem Host.
+- Ein Wert ausserhalb seiner Grenze kostet den kleinsten Teil, mit dem der Rest noch etwas taugt, gesetzt auf das, was
+  ein Agent schickt, der ihn nicht meldet: das Feld (ein Pfad, eine neuere Version), die Liste oder Map, zu der es
+  gehört (die Pakete oder Fakten einer Quelle, die Halter eines Pakets, die Pakete in einem Image), oder den
+  Listeneintrag (ein Paket, dessen Name oder Version ausserhalb liegt; ein Ort, dessen ID, Art, Ökosystem, Code oder
+  Zahl der Pakete ausserhalb liegt). Wo der Rest in die Irre führte, lehnt die Leitstelle die ganze Nachricht ab und
+  behält, was sie hatte: einen Bericht, dessen Quellen ausserhalb liegende Namen, Zustände, Codes oder Zahlen haben,
+  einen Auftragsstatus, dessen Auftrags-ID oder Ergebniscode ausserhalb liegt.
+- Ein Auszug aus der Ausgabe eines Werkzeugs (das `detail` einer Quelle oder eines Laufs) wird bereinigt, nie
+  weggelassen: jedes Steuerzeichen ausser CR, LF und Tabulator wird zu U+FFFD, von einem längeren bleibt das Ende. Ein
+  leeres Detail eines Laufs behält seine Bedeutung (die Annahme der Leitstelle, ein Lauf sei verloren, 10.2).
+- Von einem Inventar mit mehr als 1024 Orten behält die Leitstelle die ersten; der Agent meldet nicht mehr und
+  protokolliert, dass er mehr gefunden hat. Die ID eines Ortes darf bis 64 Zeichen haben; eine, die länger ist, als ein
+  Umfang sie nimmt (32), wird gezeigt, bietet aber kein Update per Knopf.
+- Schlüssel - Zustände, Codes, Phasen, Gründe, Namen von Fakten - sind durch ihre Zeichen begrenzt, nicht durch die
+  Werte, die diese Leitstelle kennt. Text hat keine Steuerzeichen. Wo der Agent eine Liste selbst kappt (Orte, Pakete je
+  Ort und je Image, die Pakete der Zusammenfassung eines Laufs), nimmt die Leitstelle genau diese Grenze. Das ADR nennt
+  jede Grenze und wie sie gewählt ist.
+- Bei einem freigegebenen Host nennen die Ereignisse `report_fields_dropped`, `inventory_fields_dropped`,
+  `job_status_fields_dropped` jedes weggefallene Feld (`fields`) und jeden bereinigten Auszug (`cleaned`) mit seinem
+  Code und dem `fingerprint` des Schlüssels; `report_refused` und `job_status_refused` das Feld, das die Nachricht
+  ablehnen liess. Höchstens eines je Ereignis und Host in einer Stunde, so verdeckt ein Weglassen keine Ablehnung; das
+  nächste zählt die Nachrichten, die nicht ins Protokoll kamen (`unlogged`). Ein Host, den der Betreiber vergisst,
+  beginnt von vorn. Die Nachrichten eines wartenden Hosts protokollieren nichts.
+- Die Verschachtelung begrenzen die Typen des Protokolls: die Leitstelle behält nur, was sie fassen. Tests finden jedes
+  Feld der Nachrichten selbst und schlagen bei einem neuen ohne Grenze fehl; was die Quellen in ihren eigenen Tests
+  melden, und Inventar und Auftragsstatus des echten Agenten über einen echten Tunnel kommen ohne Weggefallenes an.
 
 **Signierte Challenge** ([ADR-0170](../docs/adr/0170-the-hub-signs-its-challenge-and-the-agent-checks-its-key.md)):
 - Der Agent schickt eine eigene Nonce, 32 Zufallsbytes in Base64, im Header `Vordr-Challenge-Nonce` der
@@ -372,7 +410,7 @@ Ergebnisse (`problem` = setzt `binary_sensor.<node>_problem`):
 | `failed_config_backup` | Stellvertreter: Konfigurationssicherung gescheitert oder unbrauchbar ([ADR-0090](../docs/adr/0090-appliance-installs-need-a-fresh-config-backup.md)) | Log der Instanz ansehen; ohne frische Sicherung kein Firmware-Update | ja |
 | `failed_backup` | das Backup direkt vor dem Install kam nicht zustande (vzdump scheiterte, PBS hat es nicht, der Hypervisor ist weg); installiert wurde nichts ([ADR-0096](../docs/adr/0096-fresh-backup-right-before-the-install.md)). Auch der Agent des Hypervisors beendet einen gescheiterten `backup`-Auftrag damit | Detail des Laufs und Backup-Log des Hypervisors ansehen | ja |
 | `timeout` | Lauf dauerte länger als `install.timeout_min` | Host prüfen | ja |
-| `aborted` | per `cancel` abgebrochen, vor der Installation | – | nein |
+| `aborted` | per `cancel` abgebrochen, vor der Installation; nicht gebaut, wie `cancel` ([ADR-0193](../docs/adr/0193-the-cancel-verb-is-not-built-until-a-run-needs-stopping.md)) | – | nein |
 | `interrupted` | Agent oder Host während des Laufs beendet; beim nächsten Start aus dem Laufjournal erkannt. Bei der Leitstelle auch vorläufig nach einem Tunnelabbruch, bis das nächste Hello sagt, ob der Lauf weitergeht (10.2, ADR-0114) | Paketdatenbank prüfen | ja |
 
 Abgelehnte Aufträge ohne `problem` sind erwartbare Antworten und stehen nur im Sensor „Letzter Lauf“. Wiederholen sie
@@ -579,7 +617,10 @@ guest_backup:                       # nur auf dem Hypervisor (10.2, ADR-0096)
 
 Fenster gelten in der Ortszeit des Hosts. Fehlt ein Schlüssel, gilt der strengere Wert: kein Neustart, kein
 automatisches Installieren, nur `check`. `vordr-agent check-config` prüft die Datei, bevor der Dienst sie übernimmt
-([ADR-0006](../docs/adr/0006-local-policy-decides.md)).
+([ADR-0006](../docs/adr/0006-local-policy-decides.md)). Es lehnt auch ab, was die Leitstelle aus dem Hello weglassen
+würde: mehr als 64 Apps, einen App-Namen über 255 Bytes oder mit einem Steuerzeichen, mehr als 128 Einträge in
+`install.allowed_scopes`, mehr als 64 Einträge in den Tagen eines Fensters (6.2,
+[ADR-0195](../docs/adr/0195-the-hub-bounds-reports-inventories-and-the-home-assistant-hello.md)).
 
 ## 10. Abläufe
 
@@ -1980,7 +2021,7 @@ Aktualisieren von Compose-Diensten auf den Neubau ihres Tags per Knopf
   `agent.yaml`.
 - Browser-Verbindungen (mit `Origin`-Kopfzeile) werden abgewiesen. Höchstens `max_pending` Hosts warten auf Freigabe;
   ein bekannter Host mit anderem Schlüssel wird abgewiesen, bis er mit `forget` entfernt ist. Das Register behält die
-  Felder eines Hello nur innerhalb ihrer Grenzen (6.2).
+  Felder eines Hello, eines Berichts, eines Inventars und eines Auftragsstatus nur innerhalb ihrer Grenzen (6.2).
 - Prüft HA-Befehle gegen die gemeldete Richtlinie des Hosts, bevor er signiert.
 - Meldet Problemfälle: Host stumm (`offline`), `stale`, wartende Freigaben, gescheiterte Agent-Updates.
 

@@ -117,8 +117,8 @@ Key points:
 
 - Go, static binaries without a runtime (agent: Linux amd64/arm64/arm, Windows amd64; hub: Linux amd64).
 - The agent connects outward only; no port is open on the hosts.
-- A closed set of verbs (`check`, `install`, `reboot`, `agent_update`, `cancel`, `backup`), no shell, no package names
-  from outside.
+- A closed set of verbs (`check`, `install`, `reboot`, `agent_update`, `backup`; `cancel` is defined but not built,
+  [ADR-0193](docs/adr/0193-the-cancel-verb-is-not-built-until-a-run-needs-stopping.md)), no shell, no package names from outside.
 - The local policy on the host has the last word; the hub can only ask.
 - Technical names (verbs, states, configuration keys, entity IDs) are English. Display names in Home Assistant follow
   its system language (German or English).

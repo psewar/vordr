@@ -121,8 +121,8 @@ Eckpunkte:
 
 - Go, statische Binaries ohne Laufzeitumgebung (Agent: Linux amd64/arm64/arm, Windows amd64; Leitstelle: Linux amd64).
 - Der Agent verbindet sich nur nach aussen; auf den Rechnern ist kein Port offen.
-- Geschlossene Verbmenge (`check`, `install`, `reboot`, `agent_update`, `cancel`, `backup`), keine Shell, keine
-  Paketnamen von aussen.
+- Geschlossene Verbmenge (`check`, `install`, `reboot`, `agent_update`, `backup`; `cancel` ist festgelegt, aber nicht
+  gebaut, [ADR-0193](docs/adr/0193-the-cancel-verb-is-not-built-until-a-run-needs-stopping.md)), keine Shell, keine Paketnamen von aussen.
 - Die lokale Richtlinie auf dem Rechner hat das letzte Wort; die Leitstelle kann nur anfragen.
 - Technische Namen (Verben, Zustände, Konfigschlüssel, Entitäts-IDs) sind englisch. Anzeigenamen in Home Assistant
   folgen dessen Systemsprache (deutsch oder englisch).

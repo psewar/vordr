@@ -211,25 +211,33 @@ func TestTheHubBoundsEveryFieldOfAHello(t *testing.T) {
 	}
 }
 
-// helloPaths lists the fields of a hello by their JSON names, as "policy.window.days"; the fields of a list's entries
-// as "policy.apps[].name". kinds says what each holds: a time counts as reflect.Struct.
+// helloPaths lists the fields of a hello - or of any message - by their JSON names, as "policy.window.days"; the
+// fields of a list's entries as "policy.apps[].name", of a map's values as "by_key{}.name". kinds says what
+// each holds: a time counts as reflect.Struct, a pointer as what it points to - also in a list or a map.
 func helloPaths(t reflect.Type, path string, kinds map[string]reflect.Kind) {
+	deref := func(t reflect.Type) reflect.Type {
+		if t.Kind() == reflect.Pointer {
+			return t.Elem()
+		}
+		return t
+	}
+	isStruct := func(t reflect.Type) bool { return t.Kind() == reflect.Struct && t != reflect.TypeFor[time.Time]() }
 	for i := range t.NumField() {
 		sf := t.Field(i)
 		name, _, _ := strings.Cut(sf.Tag.Get("json"), ",")
 		p := strings.TrimPrefix(path+"."+name, ".")
-		ft := sf.Type
-		if ft.Kind() == reflect.Pointer {
-			ft = ft.Elem()
-		}
+		ft := deref(sf.Type)
 		switch {
 		case ft == reflect.TypeFor[time.Time]():
 			kinds[p] = reflect.Struct
 		case ft.Kind() == reflect.Struct:
 			helloPaths(ft, p, kinds)
-		case ft.Kind() == reflect.Slice && ft.Elem().Kind() == reflect.Struct:
+		case ft.Kind() == reflect.Slice && isStruct(deref(ft.Elem())):
 			kinds[p] = reflect.Slice
-			helloPaths(ft.Elem(), p+"[]", kinds)
+			helloPaths(deref(ft.Elem()), p+"[]", kinds)
+		case ft.Kind() == reflect.Map && isStruct(deref(ft.Elem())):
+			kinds[p] = reflect.Map
+			helloPaths(deref(ft.Elem()), p+"{}", kinds)
 		default:
 			kinds[p] = ft.Kind()
 		}
@@ -245,6 +253,10 @@ func oversize(v reflect.Value, path, target string) {
 		fv := v.Field(i)
 		switch {
 		case p == target:
+			if fv.Kind() == reflect.Pointer { // a number that may be absent, as a job's progress
+				fv.Set(reflect.New(fv.Type().Elem()))
+				fv = fv.Elem()
+			}
 			switch fv.Kind() {
 			case reflect.String:
 				fv.SetString(strings.Repeat("x", 1<<20))
@@ -256,12 +268,42 @@ func oversize(v reflect.Value, path, target string) {
 					n = 1 << 20
 				}
 				fv.Set(reflect.MakeSlice(fv.Type(), n, n))
+			case reflect.Map: // a hundred thousand entries, as a source's facts
+				m := reflect.MakeMapWithSize(fv.Type(), 100000)
+				for i := range 100000 {
+					m.SetMapIndex(reflect.ValueOf(fmt.Sprintf("k%d", i)).Convert(fv.Type().Key()),
+						reflect.Zero(fv.Type().Elem()))
+				}
+				fv.Set(m)
 			}
 		case strings.HasPrefix(target, p+"[]."):
 			if fv.Len() == 0 {
 				fv.Set(reflect.MakeSlice(fv.Type(), 1, 1))
 			}
-			oversize(fv.Index(0), p+"[]", target)
+			ev := fv.Index(0)
+			if ev.Kind() == reflect.Pointer { // a list of pointers to entries
+				if ev.IsNil() {
+					ev.Set(reflect.New(ev.Type().Elem()))
+				}
+				ev = ev.Elem()
+			}
+			oversize(ev, p+"[]", target)
+		case strings.HasPrefix(target, p+"{}."):
+			// A map's values are not addressable: one value is built, oversized and put in under the key "k".
+			mt := fv.Type()
+			if fv.IsNil() {
+				fv.Set(reflect.MakeMap(mt))
+			}
+			et, ptr := mt.Elem(), mt.Elem().Kind() == reflect.Pointer
+			if ptr {
+				et = et.Elem()
+			}
+			ev := reflect.New(et).Elem()
+			oversize(ev, p+"{}", target)
+			if ptr {
+				ev = ev.Addr()
+			}
+			fv.SetMapIndex(reflect.ValueOf("k").Convert(mt.Key()), ev)
 		case strings.HasPrefix(target, p+"."):
 			if fv.Kind() == reflect.Pointer {
 				if fv.IsNil() {

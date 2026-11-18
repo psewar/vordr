@@ -3,9 +3,6 @@ package hub
 import (
 	"crypto/ed25519"
 	"regexp"
-	"strings"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/psewar/vordr/internal/facts"
 	"github.com/psewar/vordr/internal/protocol"
@@ -22,6 +19,9 @@ import (
 // event hello_fields_dropped names it with why. The host still connects. The reboot window has its own check and
 // event, the first of these (ADR-0187, takeRebootWindow). Both events follow only once the register has taken the
 // host (logDrops): a hello the register refuses names a node that is not its own.
+//
+// The hello of a Home Assistant client is bounded here as well, the same way (ADR-0195): haHelloIdentityHolds,
+// boundHAHello. What an agent sends after its hello is bounded in bounds.go.
 
 // Why a field of a hello is dropped: the fixed codes in the event hello_fields_dropped. A window that is dropped says
 // why with the codes of the reboot window (rebootWindowBadDays, rebootWindowBadWindow).
@@ -33,18 +33,18 @@ const (
 )
 
 // The bounds. They lie well above what any agent reports: the agent's own builder is checked against them
-// (TestTheRealAgentsHelloFitsTheHubsBounds).
+// (TestTheRealAgentsHelloFitsTheHubsBounds). Those agent.yaml decides - the number of apps and allowed scopes, an app's
+// name, the days of a window - are protocol.MaxApps, protocol.MaxAllowedScopes, protocol.MaxAppNameLen and
+// protocol.MaxWindowDays, which check-config refuses beyond as well (ADR-0195).
 const (
-	maxFactLen   = 255 // bytes of one fact, and of an app's name
+	maxFactLen   = 255 // bytes of one fact
 	maxVersion   = 64  // the bound of a signed manifest's version (protocol.ValidVersion)
 	maxCodeLen   = 32  // a verb, install.auto
 	maxScopeLen  = 384 // an entry of allowed_scopes, default_scope, auto_scope; the protocol's longest has 353 (pkg:)
 	maxAppIDLen  = 32  // protocol.ValidAppID
 	maxJobIDLen  = 64  // protocol.ValidJobID
 	maxVerbs     = 16  // the closed set has six; a newer agent may name one this hub does not know
-	maxScopes    = 128 // allowed_scopes: security, all, one per app, one per Compose service or pattern
-	maxApps      = 64
-	maxRunIDs    = 64 // in each list of runs: the jobs an agent carries out now, the results it holds
+	maxRunIDs    = 64  // in each list of runs: the jobs an agent carries out now, the results it holds
 	maxIntervalH = 168
 )
 
@@ -64,6 +64,24 @@ var (
 func helloIdentityHolds(h wire.Hello, nonce []byte) bool {
 	return nodePattern.MatchString(h.Node) && len(h.PublicKey) == ed25519.PublicKeySize &&
 		ed25519.Verify(h.PublicKey, wire.HelloSigned(nonce, h.Node, h.PublicKey), h.Signature)
+}
+
+// haHelloIdentityHolds: the hello of a Home Assistant client (ADR-0195) has the role ha, names a valid client and a key,
+// and proves the key over this connection's challenge. Out of bounds, the hub refuses it with bad_hello.
+func haHelloIdentityHolds(h wire.HAHello, nonce []byte) bool {
+	return h.Role == wire.RoleHA && nodePattern.MatchString(h.Name) && len(h.PublicKey) == ed25519.PublicKeySize &&
+		ed25519.Verify(h.PublicKey, wire.HAHelloSigned(nonce, h.Name, h.PublicKey), h.Signature)
+}
+
+// boundHAHello drops each field of a Home Assistant client's hello whose identity holds that is out of its bound, and
+// returns them as boundHello does. The protocol is compared as it is (protocol_mismatch); integration_version is
+// empty or a version a signed manifest may carry, as the agent's (ADR-0195).
+func boundHAHello(h *wire.HAHello) map[string]string {
+	dropped := map[string]string{}
+	if why := optional(h.IntegrationVersion, versionBound); why != "" {
+		dropped["integration_version"], h.IntegrationVersion = why, ""
+	}
+	return dropped
 }
 
 // helloDrops is what takeHello did not take of a hello.
@@ -124,11 +142,12 @@ func boundHello(h *wire.Hello) map[string]string {
 		check("runs", why, func() { h.Runs = nil }) // as from an agent before ADR-0114: the hub keeps its guess
 	}
 	p := &h.Policy
-	check("policy.allowed_scopes", listBound(p.AllowedScopes, maxScopes, scopeBound), func() { p.AllowedScopes = nil })
+	check("policy.allowed_scopes", listBound(p.AllowedScopes, protocol.MaxAllowedScopes, scopeBound),
+		func() { p.AllowedScopes = nil })
 	check("policy.default_scope", optional(p.DefaultScope, scopeBound), func() { p.DefaultScope = "" })
 	check("policy.auto", optional(p.Auto, codeBound), func() { p.Auto = "" })
 	check("policy.auto_scope", optional(p.AutoScope, scopeBound), func() { p.AutoScope = "" })
-	check("policy.apps", listBound(p.Apps, maxApps, appBound), func() { p.Apps = nil })
+	check("policy.apps", listBound(p.Apps, protocol.MaxApps, appBound), func() { p.Apps = nil })
 	if p.Window != nil {
 		check("policy.window", windowRefusal(*p.Window), func() { p.Window = nil })
 	}
@@ -140,12 +159,12 @@ func boundHello(h *wire.Hello) map[string]string {
 }
 
 // textBound: why s is no text of at most max bytes, "" when it is. Text is valid UTF-8 without control characters
-// (encoding/json already turns invalid UTF-8 into U+FFFD).
+// (protocol.PlainText; encoding/json already turns invalid UTF-8 into U+FFFD).
 func textBound(s string, max int) string {
 	switch {
 	case len(s) > max:
 		return dropTooLong
-	case !utf8.ValidString(s) || strings.ContainsFunc(s, unicode.IsControl):
+	case !protocol.PlainText(s):
 		return dropCharacters
 	}
 	return ""
@@ -194,5 +213,5 @@ func appBound(a wire.AppInfo) string {
 	if why := nameBound(a.ID, maxAppIDLen, protocol.ValidAppID); why != "" {
 		return why
 	}
-	return textBound(a.Name, maxFactLen)
+	return textBound(a.Name, protocol.MaxAppNameLen)
 }

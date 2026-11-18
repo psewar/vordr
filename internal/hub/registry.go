@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"fmt"
 	"sort"
 	"sync"
 	"time"
@@ -118,9 +119,14 @@ type Registry struct {
 	mu    sync.Mutex
 	path  string
 	nodes map[string]*Entry
+	// outOfBounds: what OpenRegistry did not take of the reports an earlier hub stored, one line per host, for the
+	// service log (NewServer).
+	outOfBounds []string
 }
 
-// OpenRegistry loads the register from path; a missing file is an empty register.
+// OpenRegistry loads the register from path; a missing file is an empty register. An earlier hub kept reports
+// unbounded: each is bounded as one that comes now (ADR-0195), and a refused one is not shown - unknown until the host
+// reports again.
 func OpenRegistry(path string) (*Registry, error) {
 	list, err := loadList[*Entry](path)
 	if err != nil {
@@ -129,6 +135,16 @@ func OpenRegistry(path string) (*Registry, error) {
 	r := &Registry{path: path, nodes: map[string]*Entry{}}
 	for _, e := range list {
 		r.nodes[e.Node] = e
+		if e.LastReport == nil {
+			continue
+		}
+		if o := boundReport(e.LastReport); !o.whole() {
+			if !o.taken() {
+				e.LastReport = nil
+			}
+			r.outOfBounds = append(r.outOfBounds, fmt.Sprintf("stored report of %s out of bounds, kept %v: %v", e.Node,
+				o.taken(), o.notTaken()))
+		}
 	}
 	return r, nil
 }

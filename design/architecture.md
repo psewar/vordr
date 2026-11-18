@@ -167,7 +167,7 @@ The set of verbs is closed. What is not listed here does not exist
 | `install` | `scope`: `security`, `all`, `app:<id>`, `pkg:<location>[/<name>]` (pip/npm, 11.4), `image:<project>/<service>` or `images` (container images, 11.5); `outside_window` (6.4) | install updates | scope is in `install.allowed_scopes` (for `pkg:` the location in `packages.update`; for `images` every service that an `image:` entry names), window open or a reason, preconditions met |
 | `reboot` | `outside_window` (6.4) | reboot | `reboot.allowed`, window open or a reason (not with `reboot.window_only`), a reboot is actually needed, the last one did not fail, and `reboot.idle_check` says idle (10.2) |
 | `agent_update` | signed manifest, one-time token | agent swaps itself | `agent_update.enabled`; manifest signed by the operator |
-| `cancel` | `job_id` | abort a run | only until the package installation begins; after that the package manager runs to the end, otherwise the system would stay half updated |
+| `cancel` | `job_id` | abort a run; **not built** ([ADR-0193](../docs/adr/0193-the-cancel-verb-is-not-built-until-a-run-needs-stopping.md)): defined in the protocol, the hub sends none and an agent answers it with `rejected_unsupported` | would hold only until the package installation begins; after that the package manager runs to the end, otherwise the system would stay half updated |
 | `backup` | `guest`: `vm/<id>` or `ct/<id>` | only the hypervisor's agent: a backup of this guest to PBS, right before its install (10.2) | `guest_backup` in the `agent.yaml`; the guest lives on this host; at most one backup per guest in 10 min |
 
 `app:<id>` points to an entry of the app list that the agent reports itself from its configuration. Package names
@@ -219,6 +219,40 @@ stays.
 - The reboot window has its own check and event (10.2), the first of these bounds; it is checked first.
 - The bounds lie well above what agents send. A test checks the agent's own hello against them over a real tunnel;
   another finds every field of the hello by itself and fails for a new one that has no bound.
+- `check-config` refuses an `agent.yaml` the hub would not take whole: more than 64 apps, an app name over 255 bytes or
+  with a control character, more than 128 allowed scopes, more than 64 entries in a window's days (9). Both read these
+  bounds from `internal/protocol`
+  ([ADR-0195](../docs/adr/0195-the-hub-bounds-reports-inventories-and-the-home-assistant-hello.md)).
+
+**Bounds of what follows the hello**
+([ADR-0195](../docs/adr/0195-the-hub-bounds-reports-inventories-and-the-home-assistant-hello.md)):
+- The hub bounds every field of a `report`, an `inventory` and a `job_status` before it stores, logs, computes with or
+  shows anything of it, in one place per message type (`internal/hub/bounds.go`). What an earlier hub stored - the last
+  report in the register, the inventories on disk - is bounded the same way when the hub loads it; a stored report it
+  refuses is not shown until the host reports again, and the service log has one line per such host.
+- A value out of bounds costs the narrowest part that keeps the rest meaningful, set to what an agent sends that does
+  not report it: the field (a path, a newer release), the list or map it belongs to (a source's packages or facts, a
+  package's holds, the packages inside an image), or the list entry (a package whose name or version is out of bounds;
+  a location whose id, kind, ecosystem, code or number of packages is). Where the rest would mislead, the hub refuses
+  the whole message and keeps what it had: a report whose sources' names, states, codes or counts are out of bounds, a
+  job status whose job id or result code is.
+- A tool's excerpt (a source's `detail`, a run's `detail`) is cleaned, never dropped: every control character but CR,
+  LF and tab becomes U+FFFD, of a longer one its end is kept. An empty run detail keeps its meaning (the hub's guess at
+  a lost run, 10.2).
+- Of an inventory with more than 1,024 locations the hub keeps the first; the agent reports no more and logs that it
+  found more. A location id may have up to 64 characters; one longer than a scope takes (32) is shown, but offers no
+  update by button.
+- Keys - states, codes, phases, reasons, fact keys - are bounded by their characters, not by the values this hub knows.
+  Text has no control characters. Where the agent caps a list itself (locations, packages per location and per image,
+  the packages of a run's summary), the hub takes exactly that cap. The ADR lists every bound and how it was chosen.
+- For an approved host the events `report_fields_dropped`, `inventory_fields_dropped`, `job_status_fields_dropped` name
+  each dropped field (`fields`) and each cleaned excerpt (`cleaned`) with its code and the key's `fingerprint`;
+  `report_refused` and `job_status_refused` the field that refused the message. At most one of each event per host in
+  an hour, so a drop does not hide a refusal; the next counts the messages left out of the log (`unlogged`). A host the
+  operator forgets starts afresh. A pending host's messages log nothing.
+- Nesting is bounded by the wire types: the hub keeps only what they hold. Tests find every field of the messages by
+  themselves and fail for a new one without a bound; what the sources report in their own tests, and the real agent's
+  inventory and job status over a real tunnel, reach the hub without a drop.
 
 **Signed challenge** ([ADR-0170](../docs/adr/0170-the-hub-signs-its-challenge-and-the-agent-checks-its-key.md)):
 - The agent sends a nonce of its own, 32 random bytes in base64, in the header `Vordr-Challenge-Nonce` of the WebSocket
@@ -356,7 +390,7 @@ Results (`problem` = sets `binary_sensor.<node>_problem`):
 | `failed_config_backup` | proxy agent: configuration backup failed or unusable ([ADR-0090](../docs/adr/0090-appliance-installs-need-a-fresh-config-backup.md)) | look at the instance's log; without a fresh backup no firmware update | yes |
 | `failed_backup` | the backup right before the install did not come about (vzdump failed, PBS does not have it, the hypervisor is gone); nothing was installed ([ADR-0096](../docs/adr/0096-fresh-backup-right-before-the-install.md)). The hypervisor's agent also ends a failed `backup` job with it | look at the run's detail and the hypervisor's backup log | yes |
 | `timeout` | run took longer than `install.timeout_min` | check the host | yes |
-| `aborted` | aborted by `cancel`, before the installation | – | no |
+| `aborted` | aborted by `cancel`, before the installation; not built, as `cancel` ([ADR-0193](../docs/adr/0193-the-cancel-verb-is-not-built-until-a-run-needs-stopping.md)) | – | no |
 | `interrupted` | agent or host ended during the run; detected from the run journal at the next start. At the hub also provisionally after a tunnel drop, until the next hello says whether the run goes on (10.2, ADR-0114) | check the package database | yes |
 
 Rejected jobs without `problem` are expected answers and appear only in the sensor "Last run". If they repeat until
@@ -562,7 +596,10 @@ guest_backup:                       # only on the hypervisor (10.2, ADR-0096)
 
 The windows apply in the host's local time. If a key is missing, the stricter value applies: no reboot, no automatic
 install, only `check`. `vordr-agent check-config` checks the file before the service takes it over
-([ADR-0006](../docs/adr/0006-local-policy-decides.md)).
+([ADR-0006](../docs/adr/0006-local-policy-decides.md)). It also refuses what the hub would drop from the hello: more
+than 64 apps, an app name over 255 bytes or with a control character, more than 128 entries in
+`install.allowed_scopes`, more than 64 entries in the days of a window (6.2,
+[ADR-0195](../docs/adr/0195-the-hub-bounds-reports-inventories-and-the-home-assistant-hello.md)).
 
 ## 10. Flows
 
@@ -1917,8 +1954,8 @@ entry in `install.allowed_scopes`, Vördr only reports and pulls, starts or chan
   Results are fixed codes (`ok`, `unknown_node`, `fingerprint_mismatch`, `not_connected`, `not_approved`,
   `verb_unsupported_by_agent`, `timeout`, …). `vordr-hub key` shows the public hub key for `agent.yaml`.
 - Browser connections (with an `Origin` header) are rejected. At most `max_pending` hosts wait for approval; a known
-  host with a different key is rejected until it is removed with `forget`. The register keeps the fields of a hello
-  only within their bounds (6.2).
+  host with a different key is rejected until it is removed with `forget`. The register keeps the fields of a hello,
+  a report, an inventory and a job status only within their bounds (6.2).
 - Checks HA commands against the host's reported policy before it signs.
 - Reports problem cases: host silent (`offline`), `stale`, waiting approvals, failed agent updates.
 

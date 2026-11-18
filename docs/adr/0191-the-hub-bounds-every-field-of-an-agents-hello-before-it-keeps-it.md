@@ -1,7 +1,7 @@
 ---
-status: proposed
+status: accepted
 date: 2026-11-18
-decision-makers: proposed by Claude (2026-11-18), for the maintainer to accept or reject
+decision-makers: kay (2026-11-18, accepted; the surfaces it leaves open are bounded in a decision of their own); proposed by Claude
 ---
 
 # The hub bounds every field of an agent's hello before it keeps it

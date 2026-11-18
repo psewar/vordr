@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/psewar/vordr/internal/policy"
+	"github.com/psewar/vordr/internal/protocol"
 	"github.com/psewar/vordr/internal/wire"
 )
 
@@ -17,17 +18,13 @@ import (
 // reboot_window_refused. The window is bounded before it is kept, computed with, or shown in Home Assistant; a host
 // whose window is not taken counts as one that reports none.
 const (
-	rebootWindowBadDays   = "days"   // more than maxWindowDays entries in days
+	rebootWindowBadDays   = "days"   // more than protocol.MaxWindowDays entries in days
 	rebootWindowBadWindow = "window" // check-config would refuse it: no day, no day name, start or end not HH:MM, equal
 	rebootWindowBadZone   = "tz"     // a zone name longer than maxZoneLen, or one this hub's time zone data does not know
 )
 
 // maxZoneLen bounds the zone name the hub takes with a reboot window; IANA names are far shorter.
 const maxZoneLen = 64
-
-// maxWindowDays bounds the entries in a window's days. check-config takes any number, a day repeated too; seven
-// different ones are all there are (ADR-0191).
-const maxWindowDays = 64
 
 // rebootWindowRefusal is why the hub does not take the reboot window p reports, "" when it does or p reports none. A
 // window without a zone is taken: the host does not name its zone, and the window is passed on without a next opening.
@@ -53,10 +50,11 @@ func rebootWindowRefusal(p wire.PolicySummary) string {
 
 // windowRefusal is why the hub does not take a window a hello reports, "" when it does: the window check-config takes -
 // day names, a day repeated too, start and end HH:MM and not equal (else rebootWindowBadWindow) - with at most
-// maxWindowDays entries (else rebootWindowBadDays). The same for the reboot window (ADR-0187) and the install window
-// (ADR-0191). A day repeated is kept as sent: Contains asks each day name once, and the entries are bounded.
+// protocol.MaxWindowDays entries (else rebootWindowBadDays), the bound check-config keeps too (ADR-0195). The same for
+// the reboot window (ADR-0187) and the install window (ADR-0191). A day repeated is kept as sent: Contains asks each
+// day name once, and the entries are bounded.
 func windowRefusal(w wire.WindowInfo) string {
-	if len(w.Days) > maxWindowDays {
+	if len(w.Days) > protocol.MaxWindowDays {
 		return rebootWindowBadDays
 	}
 	if pw := (policy.Window{Days: w.Days, Start: w.Start, End: w.End}); !pw.Valid() {

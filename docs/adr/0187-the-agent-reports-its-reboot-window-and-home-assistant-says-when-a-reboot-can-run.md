@@ -1,7 +1,7 @@
 ---
-status: proposed
+status: accepted
 date: 2026-11-18
-decision-makers: kay (2026-11-17, asked for it after a reboot refused outside the window); proposed by Claude
+decision-makers: kay (2026-11-17, asked for it after a reboot refused outside the window; 2026-11-18 accepted, a reboot by button keeping its window); proposed by Claude
 ---
 
 # The agent reports its reboot window, and Home Assistant says when a reboot can run

@@ -45,7 +45,9 @@ func places(goos, systemDrive, programFiles string) []place {
 			return func(p []string) string { return trimID(prefix + "-" + strings.ToLower(p[len(p)-1]) + userPart(p[0])) }
 		}
 		return []place{
-			{users + `\AppData\Roaming\npm\node_modules`, KindNpmGlobal, func(p []string) string { return "npm-global" + userPart(p[0]) }},
+			{users + `\AppData\Roaming\npm\node_modules`, KindNpmGlobal, func(p []string) string {
+				return trimID("npm-global" + userPart(p[0]))
+			}},
 			{users + `\AppData\Local\Programs\Python\*\Lib\site-packages`, KindPipSite, func(p []string) string {
 				return trimID(strings.ToLower(p[1]) + userPart(p[0]))
 			}},

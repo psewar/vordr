@@ -162,7 +162,13 @@ func NewPackages(stateDir string, cfg *OSVConfig, now func() time.Time, logger *
 		if err := json.Unmarshal(raw, &inv); err != nil {
 			return nil, fmt.Errorf("%s: %w", f, err)
 		}
-		p.inv[strings.TrimSuffix(filepath.Base(f), ".json")] = &inv
+		node := strings.TrimSuffix(filepath.Base(f), ".json")
+		// An earlier hub kept inventories unbounded: bounded as one that comes now, which is never refused as a whole
+		// (ADR-0195); one line in the service log, no event.
+		if o := boundInventory(&inv); !o.whole() {
+			logger.Printf("packages: stored inventory of %s out of bounds, kept without: %v", node, o.notTaken())
+		}
+		p.inv[node] = &inv
 	}
 	if cfg == nil {
 		return p, nil
@@ -446,7 +452,8 @@ func (p *Packages) Vet(eco versions.Ecosystem, plan []protocol.VetPackage) ([]pr
 }
 
 // UpdatableLocations: the locations of a host whose packages Home Assistant may update - the agent said so (its
-// policy and kind) and the hub can vouch for plans.
+// policy and kind) and the hub can vouch for plans. Only one a scope can name (protocol.ValidAppID): the hub keeps
+// longer ids of an inventory (ADR-0195), but offers no command Resolve would refuse.
 func (p *Packages) UpdatableLocations(node string) []string {
 	if p.cfg == nil {
 		return nil
@@ -456,7 +463,7 @@ func (p *Packages) UpdatableLocations(node string) []string {
 	var out []string
 	if inv := p.inv[node]; inv != nil {
 		for _, l := range inv.Locations {
-			if l.Update {
+			if l.Update && protocol.ValidAppID(l.ID) {
 				out = append(out, l.ID)
 			}
 		}
@@ -474,7 +481,7 @@ func (p *Packages) RefreshableLocations(node string) []string {
 	var out []string
 	if inv := p.inv[node]; inv != nil {
 		for _, l := range inv.Locations {
-			if l.Update && l.Deps {
+			if l.Update && l.Deps && protocol.ValidAppID(l.ID) {
 				out = append(out, l.ID)
 			}
 		}

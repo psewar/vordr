@@ -1,7 +1,7 @@
 ---
-status: proposed
+status: accepted
 date: 2026-11-18
-decision-makers: proposed by Claude (2026-11-18), for the maintainer to accept or reject
+decision-makers: kay (2026-11-18, accepted); proposed by Claude
 ---
 
 # One public check runs the install script as root under the real systemd

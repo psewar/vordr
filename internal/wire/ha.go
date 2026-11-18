@@ -53,6 +53,8 @@ const FeatureApproveHost = "approve_host"
 // ReasonProtocolMismatch: the client speaks another protocol version than the hub.
 const ReasonProtocolMismatch StatusReason = "protocol_mismatch"
 
+// HAHello is a Home Assistant client's first message. The hub refuses it when its identity is out of bounds and takes
+// every other field only within its bound (internal/hub/hello.go, ADR-0195); a new field gets its bound there.
 type HAHello struct {
 	T                  string `json:"t"`
 	Role               string `json:"role"`

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/psewar/vordr/internal/hub"
 	"github.com/psewar/vordr/internal/protocol"
 	"github.com/psewar/vordr/internal/source"
 	"github.com/psewar/vordr/internal/target"
@@ -32,10 +33,15 @@ func (s *stubDriver) Backup(context.Context) ([]byte, string, target.Result) {
 	return make([]byte, s.exportLen), ".dss", target.Result{}
 }
 
+// reportOf: the two sources of an appliance's report - which reaches the hub whole, in every case these tests play
+// (ADR-0195).
 func reportOf(t *testing.T, r wire.Report) (fw, bk source.Report) {
 	t.Helper()
 	if len(r.Sources) != 2 || r.Sources[1].Source != ConfigBackupSource || r.Reboot != nil {
 		t.Fatalf("report: %+v", r)
+	}
+	if miss := hub.ReportNotTaken(r); miss != nil {
+		t.Errorf("the hub does not take %v of %+v", miss, r)
 	}
 	return r.Sources[0], r.Sources[1]
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/psewar/vordr/internal/images"
 	"github.com/psewar/vordr/internal/inventory"
 	"github.com/psewar/vordr/internal/policy"
+	"github.com/psewar/vordr/internal/protocol"
 	"github.com/psewar/vordr/internal/wire"
 )
 
@@ -62,6 +63,18 @@ func Inventory(full policy.Config, stateDir, version string, logger *log.Logger,
 			return inv
 		}
 		inv.Locations = inventory.Collect(inventory.Options{Detect: cfg.DetectOn(), Configured: configured, Now: now})
+		// The hub keeps no more locations of one inventory (ADR-0195); a pattern of agent.yaml may match more folders.
+		// The wire has no place to say so: the agent's log does.
+		room := protocol.MaxInventoryLocations
+		if w.Containers && cfg.Containers {
+			room-- // the images are a location of their own
+		}
+		if n := len(inv.Locations); n > room {
+			inv.Locations = inv.Locations[:room]
+			if logger != nil {
+				logger.Printf("inventory: %d locations found, the first %d reported - the hub keeps no more", n, room)
+			}
+		}
 		for i := range inv.Locations {
 			l := &inv.Locations[i]
 			l.Update = policy.Matches(cfg.Update, l.ID) && inventory.Updatable(l.Kind)

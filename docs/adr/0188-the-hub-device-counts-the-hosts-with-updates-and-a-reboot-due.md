@@ -1,7 +1,7 @@
 ---
-status: proposed
+status: accepted
 date: 2026-11-18
-decision-makers: proposed by Claude (2026-11-18), for the maintainer to accept or reject
+decision-makers: kay (2026-11-18, accepted: the count keeps every kind of update, the list names the kinds); proposed by Claude
 ---
 
 # The hub device counts the hosts with updates and a reboot due

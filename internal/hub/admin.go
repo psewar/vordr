@@ -205,6 +205,7 @@ func (s *Server) Admin(req AdminRequest) AdminResponse {
 			if s.Packages != nil {
 				s.Packages.Forget(req.Node)
 			}
+			s.forgetBounds(req.Node) // approved again, the name inherits no silence of its events (ADR-0195)
 			s.Notify(req.Node)
 			s.changed(req.Node)
 		}

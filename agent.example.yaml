@@ -11,14 +11,14 @@ node: example-host                  # default: hostname (lowercase)
 #   ca_file: /etc/vordr/hub-ca.pem    # optional: trust only these CAs instead of the system roots
 
 install:
-  allowed_scopes: [security, all, "app:gitlab"]
+  allowed_scopes: [security, all, "app:gitlab"]   # at most 128 entries (ADR-0195)
   # Compose services whose image Home Assistant may move to the rebuild of its tag (ADR-0119): "image:<project>/<service>",
   # "*" for any part, e.g. "image:stack/*". Needs packages.containers; none by default. A newer tag or a pinned
   # digest stays manual.
   # allowed_scopes: [security, all, "image:stack/*"]
   default_scope: security           # install button of the entity "System packages"
   auto: off                         # off | hub ("local" is refused until it is built)
-  window: {days: [mon, tue, wed, thu, fri, sat, sun], start: "02:00", end: "05:00"}
+  window: {days: [mon, tue, wed, thu, fri, sat, sun], start: "02:00", end: "05:00"}   # days: at most 64 entries
   # mode: upgrade                   # scope all: default full-upgrade; upgrade leaves packages with new dependencies
   min_interval_h: 6
   timeout_min: 60
@@ -44,6 +44,7 @@ reboot:
 #   storage: pbs                      # a "pbs:" storage in /etc/pve/storage.cfg
 #   timeout_min: 60                   # one backup, 5 to 240
 
+# At most 64 apps; a name of at most 255 bytes without a tab or line break, as the hub shows it (ADR-0195).
 apps:
   - id: gitlab
     name: GitLab

@@ -106,6 +106,11 @@ If the integration cannot handle the hub's `protocol` version, it does not conne
 - **Rejected before the registry** (`status` `rejected`, connection closed): hello with a wrong signature, `role` ≠
   `ha`, name not `^[a-z0-9][a-z0-9.-]{0,62}$` (`bad_hello`); a different `protocol` version (`protocol_mismatch`). An
   agent hello on `/v1/ha` and an HA hello on `/v1/tunnel` both fail as `bad_hello`.
+- **Integration version** ([ADR-0195](../docs/adr/0195-the-hub-bounds-reports-inventories-and-the-home-assistant-hello.md)):
+  empty or a version as a signed manifest carries it (up to 64 letters, digits, `.`, `+`, `-`, starting with a letter
+  or a digit). Otherwise the hub drops it and the client connects; for an approved client the event
+  `ha_hello_fields_dropped` names it with its code and the key's `fingerprint` (not for a waiting one, which could
+  double the log with every reconnect).
 - **Rejected in the registry:** a different key under a known name (`key_mismatch`), a rejected client (`rejected`),
   more than 5 waiting clients (`too_many_pending`).
 - **Waiting client:** gets only its `status` and answers to heartbeats. A `command` from it is answered with

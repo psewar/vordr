@@ -196,7 +196,9 @@ const (
 	defaultOutdatedHours  = 24
 	DefaultPyPIRegistry   = "https://pypi.org"
 	DefaultNpmRegistry    = "https://registry.npmjs.org"
-	maxMinAgeDays         = 90
+	// MaxMinAgeDays bounds packages.min_age_days, and min_age_days_security below it; the hub takes an inventory's
+	// minimum ages within it (ADR-0195).
+	MaxMinAgeDays         = 90
 	minOutdatedHours      = 6
 	maxOutdatedHoursValue = 168
 )
@@ -464,8 +466,15 @@ func (c *Config) Validate() []Issue {
 			add(f+".id", "%q appears twice", a.ID)
 		}
 		apps[a.ID] = true
-		if strings.TrimSpace(a.Name) == "" {
+		// The hub takes an app's name as text it shows in Home Assistant: beyond that it drops the whole app list
+		// (ADR-0191), so check-config refuses it here (ADR-0195).
+		switch {
+		case strings.TrimSpace(a.Name) == "":
 			add(f+".name", "missing")
+		case len(a.Name) > protocol.MaxAppNameLen:
+			add(f+".name", "longer than %d bytes", protocol.MaxAppNameLen)
+		case !protocol.PlainText(a.Name):
+			add(f+".name", "%q has a control character (a tab, a line break)", a.Name)
 		}
 		switch a.Source {
 		case "apt-package":
@@ -480,8 +489,15 @@ func (c *Config) Validate() []Issue {
 			add(f+".source", "%q is unknown (known: apt-package, winget-package)", a.Source)
 		}
 	}
+	// The hub drops a longer app list or scope list from the hello (ADR-0191); check-config refuses it (ADR-0195).
+	if len(c.Apps) > protocol.MaxApps {
+		add("apps", "at most %d apps", protocol.MaxApps)
+	}
 
 	in := c.Install
+	if len(in.AllowedScopes) > protocol.MaxAllowedScopes {
+		add("install.allowed_scopes", "at most %d entries", protocol.MaxAllowedScopes)
+	}
 	images := 0 // image:<project>/<service> entries (ADR-0119)
 	for _, s := range in.AllowedScopes {
 		if strings.HasPrefix(s, "image:") {
@@ -597,8 +613,8 @@ func (c *Config) Validate() []Issue {
 		add("agent_update.backup_public_key", "not a base64 Ed25519 public key, or the same as public_key")
 	}
 
-	if d := c.Packages.MinAgeDays; d < 1 || d > maxMinAgeDays {
-		add("packages.min_age_days", "must be between 1 and %d (a fresh release is never installed)", maxMinAgeDays)
+	if d := c.Packages.MinAgeDays; d < 1 || d > MaxMinAgeDays {
+		add("packages.min_age_days", "must be between 1 and %d (a fresh release is never installed)", MaxMinAgeDays)
 	}
 	if d := c.Packages.MinAgeDaysSecurity; d < 1 || d > c.Packages.MinAgeDays {
 		add("packages.min_age_days_security", "must be between 1 and min_age_days (%d): a fix is never installed fresh, "+
@@ -831,8 +847,12 @@ var dayNames = []string{"sun", "mon", "tue", "wed", "thu", "fri", "sat"} // inde
 
 func (w *Window) check(field string) []Issue {
 	var out []Issue
-	if len(w.Days) == 0 {
+	switch {
+	case len(w.Days) == 0:
 		out = append(out, Issue{field + ".days", "at least one day (mon .. sun)"})
+	case len(w.Days) > protocol.MaxWindowDays:
+		// A day may repeat, but the hub drops a window with more entries from the hello (ADR-0191, ADR-0195).
+		out = append(out, Issue{field + ".days", fmt.Sprintf("at most %d entries", protocol.MaxWindowDays)})
 	}
 	for _, d := range w.Days {
 		if !slices.Contains(dayNames, d) {

@@ -92,6 +92,9 @@ python3 docs/adr/check_index.py --write                              # regenerat
 python3 tools/check_neutral.py --text <file>                         # commit message or pull request text
 ```
 
+- The GitHub checks also run `govulncheck` at a pinned version against the Go code: a known vulnerability the code
+  reaches fails them. It needs the network and runs only there, not in `./build.sh`
+  ([ADR-0194](docs/adr/0194-the-public-checks-run-govulncheck-at-a-pinned-version.md)).
 - `ha/tests/test_e2e_real_hub.py` runs the real hub and agent from `dist/` and is skipped without them: run
   `./build.sh` first.
 - `ha/tests/test_install_under_systemd.py` runs the install script of "Add host" under the real `systemd-run`: in the
