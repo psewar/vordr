@@ -1,6 +1,7 @@
-"""Installing the agent on a new Linux host over SSH from the options flow (ADR-0161), end to end against a fake hub
-and a fake host behind a real SSH server whose commands run in a sandbox (fake_ssh_host.py). The integration's scripts
-run for real there: the download, the size and hash check, the cleanup."""
+"""Installing the agent on a new Linux host over SSH from the button "Add host" (ADR-0161, ADR-0185), end to end
+against a fake hub and a fake host behind a real SSH server whose commands run in a sandbox (fake_ssh_host.py). The
+integration's scripts run for real there: the download, the size and hash check, the cleanup. The flow is started as
+Home Assistant's frontend starts it: as a subentry flow of the hub's entry."""
 
 from __future__ import annotations
 
@@ -13,8 +14,9 @@ from typing import Any
 
 import asyncssh
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from homeassistant.config_entries import SOURCE_USER, ConfigEntryState
 from homeassistant.core import HomeAssistant
-from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.data_entry_flow import FlowResultType, InvalidData
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -77,22 +79,33 @@ async def ready(
     return entry
 
 
+async def add_host(hass: HomeAssistant, entry: MockConfigEntry) -> dict[str, Any]:
+    """Press "Add host" on the integration's page: the frontend starts a subentry flow of the hub's entry."""
+    return await hass.config_entries.subentries.async_init(
+        (entry.entry_id, config_flow.HOST_SUBENTRY), context={"source": SOURCE_USER}
+    )
+
+
+def handler(hass: HomeAssistant, flow_id: str) -> config_flow.AddHostFlow:
+    """The flow object behind a running "Add host"."""
+    return hass.config_entries.subentries._progress[flow_id]
+
+
 async def to_host_key(hass: HomeAssistant, entry: MockConfigEntry, host: FakeHost, **target: Any) -> dict[str, Any]:
-    """From the menu to the host key: host, port, user, node."""
-    flow = hass.config_entries.options
-    result = await flow.async_init(entry.entry_id)
-    result = await flow.async_configure(result["flow_id"], {"next_step_id": "install_agent"})
-    assert result["type"] is FlowResultType.FORM and result["step_id"] == "install_agent"
+    """From the button to the host key: host, port, user, node."""
+    result = await add_host(hass, entry)
+    assert result["type"] is FlowResultType.FORM and result["step_id"] == "user"
+    assert result["description_placeholders"] == {"client": entry.data["name"]}
     values = {"host": "127.0.0.1", "port": host.port, "username": "admin", "node": "web-01", **target}
-    return await flow.async_configure(result["flow_id"], values)
+    return await hass.config_entries.subentries.async_configure(result["flow_id"], values)
 
 
 async def log_in(hass: HomeAssistant, result: dict[str, Any], **creds: str) -> dict[str, Any]:
     """Confirm the host key, then enter the credentials."""
-    flow = hass.config_entries.options
-    assert result["type"] is FlowResultType.MENU and result["step_id"] == "install_host_key"
-    result = await flow.async_configure(result["flow_id"], {"next_step_id": "install_login"})
-    assert result["type"] is FlowResultType.FORM and result["step_id"] == "install_login"
+    flow = hass.config_entries.subentries
+    assert result["type"] is FlowResultType.MENU and result["step_id"] == "host_key"
+    result = await flow.async_configure(result["flow_id"], {"next_step_id": "login"})
+    assert result["type"] is FlowResultType.FORM and result["step_id"] == "login"
     return await flow.async_configure(result["flow_id"], creds)
 
 
@@ -100,7 +113,7 @@ async def finish(hass: HomeAssistant, result: dict[str, Any]) -> dict[str, Any]:
     """Wait for the install's progress and take its end."""
     assert result["type"] is FlowResultType.SHOW_PROGRESS, result
     await hass.async_block_till_done()
-    result = await hass.config_entries.options.async_configure(result["flow_id"])
+    result = await hass.config_entries.subentries.async_configure(result["flow_id"])
     assert result["type"] is FlowResultType.ABORT, result
     return result
 
@@ -168,7 +181,7 @@ async def test_operator_keys_are_checked_and_stored(hass: HomeAssistant, entry: 
 
     async def save(values: dict[str, str]) -> dict[str, Any]:
         result = await flow.async_init(entry.entry_id)
-        assert result["menu_options"] == ["ha_updates", "operator_keys", "install_agent", "ai_explanations"]
+        assert result["menu_options"] == ["ha_updates", "operator_keys", "ai_explanations"]
         result = await flow.async_configure(result["flow_id"], {"next_step_id": "operator_keys"})
         return await flow.async_configure(result["flow_id"], values)
 
@@ -200,15 +213,41 @@ async def test_operator_keys_are_checked_and_stored(hass: HomeAssistant, entry: 
     shown = {str(k): k.default() for k in result["data_schema"].schema}
     assert shown == keys
     flow.async_abort(result["flow_id"])
-    # Empty: no key, the install item explains.
+    # Empty: no key, "Add host" explains.
     await save({"operator_key": "", "backup_operator_key": ""})
     assert entry.options == OTHER
+
+
+# --- where the install starts (ADR-0185)
+
+
+async def test_the_options_menu_no_longer_offers_the_install(hass: HomeAssistant, ready: MockConfigEntry) -> None:
+    """The options are the integration's settings: their menu offers no install, and its old step is gone."""
+    flow = hass.config_entries.options
+    result = await flow.async_init(ready.entry_id)
+    assert result["type"] is FlowResultType.MENU and result["menu_options"] == config_flow.OPTIONS_MENU
+    assert config_flow.OPTIONS_MENU == ["ha_updates", "operator_keys", "ai_explanations"]
+    with pytest.raises(InvalidData):
+        await flow.async_configure(result["flow_id"], {"next_step_id": "install_agent"})
+    flow.async_abort(result["flow_id"])
+    assert not [name for name in vars(config_flow.VordrOptionsFlow) if name.startswith("async_step_install")]
+
+
+async def test_the_button_add_host_is_registered(hass: HomeAssistant, entry: MockConfigEntry) -> None:
+    """Every entry offers the subentry type behind the button "Add host", loaded or not; it has no reconfigure, since
+    nothing of it is ever stored."""
+    entry.add_to_hass(hass)
+    assert entry.supported_subentry_types == {config_flow.HOST_SUBENTRY: {"supports_reconfigure": False}}
+    assert config_flow.VordrConfigFlow.async_get_supported_subentry_types(entry) == {
+        config_flow.HOST_SUBENTRY: config_flow.AddHostFlow
+    }
+    assert config_flow.HOST_SUBENTRY == "host"
 
 
 # --- before anything is entered
 
 
-@pytest.mark.parametrize("missing", ["operator_key", "feature", "connection", "ssh_library"])
+@pytest.mark.parametrize("missing", ["entry_loaded", "operator_key", "feature", "connection", "ssh_library"])
 async def test_install_explains_why_it_cannot_run(
     hass: HomeAssistant,
     ready: MockConfigEntry,
@@ -217,11 +256,16 @@ async def test_install_explains_why_it_cannot_run(
     monkeypatch: pytest.MonkeyPatch,
     missing: str,
 ) -> None:
-    """Without the operator key, without a hub that hands out the release, without the hub, or without the SSH
-    library: the item says why, before anything is asked."""
+    """The entry not running, without the operator key, without a hub that hands out the release, without the hub, or
+    without the SSH library: pressing "Add host" says why, each with its own code, before anything is asked; nothing is
+    stored and no flow is left."""
     if missing == "ssh_library":
         monkeypatch.setattr(config_flow, "SSH_LIBRARY", "vordr_no_such_ssh_library")
         reason = "install_needs_ssh_library"
+    elif missing == "entry_loaded":
+        assert await hass.config_entries.async_unload(ready.entry_id)
+        assert ready.state is ConfigEntryState.NOT_LOADED
+        reason = "entry_not_loaded"
     elif missing == "operator_key":
         hass.config_entries.async_update_entry(ready, options=OTHER)
         reason = "install_needs_operator_key"
@@ -234,11 +278,12 @@ async def test_install_explains_why_it_cannot_run(
         await fake_hub.shut_down()
         await wait_until(lambda: not ready.runtime_data.connected)
         reason = "hub_not_connected"
-    flow = hass.config_entries.options
-    result = await flow.async_init(ready.entry_id)
-    result = await flow.async_configure(result["flow_id"], {"next_step_id": "install_agent"})
+    result = await add_host(hass, ready)
     assert result["type"] is FlowResultType.ABORT and result["reason"] == reason
+    assert not result["description_placeholders"]
     assert fake_host.logins == [] and fake_host.commands == []
+    assert fake_hub.download_requests == []
+    assert ready.subentries == {} and hass.config_entries.subentries.async_progress() == []
 
 
 # --- the whole way
@@ -271,7 +316,7 @@ async def test_install_with_password_and_sudo(
         "fingerprint": fake_host.host_key.get_fingerprint("sha256"),
     }
     assert fake_host.logins == []  # the host key came without logging in
-    flow_handler = hass.config_entries.options._progress[result["flow_id"]]
+    flow_handler = handler(hass, result["flow_id"])
     held = flow_handler._install
     result = await log_in(hass, result, password=PASSWORD, sudo_password=SUDO_PASSWORD)
     assert result["type"] is FlowResultType.SHOW_PROGRESS
@@ -338,6 +383,21 @@ async def test_install_with_password_and_sudo(
     await no_secret_left(hass, ready, fake_hub, caplog, hass_storage)
     assert flow_handler._install is None and held._conn is None and held._sudo_password == ""
     assert ready.options == {**OTHER, "operator_keys": {"operator_key": pub(OPERATOR)}}
+    assert_nothing_stored(hass, ready, fake_host, hass_storage, "web-01")
+
+
+def assert_nothing_stored(
+    hass: HomeAssistant, entry: MockConfigEntry, host: FakeHost, hass_storage: dict[str, Any], node: str
+) -> None:
+    """ "Add host" ended, also after a successful install, with an abort that stores nothing (ADR-0185): no subentry in
+    the entry or in what Home Assistant writes of it, no other entry, no flow left, and nothing of the host (its node,
+    its host key, the agent's fingerprint) in Home Assistant's storage; the hub's registry is the one list of hosts."""
+    assert entry.subentries == {} and entry.as_dict()["subentries"] == []
+    assert hass.config_entries.async_entries() == [entry]
+    assert hass.config_entries.subentries.async_progress() == []
+    stored = json.dumps(hass_storage, default=str)
+    for value in (node, host.host_key.get_fingerprint("sha256"), FINGERPRINT, '"subentry_type"'):
+        assert value not in stored, value
 
 
 async def test_install_as_root_with_a_key(
@@ -373,6 +433,7 @@ async def test_install_as_root_with_a_key(
     assert ("root", "key") in fake_host.logins and ("root", "password") not in fake_host.logins
     pem_line = pem.splitlines()[2]
     await no_secret_left(hass, ready, fake_hub, caplog, hass_storage, pem_line)
+    assert_nothing_stored(hass, ready, fake_host, hass_storage, "arm-1")
 
 
 # --- the host key
@@ -383,8 +444,9 @@ async def test_host_key_not_confirmed(
 ) -> None:
     """The person says the keys differ: the flow ends, nothing was sent, not even a login attempt."""
     result = await to_host_key(hass, ready, fake_host)
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"next_step_id": "install_host_key_rejected"}
+    assert result["type"] is FlowResultType.MENU and result["menu_options"] == ["login", "host_key_rejected"]
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"next_step_id": "host_key_rejected"}
     )
     assert result["type"] is FlowResultType.ABORT and result["reason"] == "host_key_rejected"
     assert result["description_placeholders"] == {"host": "127.0.0.1"}
@@ -421,7 +483,7 @@ async def test_wrong_password_then_the_right_one(
     defaults = [k.default() for k in result["data_schema"].schema if callable(getattr(k, "default", None))]
     assert defaults == []
     assert fake_host.commands == []
-    result = await hass.config_entries.options.async_configure(
+    result = await hass.config_entries.subentries.async_configure(
         result["flow_id"], {"password": PASSWORD, "sudo_password": SUDO_PASSWORD}
     )
     result = await finish(hass, result)
@@ -461,6 +523,35 @@ async def test_login_refusals_the_person_can_correct(
     assert fake_hub.download_requests == []
     if setup == "sudo_wrong":
         assert fake_host.stdins[2] == "not-it\n"  # sudo's check read the password from stdin
+
+
+@pytest.mark.parametrize("password", [PASSWORD, "wrong-Secret-1"])
+async def test_the_login_step_empties_the_credentials(
+    hass: HomeAssistant,
+    ready: MockConfigEntry,
+    fake_host: FakeHost,
+    monkeypatch: pytest.MonkeyPatch,
+    password: str,
+) -> None:
+    """The credentials the login form made are emptied as soon as the login answered, whether the flow goes on to the
+    install or back to the form: none of them waits in the step for the garbage collector (ADR-0161)."""
+    made: list[ai.Credentials] = []
+    real = ai.check_credentials
+
+    def spy(user_input: dict[str, Any]) -> tuple[ai.Credentials | None, dict[str, str]]:
+        creds, errors = real(user_input)
+        if creds is not None:
+            made.append(creds)
+        return creds, errors
+
+    monkeypatch.setattr(ai, "check_credentials", spy)
+    result = await to_host_key(hass, ready, fake_host)
+    result = await log_in(hass, result, password=password, sudo_password=SUDO_PASSWORD)
+    assert len(made) == 1 and made[0] == ai.Credentials()
+    if password == PASSWORD:
+        assert (await finish(hass, result))["reason"] == "agent_installed"
+    else:
+        assert result["type"] is FlowResultType.FORM and result["errors"] == {"base": "ssh_auth_failed"}
 
 
 async def test_no_sudo_ends_the_flow(
@@ -733,9 +824,9 @@ async def test_closing_the_dialog_during_the_install(
         hass, await to_host_key(hass, ready, fake_host), password=PASSWORD, sudo_password=SUDO_PASSWORD
     )
     assert result["type"] is FlowResultType.SHOW_PROGRESS
-    held = hass.config_entries.options._progress[result["flow_id"]]._install
+    held = handler(hass, result["flow_id"])._install
     await wait_until(lambda: fake_host.file("agent-args") is not None, timeout=20)
-    hass.config_entries.options.async_abort(result["flow_id"])
+    hass.config_entries.subentries.async_abort(result["flow_id"])
     await hass.async_block_till_done()
     assert held._conn is None and held._sudo_password == ""
     fake_host.unset("agent_hold")
@@ -755,10 +846,10 @@ async def test_closing_the_dialog_during_the_login(
         'case $1 in -s) cat "$SIM/os" ;; -m) cat "$SIM/machine" ;; *) cat "$SIM/os" ;; esac\n',
     )
     fake_host.set(probe_hold="")
-    flow = hass.config_entries.options
+    flow = hass.config_entries.subentries
     result = await to_host_key(hass, ready, fake_host)
     flow_id = result["flow_id"]
-    result = await flow.async_configure(flow_id, {"next_step_id": "install_login"})
+    result = await flow.async_configure(flow_id, {"next_step_id": "login"})
     held = flow._progress[flow_id]._install
     pending = asyncio.ensure_future(
         flow.async_configure(flow_id, {"password": PASSWORD, "sudo_password": SUDO_PASSWORD})
@@ -789,7 +880,7 @@ async def test_nothing_runs_on_the_host_once_the_install_ended(
     """The install ends (clear()) while the hub answers, before its task is cancelled: it checks once more before
     anything runs on the host, and stops there."""
     result = await to_host_key(hass, ready, fake_host)
-    held = hass.config_entries.options._progress[result["flow_id"]]._install
+    held = handler(hass, result["flow_id"])._install
     client = ready.runtime_data.client
     real = client.agent_download
 
@@ -865,7 +956,7 @@ async def test_the_connection_keeps_no_credentials(
         creds = {"password": PASSWORD, "sudo_password": SUDO_PASSWORD}
     result = await log_in(hass, await to_host_key(hass, ready, fake_host), **creds)
     assert result["type"] is FlowResultType.SHOW_PROGRESS
-    held = hass.config_entries.options._progress[result["flow_id"]]._install
+    held = handler(hass, result["flow_id"])._install
     await wait_until(lambda: fake_host.file("agent-args") is not None, timeout=20)
     conn = held._conn
     assert conn is not None and ("admin", login) in fake_host.logins  # logged in with exactly that

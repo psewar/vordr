@@ -2,7 +2,7 @@
 
 Checks of what the person entered, the operator keys, the scripts that run on the host and how their output is read,
 the check of the signed release the hub hands out. No Home Assistant and no SSH call here: the connection is in ssh.py,
-the steps in agent_installer.py and config_flow.py.
+the steps in agent_installer.py and config_flow.py (the subentry flow of the button "Add host", ADR-0185).
 
 What runs on the host reports its state as `key=value` lines of its own, and `vordr-agent install` ends with its
 defined last line (`result=installed node=<n> fingerprint=<hex>`, `result=refused code=<c>`, `result=failed code=<c>`);
@@ -33,7 +33,15 @@ OPTIONS_KEY: Final = "operator_keys"
 CONF_OPERATOR_KEY: Final = "operator_key"
 CONF_BACKUP_OPERATOR_KEY: Final = "backup_operator_key"
 
-# --- the install form; the secrets are entered only after the host key is confirmed and never stored
+# Errors of the options item "Operator keys"; every one has its text in options.error.
+OPERATOR_KEY_ERRORS: Final = (
+    "invalid_operator_key",
+    "invalid_backup_operator_key",
+    "backup_without_operator_key",
+    "backup_equals_operator_key",
+)
+
+# --- the forms of "Add host"; the secrets are entered only after the host key is confirmed and never stored
 
 CONF_HOST: Final = "host"
 CONF_PORT: Final = "port"
@@ -48,12 +56,9 @@ SECRET_FIELDS: Final = (CONF_PASSWORD, CONF_SSH_KEY, CONF_SSH_KEY_PASSPHRASE, CO
 DEFAULT_PORT: Final = 22
 DEFAULT_USERNAME: Final = "root"
 
-# Errors the forms show beside a field or at the top; every one has its text in options.error.
+# Errors the forms of "Add host" show beside a field or at the top; every one has its text in
+# config_subentries.host.error.
 FORM_ERRORS: Final = (
-    "invalid_operator_key",
-    "invalid_backup_operator_key",
-    "backup_without_operator_key",
-    "backup_equals_operator_key",
     "invalid_host",
     "invalid_port",
     "invalid_username",
@@ -147,8 +152,8 @@ def public_key(text: Any) -> bytes | None:
 
 
 def check_operator_keys(user_input: dict[str, Any]) -> tuple[dict[str, str], dict[str, str]]:
-    """The options of the item "Operator keys" as they are stored, and the errors by field. Both empty: no key, the
-    install item explains it cannot run."""
+    """The options of the item "Operator keys" as they are stored, and the errors by field. Both empty: no key, "Add
+    host" explains it cannot run."""
     key = str(user_input.get(CONF_OPERATOR_KEY) or "").strip()
     backup = str(user_input.get(CONF_BACKUP_OPERATOR_KEY) or "").strip()
     errors: dict[str, str] = {}
@@ -703,7 +708,7 @@ def outcome(stdout: str, version: str) -> Outcome:
     return Outcome("agent_failed", {"code": code})
 
 
-# Every way the install item can end, each with its text in options.abort. With the values its text names.
+# Every way "Add host" can end, each with its text in config_subentries.host.abort. With the values its text names.
 HUB_CODES: Final = (
     "role_forbids",
     "client_not_approved",

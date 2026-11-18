@@ -137,7 +137,10 @@ Leitstelle.
 Home Assistant kann einen neuen Host selbst einrichten: Es erreicht ihn einmal über SSH, lässt ihn das signierte
 Agenten-Release von der Leitstelle holen, prüft es und führt dort `vordr-agent install` aus. Vom SSH-Zugang wird nichts
 gespeichert
-([ADR-0161](../docs/adr/0161-home-assistant-installs-the-agent-once-over-ssh-and-keeps-no-credentials.md)). Für
+([ADR-0161](../docs/adr/0161-home-assistant-installs-the-agent-once-over-ssh-and-keeps-no-credentials.md)), und auch
+der Host nicht: Die Liste der Hosts führt die Leitstelle, und der Host erscheint in Home Assistant, sobald er dort
+freigegeben ist
+([ADR-0185](../docs/adr/0185-the-agent-install-starts-from-an-add-host-button-and-stores-no-subentry.md)). Für
 Linux mit systemd und apt (Debian, Ubuntu, Raspberry Pi OS) auf x86_64, aarch64 oder armv7.
 
 Was es braucht:
@@ -152,7 +155,10 @@ Was es braucht:
 - auf dem Host: SSH, `root` oder einen Benutzer mit `sudo`, `curl` oder `wget`, und die Leitstelle erreichbar unter der
   Adresse, die diese Integration verwendet.
 
-Dann *Konfigurieren → Agent auf einem Linux-Host installieren (SSH)*:
+Dann auf der Seite der Integration *Host hinzufügen* drücken (*Einstellungen → Geräte & Dienste → Vördr*; bei mehreren
+Leitstellen beim Eintrag der Leitstelle, zu der der Host gehören soll). Fehlt etwas, das es braucht, sagt der Dialog
+das, bevor er nach etwas fragt: die Integration läuft nicht, kein Betreiberschlüssel, die Leitstelle nicht verbunden
+oder sie gibt das Release nicht heraus, die SSH-Bibliothek fehlt. Sonst:
 
 1. Host, SSH-Port, Benutzer und Name des Knotens (leer: der eigene Name des Hosts);
 2. der Host-Schlüssel, den der Server zeigt: an der Konsole des Hosts mit dessen eigenem vergleichen
@@ -170,8 +176,9 @@ Dann *Konfigurieren → Agent auf einem Linux-Host installieren (SSH)*:
 
 Am Ende zeigt der Dialog den Fingerprint des Agenten. Der Host wartet nun auf die Freigabe an der Leitstelle; sobald
 die Leitstelle ihn aufführt, zeigt der Reparaturhinweis „Host … wartet auf Freigabe“ den Befehl. Fingerprint
-vergleichen, dann an der Leitstelle freigeben. Jedes andere Ende nennt, was auf dem Host geschehen ist und was als
-Nächstes zu tun ist. Ein Host mit eigener Richtlinie wird weiter von Hand eingerichtet (`deploy/README.de.md`); der so
+vergleichen, dann an der Leitstelle freigeben; danach erscheint der Host als Gerät der Integration. Der Knopf legt für
+den Host keinen eigenen Eintrag an, die Seite der Integration führt also keinen auf. Jedes andere Ende nennt, was auf
+dem Host geschehen ist und was als Nächstes zu tun ist. Ein Host mit eigener Richtlinie wird weiter von Hand eingerichtet (`deploy/README.de.md`); der so
 installierte Agent prüft und meldet und installiert nichts, bis seine `agent.yaml` es erlaubt.
 
 ## KI-Erklärungen gescheiterter Läufe

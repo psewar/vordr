@@ -2,8 +2,8 @@
 
 Every failure of the network or of the other side becomes a fixed code here, at the boundary; the callers only read
 codes. Nothing is read from or written to files: no ~/.ssh/config, no known_hosts, no agent, no default keys. The host
-key is fetched once without logging in, shown to the person, and then the only key the login accepts. Only the install
-item imports this module (and with it asyncssh); the rest of the integration loads without it.
+key is fetched once without logging in, shown to the person, and then the only key the login accepts. Only "Add host"
+imports this module (and with it asyncssh); the rest of the integration loads without it.
 """
 
 from __future__ import annotations

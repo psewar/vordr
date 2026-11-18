@@ -34,8 +34,9 @@ darunter die Update-Quellen und wichtigen Programme mit ihrem Stand.
   erlaubte Arten, Fenster, Mindestalter, Hauptversionen von Hand –, installiert, sobald eingeschaltet: eines
   nach dem anderen, Core, OS und Supervisor zuletzt, jedes mit Backup, an der erreichten Version geprüft, ein
   Fehlschlag als Reparaturhinweis festgehalten.
-- Einen neuen Linux-Host aus Home Assistant einrichten: einmal über SSH, das signierte Agenten-Release geprüft, bevor
-  es läuft, vom SSH-Zugang nichts gespeichert; danach wartet der Host auf die Freigabe an der Leitstelle.
+- Einen neuen Linux-Host aus Home Assistant einrichten, mit dem Knopf „Host hinzufügen“: einmal über SSH, das signierte
+  Agenten-Release geprüft, bevor es läuft, vom SSH-Zugang nichts gespeichert; danach wartet der Host auf die Freigabe an
+  der Leitstelle.
 - Freiwillig ein gescheiterter Lauf, erklärt von einer AI-Task-Entität von Home Assistant: ein kurzer Text, Ursache
   und nächste Schritte aus festen Listen und ein am Log geprüftes Zitat; Hostnamen und Adressen vor dem Senden
   ersetzt, nur als Rat.

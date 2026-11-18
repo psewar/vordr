@@ -439,30 +439,45 @@ def fields_of(text: str) -> set[str]:
 
 @pytest.mark.parametrize("lang", sorted(LANGS))
 def test_every_end_has_its_text_with_exactly_its_values(lang: str) -> None:
-    options = LANGS[lang]["options"]
-    assert set(ai.ABORTS) <= set(options["abort"])
+    """Every way "Add host" ends has its text in config_subentries.host.abort, with exactly the values it names, and
+    every error of its forms its text; none of them is left in the options (ADR-0185)."""
+    host = LANGS[lang]["config_subentries"]["host"]
+    assert set(ai.ABORTS) == set(host["abort"])
     for code, names in ai.ABORTS.items():
-        assert fields_of(options["abort"][code]) == set(names), (lang, code)
-    assert set(ai.FORM_ERRORS) <= set(options["error"])
+        assert fields_of(host["abort"][code]) == set(names), (lang, code)
+    assert set(ai.FORM_ERRORS) == set(host["error"])
     assert set(LOGIN_FORM_ERRORS) <= set(ai.FORM_ERRORS)
     assert not set(LOGIN_FORM_ERRORS) & set(ai.ABORTS.keys() - {"ssh_lost", "ssh_timeout"})
     # Every way it can end that is not success says what happened to the host.
-    assert "`{fingerprint}`" in options["abort"]["agent_installed"]
+    assert "`{fingerprint}`" in host["abort"]["agent_installed"]
+    options = LANGS[lang]["options"]
+    assert set(ai.OPERATOR_KEY_ERRORS) <= set(options["error"])
+    assert not set(options["error"]) & set(ai.FORM_ERRORS) and "abort" not in options and "progress" not in options
 
 
 @pytest.mark.parametrize("lang", sorted(LANGS))
 def test_install_steps_have_their_texts(lang: str) -> None:
-    steps = LANGS[lang]["options"]["step"]
-    assert set(steps["init"]["menu_options"]) == {"ha_updates", "operator_keys", "install_agent", "ai_explanations"}
-    forms = {
-        "operator_keys": {"operator_key", "backup_operator_key"},
-        "install_agent": {"host", "port", "username", "node"},
-        "install_login": {"password", "ssh_key", "ssh_key_passphrase", "sudo_password"},
-    }
-    for step, keys in forms.items():
-        assert set(steps[step]["data"]) == keys == set(steps[step]["data_description"]), (lang, step)
-    assert fields_of(steps["install_host_key"]["description"]) == {"host", "port", "algorithm", "fingerprint"}
-    assert set(steps["install_host_key"]["menu_options"]) == {"install_login", "install_host_key_rejected"}
-    assert fields_of(steps["install_login"]["description"]) == {"host", "username"}
-    assert fields_of(LANGS[lang]["options"]["progress"]["install_run"]) == {"host"}
-    assert "Linux" in steps["install_agent"]["description"]
+    """The button and every step of "Add host" have their texts; the options menu keeps the operator keys and offers no
+    install."""
+    host = LANGS[lang]["config_subentries"]["host"]
+    assert host["initiate_flow"]["user"] and host["entry_type"]
+    steps = host["step"]
+    options = LANGS[lang]["options"]["step"]
+    assert set(options["init"]["menu_options"]) == {"ha_updates", "operator_keys", "ai_explanations"}
+    forms = [
+        (options["operator_keys"], {"operator_key", "backup_operator_key"}),
+        (steps["user"], {"host", "port", "username", "node"}),
+        (steps["login"], {"password", "ssh_key", "ssh_key_passphrase", "sudo_password"}),
+    ]
+    for step, keys in forms:
+        assert set(step["data"]) == keys == set(step["data_description"]), (lang, step["title"])
+    assert set(steps) == {"user", "host_key", "login"}
+    assert fields_of(steps["user"]["description"]) == {"client"}
+    assert "`vordr-hub client-role {client} --role admin`" in steps["user"]["description"]
+    assert fields_of(steps["host_key"]["description"]) == {"host", "port", "algorithm", "fingerprint"}
+    assert set(steps["host_key"]["menu_options"]) == {"login", "host_key_rejected"}
+    assert fields_of(steps["login"]["description"]) == {"host", "username"}
+    assert set(host["progress"]) == {"install"} and fields_of(host["progress"]["install"]) == {"host"}
+    assert "Linux" in steps["user"]["description"]
+    # Without an operator key, "Add host" points to where it is entered: the options item, by its own title.
+    assert options["operator_keys"]["title"] in host["abort"]["install_needs_operator_key"]

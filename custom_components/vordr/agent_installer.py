@@ -1,4 +1,5 @@
-"""Installing the agent on a new Linux host over SSH from the options flow (ADR-0161): the steps and what they hold.
+"""Installing the agent on a new Linux host over SSH from the button "Add host" (ADR-0161, ADR-0185): the steps and
+what they hold.
 
 The credentials, the open connection and the hub's single-use download token live only in an AgentInstall, in the
 flow's memory. clear() drops them and ends the install; the flow calls it however it ends (done, aborted, the dialog
@@ -7,7 +8,8 @@ and nothing asks the hub or runs on the host. Nothing of them is logged, stored,
 checks its precondition first and answers with a code that has a text; a failure of the network or the host is mapped
 to a code at the boundary (ssh.py).
 
-The options flow imports this module (and with it asyncssh) only when the install item is opened.
+The subentry flow of "Add host" (config_flow.AddHostFlow) imports this module, and with it asyncssh, only when it is
+opened.
 """
 
 from __future__ import annotations

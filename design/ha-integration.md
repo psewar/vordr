@@ -402,25 +402,29 @@ like any new host
 ([ADR-0161](../docs/adr/0161-home-assistant-installs-the-agent-once-over-ssh-and-keeps-no-credentials.md), with the
 threat comparison). Linux with systemd and apt only.
 
-- **Two items in the options menu:**
-  - "Operator keys" (key `operator_keys`): the operator key and an optional backup, base64 Ed25519 as
-    `vordr-release public-key` prints them. Checked (32 bytes, the backup not equal to the key and only with it),
-    stored like any option: they are public. Empty removes them. Never taken from the hub.
-  - "Install the agent on a Linux host (SSH)": a flow that stores no options. It ends with a code that has a text in
-    `options.abort`; what the person can correct (host, port, user, node, the login, sudo) shows in the form as an
-    error.
-- **Steps:**
+- **Operator keys**, an item of the options menu (key `operator_keys`): the operator key and an optional backup,
+  base64 Ed25519 as `vordr-release public-key` prints them. Checked (32 bytes, the backup not equal to the key and only
+  with it), stored like any option: they are public. Empty removes them. Never taken from the hub.
+- **The button "Add host"** on the integration's page starts the install
+  ([ADR-0185](../docs/adr/0185-the-agent-install-starts-from-an-add-host-button-and-stores-no-subentry.md)): the
+  config flow names the subentry type `host` (`async_get_supported_subentry_types`), and the button opens its subentry
+  flow (`AddHostFlow` in `config_flow.py`), which only administrators can start. Every entry offers it. The flow stores
+  nothing, no option and no subentry: the hub's registry stays the one list of hosts. It ends with an abort whose code
+  has a text in `config_subentries.host.abort`, success included; what the person can correct (host, port, user,
+  node, the login, sudo) shows in the form as an error (`config_subentries.host.error`). The options menu offers no
+  install.
+- **Steps** (the subentry flow's step ids in brackets):
 
 | Step | What it does | Ends with |
 |---|---|---|
-| Start | the SSH library installed, entry loaded, operator key stored, hub connected, its status names `agent_download` | `install_needs_ssh_library`, `entry_not_loaded`, `install_needs_operator_key`, `hub_not_connected`, `hub_without_download` |
-| Target | host, SSH port, user (`root`), node (empty: the host's own name) | form errors; `ssh_unreachable`, `ssh_timeout`, `ssh_failed` |
-| Host key | fetched without logging in (`asyncssh.get_server_host_key`), shown as algorithm and SHA256 fingerprint; a menu: the same, or stop | `host_key_rejected` |
-| Login | password or pasted private key with its passphrase, sudo's password (empty: the login password); the login accepts only the confirmed key, nothing goes to a `known_hosts` file | form errors `ssh_auth_failed`, `ssh_key_invalid`, `sudo_failed`, `sudo_needs_password`; `ssh_host_key_changed` |
+| Start (`user`) | the SSH library installed, entry loaded, operator key stored, hub connected, its status names `agent_download`; each checked before the form shows. The form names the role the hub asks for (`vordr-hub client-role <client> --role admin`): the hub's status does not tell a client its role | `install_needs_ssh_library`, `entry_not_loaded`, `install_needs_operator_key` (names Configure → Operator keys), `hub_not_connected`, `hub_without_download` |
+| Target (`user`) | host, SSH port, user (`root`), node (empty: the host's own name) | form errors; `ssh_unreachable`, `ssh_timeout`, `ssh_failed` |
+| Host key (`host_key`) | fetched without logging in (`asyncssh.get_server_host_key`), shown as algorithm and SHA256 fingerprint; a menu: the same (`login`), or stop (`host_key_rejected`) | `host_key_rejected` |
+| Login (`login`) | password or pasted private key with its passphrase, sudo's password (empty: the login password); the login accepts only the confirmed key, nothing goes to a `known_hosts` file | form errors `ssh_auth_failed`, `ssh_key_invalid`, `sudo_failed`, `sudo_needs_password`; `ssh_host_key_changed` |
 | Probe | as the user, `key=value` facts: `uname -s`, `uname -m`, `id -u`, systemd, `apt-get`, `curl`/`wget`, `sha256sum`, `base64`, `mktemp`, `timeout`, `systemd-run`, `sudo`; then `sudo -k -n true`, else `sudo -k -S` with the password on stdin | `not_linux`, `unknown_arch`, `no_systemd`, `no_apt`, `no_download_tool`, `missing_tools`, `no_sudo`, `probe_failed` |
 | Release | `agent_download` for `linux/<arch>` (`x86_64` → `amd64`, `aarch64` → `arm64`, `armv7l`/`armv8l` → `arm`); the operator's signature over `vordr/agent-manifest/v1\0` + manifest with the stored keys; the manifest read as strictly as the agent's `VerifyManifest`; file, SHA-256 and size only from it; the download path must open that file; not older than the newest release an install of this entry took (kept in `.storage/vordr.agent_release.<entry_id>`, compared as the agent's `NewerRelease`) | the hub's codes (`role_forbids` with `vordr-hub client-role <client> --role admin`, `no_release`, `too_many_downloads`, …), `hub_refused`, `manifest_signature_invalid`, `manifest_invalid`, `no_binary_for_platform`, `release_too_old`, `download_invalid` |
-| Install | as root, as a transient service of its own (`systemd-run --pipe --wait --collect`), outside the login session; one script: a private temporary folder (`mktemp -d`, umask 077, refused if nothing may run from it); download over HTTPS from the integration's host and port with the hub's CA if it has one, the URL read from a file in that folder (`curl -K`, `wget -i`), bounded by the signed size (`curl --max-filesize`, `ulimit -f` for both) and in time (`curl --max-time 900`, `timeout 900 wget`); size and SHA-256 compared before anything runs; the hub's CA to `/etc/vordr/hub-ca.pem` (compared if there, removed again after a refusal); `vordr-agent install --hub wss://<host>:<port>/v1/tunnel --hub-key <from the answer> --operator-key … [--backup-operator-key] [--node] [--ca-file]`; the folder removed by a trap in every case | `size_mismatch`, `hash_mismatch`, `download_failed`, `download_refused`, `download_too_large`, `ca_differs`, `ca_failed`, `temp_noexec`, `temp_failed`, `bad_input`; the agent's codes as `agent_<code>`, others as `agent_refused`/`agent_failed`; `agent_no_result`, `install_no_result`, `ssh_lost`, `ssh_timeout` |
-| End | the agent's last line `result=installed node=<n> fingerprint=<hex>` | `agent_installed` with node, fingerprint and version; the repair `waiting_<node>` then names the approval command |
+| Install (`install`, progress) | as root, as a transient service of its own (`systemd-run --pipe --wait --collect`), outside the login session; one script: a private temporary folder (`mktemp -d`, umask 077, refused if nothing may run from it); download over HTTPS from the integration's host and port with the hub's CA if it has one, the URL read from a file in that folder (`curl -K`, `wget -i`), bounded by the signed size (`curl --max-filesize`, `ulimit -f` for both) and in time (`curl --max-time 900`, `timeout 900 wget`); size and SHA-256 compared before anything runs; the hub's CA to `/etc/vordr/hub-ca.pem` (compared if there, removed again after a refusal); `vordr-agent install --hub wss://<host>:<port>/v1/tunnel --hub-key <from the answer> --operator-key … [--backup-operator-key] [--node] [--ca-file]`; the folder removed by a trap in every case | `size_mismatch`, `hash_mismatch`, `download_failed`, `download_refused`, `download_too_large`, `ca_differs`, `ca_failed`, `temp_noexec`, `temp_failed`, `bad_input`; the agent's codes as `agent_<code>`, others as `agent_refused`/`agent_failed`; `agent_no_result`, `install_no_result`, `ssh_lost`, `ssh_timeout` |
+| End (`result`) | the agent's last line `result=installed node=<n> fingerprint=<hex>`; an abort, also on success: no subentry is stored | `agent_installed` with node, fingerprint and version; the repair `waiting_<node>` then names the approval command, and once approved the host is a device of the entry |
 
 - **What is read from the host:** only `key=value` fields: the probe's lines, the script's own last line
   (`step=<step> code=<code>`), and after `step=agent exit=<n>` the agent's last line. Prose is never read; a line that is
@@ -438,7 +442,8 @@ threat comparison). Linux with systemd and apt only.
   session, also where logind ends a session's processes with `KillUserProcesses=yes`) and removes its temporary folder.
 - **Boundary:** `custom_components/vordr/ssh.py` is the only place that speaks SSH; it maps every failure to a code by
   its type and reads nothing from `~/.ssh`, uses no SSH agent and no default keys. `agent_install.py` holds the pure
-  parts (checks, scripts, reading), `agent_installer.py` the steps and what they hold.
+  parts (checks, scripts, reading), `agent_installer.py` the steps and what they hold, `config_flow.py` the subentry
+  flow of "Add host".
 - **The client** keeps the `features` of the hub's last status and sends `agent_download` only to a hub that named it
   ([ADR-0067](../docs/adr/0067-hub-announces-features.md)); the answer goes to the one who asked, never to the
   coordinator or an entity.
@@ -596,7 +601,9 @@ right away (`ha/README.md`).
    a new major version by hand ([ADR-0160](../docs/adr/0160-a-new-major-version-of-a-home-assistant-update-stays-manual.md)).
 6. Setting a host up from Home Assistant: **once over SSH, credentials only in the flow's memory, the release checked
    against the operator key entered in Home Assistant and on the host before it runs, approval at the hub**
-   ([ADR-0161](../docs/adr/0161-home-assistant-installs-the-agent-once-over-ssh-and-keeps-no-credentials.md)).
+   ([ADR-0161](../docs/adr/0161-home-assistant-installs-the-agent-once-over-ssh-and-keeps-no-credentials.md));
+   **started from the button "Add host", which stores nothing, not even a subentry**
+   ([ADR-0185](../docs/adr/0185-the-agent-install-starts-from-an-add-host-button-and-stores-no-subentry.md)).
 7. Installing Home Assistant's own updates: **only when switched on, from one entry, with a pause**
    ([ADR-0162](../docs/adr/0162-home-assistants-own-updates-install-only-when-switched-on-and-a-pause-holds-them.md)); **a backup before each**, the entity's own or Home Assistant's automatic backup at most 26 h old
    ([ADR-0163](../docs/adr/0163-a-backup-before-every-automatic-home-assistant-update.md)); **one at a time, Core, OS and Supervisor last, checked again before acting, verified by the

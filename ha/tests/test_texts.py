@@ -72,6 +72,32 @@ def test_texts_pass_home_assistants_checks(lang: str) -> None:
     for key, issue in data["issues"].items():
         assert "title" in issue and set(issue) <= {"title", "short_title", "description", "fix_flow"}, (key, issue)
         assert ("description" in issue) != ("fix_flow" in issue), key
+    # No text starts or ends with a space, and no placeholder is in single quotes (translation_value_validator).
+    assert [path for path, text in texts(data) if text != text.strip() or re.search(r"'\{\w+\}'", text)] == []
+
+
+# The parts of a flow's texts (gen_data_entry_schema); a subentry flow also needs the name of its kind and the label of
+# its button, and has no title of its own (subentry_flow=True, flow_title=REMOVED).
+FLOW_KEYS = {"flow_title", "step", "error", "abort", "progress", "create_entry"}
+STEP_KEYS = {"title", "description", "data", "data_description", "menu_options", "menu_option_descriptions", "submit"}
+
+
+@pytest.mark.parametrize("lang", sorted(LANGS))
+def test_flow_texts_follow_home_assistants_schema(lang: str) -> None:
+    """The config flow, the options flow and every subentry flow ("Add host", ADR-0185) as hassfest checks them: only
+    known parts, each step only known keys, and a data_description only for a field that has a label."""
+    data = LANGS[lang]
+    flows = {"config": data["config"], "options": data["options"]}
+    for kind, flow in data["config_subentries"].items():
+        assert {"entry_type", "initiate_flow", "step"} <= set(flow) <= FLOW_KEYS | {"entry_type", "initiate_flow"}, kind
+        assert flow["entry_type"] and flow["initiate_flow"]["user"], kind
+        flows[f"config_subentries.{kind}"] = flow
+    assert set(data["config_subentries"]) == {"host"}
+    for name, flow in flows.items():
+        assert set(flow) - {"title", "entry_type", "initiate_flow"} <= FLOW_KEYS, name
+        for step_id, step in flow["step"].items():
+            assert set(step) <= STEP_KEYS, (name, step_id)
+            assert set(step.get("data_description", {})) <= set(step.get("data", {})), (name, step_id)
 
 
 @pytest.mark.parametrize("lang", sorted(LANGS))
@@ -144,7 +170,12 @@ def test_ha_updates_texts(lang: str) -> None:
     assert set(attrs) == {*hu.CODES, "min_age_days", "min_age_days_firmware", "updates"}
     names = [attrs[code]["name"] for code in hu.CODES]
     assert all(names) and len(set(names)) == len(names), names
-    assert set(data["options"]["error"]) == {*hu.ERRORS, hu.ERR_AUTO_INSTALL_OTHER, *ai.FORM_ERRORS, *ax.FORM_ERRORS}
+    assert set(data["options"]["error"]) == {
+        *hu.ERRORS,
+        hu.ERR_AUTO_INSTALL_OTHER,
+        *ai.OPERATOR_KEY_ERRORS,
+        *ax.FORM_ERRORS,
+    }
     assert data["device"]["home_assistant"]["name"]
 
 

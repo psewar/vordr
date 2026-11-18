@@ -425,25 +425,30 @@ die Freigabe an der Leitstelle
 ([ADR-0161](../docs/adr/0161-home-assistant-installs-the-agent-once-over-ssh-and-keeps-no-credentials.md), mit dem
 Bedrohungsvergleich). Nur Linux mit systemd und apt.
 
-- **Zwei Punkte im Options-Menü:**
-  - „Betreiberschlüssel“ (Schlüssel `operator_keys`): der Betreiberschlüssel und ein optionaler Ersatz, Base64-Ed25519,
-    wie `vordr-release public-key` sie ausgibt. Geprüft (32 Bytes, der Ersatz ungleich dem Schlüssel und nur mit ihm),
-    gespeichert wie jede Option: Sie sind öffentlich. Leer entfernt sie. Nie von der Leitstelle übernommen.
-  - „Agent auf einem Linux-Host installieren (SSH)“: ein Flow, der keine Optionen speichert. Er endet mit einem Code,
-    der in `options.abort` einen Text hat; was die Person korrigieren kann (Host, Port, Benutzer, Knoten, die Anmeldung,
-    sudo), zeigt das Formular als Fehler.
-- **Schritte:**
+- **Betreiberschlüssel**, ein Punkt des Options-Menüs (Schlüssel `operator_keys`): der Betreiberschlüssel und ein
+  optionaler Ersatz, Base64-Ed25519, wie `vordr-release public-key` sie ausgibt. Geprüft (32 Bytes, der Ersatz ungleich
+  dem Schlüssel und nur mit ihm), gespeichert wie jede Option: Sie sind öffentlich. Leer entfernt sie. Nie von der
+  Leitstelle übernommen.
+- **Der Knopf „Host hinzufügen“** auf der Seite der Integration startet die Installation
+  ([ADR-0185](../docs/adr/0185-the-agent-install-starts-from-an-add-host-button-and-stores-no-subentry.md)): Der
+  Config-Flow nennt den Subentry-Typ `host` (`async_get_supported_subentry_types`), und der Knopf öffnet dessen
+  Subentry-Flow (`AddHostFlow` in `config_flow.py`), den nur Administratoren starten können. Jeder Eintrag bietet ihn
+  an. Der Flow speichert nichts, keine Option und keinen Subentry: Das Register der Leitstelle bleibt die eine Liste der
+  Hosts. Er endet mit einem Abbruch, dessen Code in `config_subentries.host.abort` einen Text hat, auch beim Erfolg;
+  was die Person korrigieren kann (Host, Port, Benutzer, Knoten, die Anmeldung, sudo), zeigt das Formular als Fehler
+  (`config_subentries.host.error`). Das Options-Menü bietet keine Installation an.
+- **Schritte** (in Klammern die Schritt-IDs des Subentry-Flows):
 
 | Schritt | Was er tut | Endet mit |
 |---|---|---|
-| Start | die SSH-Bibliothek installiert, Eintrag geladen, Betreiberschlüssel gespeichert, Leitstelle verbunden, ihr Status nennt `agent_download` | `install_needs_ssh_library`, `entry_not_loaded`, `install_needs_operator_key`, `hub_not_connected`, `hub_without_download` |
-| Ziel | Host, SSH-Port, Benutzer (`root`), Knoten (leer: der eigene Name des Hosts) | Formularfehler; `ssh_unreachable`, `ssh_timeout`, `ssh_failed` |
-| Host-Schlüssel | ohne Anmeldung geholt (`asyncssh.get_server_host_key`), gezeigt als Algorithmus und SHA256-Fingerprint; ein Menü: gleich, oder abbrechen | `host_key_rejected` |
-| Anmeldung | Passwort oder eingefügter privater Schlüssel mit Passphrase, Passwort für sudo (leer: das der Anmeldung); die Anmeldung nimmt nur den bestätigten Schlüssel an, in keine `known_hosts`-Datei wird geschrieben | Formularfehler `ssh_auth_failed`, `ssh_key_invalid`, `sudo_failed`, `sudo_needs_password`; `ssh_host_key_changed` |
+| Start (`user`) | die SSH-Bibliothek installiert, Eintrag geladen, Betreiberschlüssel gespeichert, Leitstelle verbunden, ihr Status nennt `agent_download`; jedes geprüft, bevor das Formular erscheint. Das Formular nennt die Rolle, die die Leitstelle verlangt (`vordr-hub client-role <client> --role admin`): Der Status der Leitstelle sagt einem Client seine Rolle nicht | `install_needs_ssh_library`, `entry_not_loaded`, `install_needs_operator_key` (nennt Konfigurieren → Betreiberschlüssel), `hub_not_connected`, `hub_without_download` |
+| Ziel (`user`) | Host, SSH-Port, Benutzer (`root`), Knoten (leer: der eigene Name des Hosts) | Formularfehler; `ssh_unreachable`, `ssh_timeout`, `ssh_failed` |
+| Host-Schlüssel (`host_key`) | ohne Anmeldung geholt (`asyncssh.get_server_host_key`), gezeigt als Algorithmus und SHA256-Fingerprint; ein Menü: gleich (`login`), oder abbrechen (`host_key_rejected`) | `host_key_rejected` |
+| Anmeldung (`login`) | Passwort oder eingefügter privater Schlüssel mit Passphrase, Passwort für sudo (leer: das der Anmeldung); die Anmeldung nimmt nur den bestätigten Schlüssel an, in keine `known_hosts`-Datei wird geschrieben | Formularfehler `ssh_auth_failed`, `ssh_key_invalid`, `sudo_failed`, `sudo_needs_password`; `ssh_host_key_changed` |
 | Erkundung | als Benutzer, Fakten als `key=value`: `uname -s`, `uname -m`, `id -u`, systemd, `apt-get`, `curl`/`wget`, `sha256sum`, `base64`, `mktemp`, `timeout`, `systemd-run`, `sudo`; dann `sudo -k -n true`, sonst `sudo -k -S` mit dem Passwort auf stdin | `not_linux`, `unknown_arch`, `no_systemd`, `no_apt`, `no_download_tool`, `missing_tools`, `no_sudo`, `probe_failed` |
 | Release | `agent_download` für `linux/<arch>` (`x86_64` → `amd64`, `aarch64` → `arm64`, `armv7l`/`armv8l` → `arm`); die Signatur des Betreibers über `vordr/agent-manifest/v1\0` + Manifest mit den gespeicherten Schlüsseln; das Manifest so streng gelesen wie `VerifyManifest` des Agenten; Datei, SHA-256 und Grösse nur daraus; der Download-Pfad muss genau diese Datei öffnen; nicht älter als das neuste Release, das eine Installation dieses Eintrags genommen hat (gehalten in `.storage/vordr.agent_release.<entry_id>`, verglichen wie `NewerRelease` des Agenten) | die Codes der Leitstelle (`role_forbids` mit `vordr-hub client-role <client> --role admin`, `no_release`, `too_many_downloads`, …), `hub_refused`, `manifest_signature_invalid`, `manifest_invalid`, `no_binary_for_platform`, `release_too_old`, `download_invalid` |
-| Installation | als root, als eigener vorübergehender Dienst (`systemd-run --pipe --wait --collect`), ausserhalb der Anmeldesitzung; ein Skript: ein privater temporärer Ordner (`mktemp -d`, umask 077, abgelehnt, wenn daraus nichts laufen darf); Download über HTTPS von Host und Port der Integration, mit der CA der Leitstelle, falls sie eine hat, die URL aus einer Datei in diesem Ordner gelesen (`curl -K`, `wget -i`), begrenzt auf die signierte Grösse (`curl --max-filesize`, `ulimit -f` für beide) und in der Zeit (`curl --max-time 900`, `timeout 900 wget`); Grösse und SHA-256 verglichen, bevor etwas läuft; die CA der Leitstelle nach `/etc/vordr/hub-ca.pem` (verglichen, wenn sie schon da ist, nach einer Ablehnung wieder entfernt); `vordr-agent install --hub wss://<host>:<port>/v1/tunnel --hub-key <aus der Antwort> --operator-key … [--backup-operator-key] [--node] [--ca-file]`; der Ordner in jedem Fall per trap entfernt | `size_mismatch`, `hash_mismatch`, `download_failed`, `download_refused`, `download_too_large`, `ca_differs`, `ca_failed`, `temp_noexec`, `temp_failed`, `bad_input`; die Codes des Agenten als `agent_<code>`, andere als `agent_refused`/`agent_failed`; `agent_no_result`, `install_no_result`, `ssh_lost`, `ssh_timeout` |
-| Ende | die letzte Zeile des Agenten `result=installed node=<n> fingerprint=<hex>` | `agent_installed` mit Knoten, Fingerprint und Version; der Reparaturhinweis `waiting_<node>` nennt dann den Befehl zur Freigabe |
+| Installation (`install`, Fortschritt) | als root, als eigener vorübergehender Dienst (`systemd-run --pipe --wait --collect`), ausserhalb der Anmeldesitzung; ein Skript: ein privater temporärer Ordner (`mktemp -d`, umask 077, abgelehnt, wenn daraus nichts laufen darf); Download über HTTPS von Host und Port der Integration, mit der CA der Leitstelle, falls sie eine hat, die URL aus einer Datei in diesem Ordner gelesen (`curl -K`, `wget -i`), begrenzt auf die signierte Grösse (`curl --max-filesize`, `ulimit -f` für beide) und in der Zeit (`curl --max-time 900`, `timeout 900 wget`); Grösse und SHA-256 verglichen, bevor etwas läuft; die CA der Leitstelle nach `/etc/vordr/hub-ca.pem` (verglichen, wenn sie schon da ist, nach einer Ablehnung wieder entfernt); `vordr-agent install --hub wss://<host>:<port>/v1/tunnel --hub-key <aus der Antwort> --operator-key … [--backup-operator-key] [--node] [--ca-file]`; der Ordner in jedem Fall per trap entfernt | `size_mismatch`, `hash_mismatch`, `download_failed`, `download_refused`, `download_too_large`, `ca_differs`, `ca_failed`, `temp_noexec`, `temp_failed`, `bad_input`; die Codes des Agenten als `agent_<code>`, andere als `agent_refused`/`agent_failed`; `agent_no_result`, `install_no_result`, `ssh_lost`, `ssh_timeout` |
+| Ende (`result`) | die letzte Zeile des Agenten `result=installed node=<n> fingerprint=<hex>`; ein Abbruch, auch beim Erfolg: Kein Subentry wird gespeichert | `agent_installed` mit Knoten, Fingerprint und Version; der Reparaturhinweis `waiting_<node>` nennt dann den Befehl zur Freigabe, und nach der Freigabe ist der Host ein Gerät des Eintrags |
 
 - **Was vom Host gelesen wird:** nur `key=value`-Felder: die Zeilen der Erkundung, die eigene letzte Zeile des Skripts
   (`step=<step> code=<code>`) und nach `step=agent exit=<n>` die letzte Zeile des Agenten. Prosa wird nie gelesen;
@@ -464,7 +469,7 @@ Bedrohungsvergleich). Nur Linux mit systemd und apt.
 - **Grenze:** `custom_components/vordr/ssh.py` ist die einzige Stelle, die SSH spricht; sie bildet jeden Fehler nach
   seinem Typ auf einen Code ab, liest nichts aus `~/.ssh`, verwendet keinen SSH-Agenten und keine Standardschlüssel.
   `agent_install.py` enthält die reinen Teile (Prüfungen, Skripte, Lesen), `agent_installer.py` die Schritte und was
-  sie halten.
+  sie halten, `config_flow.py` den Subentry-Flow von „Host hinzufügen“.
 - **Der Client** behält die `features` des letzten Status der Leitstelle und sendet `agent_download` nur an eine
   Leitstelle, die es genannt hat ([ADR-0067](../docs/adr/0067-hub-announces-features.md)); die Antwort geht an den, der
   gefragt hat, nie an den Koordinator oder eine Entität.
@@ -629,7 +634,9 @@ gleich die Integration ein (`ha/README.de.md`).
 6. Einen Host aus Home Assistant einrichten: **einmal über SSH, Zugangsdaten nur im Speicher des Flows, das Release
    geprüft gegen den in Home Assistant eingegebenen Betreiberschlüssel und auf dem Host, bevor es läuft, Freigabe an
    der Leitstelle**
-   ([ADR-0161](../docs/adr/0161-home-assistant-installs-the-agent-once-over-ssh-and-keeps-no-credentials.md)).
+   ([ADR-0161](../docs/adr/0161-home-assistant-installs-the-agent-once-over-ssh-and-keeps-no-credentials.md));
+   **gestartet vom Knopf „Host hinzufügen“, der nichts speichert, auch keinen Subentry**
+   ([ADR-0185](../docs/adr/0185-the-agent-install-starts-from-an-add-host-button-and-stores-no-subentry.md)).
 7. Updates von Home Assistant selbst installieren: **nur eingeschaltet, aus einem Eintrag, mit Pause**
    ([ADR-0162](../docs/adr/0162-home-assistants-own-updates-install-only-when-switched-on-and-a-pause-holds-them.md)); **vor jedem ein Backup**, das eigene der Entität oder das automatische Backup von Home Assistant,
    höchstens 26 h alt ([ADR-0163](../docs/adr/0163-a-backup-before-every-automatic-home-assistant-update.md)); **eines nach dem anderen, Core, OS und Supervisor zuletzt, vor dem Handeln

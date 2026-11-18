@@ -44,10 +44,11 @@ vordr-hub approve-client <name> --fingerprint <fp>       # after comparing with 
 
 The short way to an agent on a new Linux host (systemd, apt) then starts in Home Assistant: with role `admin`
 (`vordr-hub client-role <name> --role admin`), a signed agent release on the hub (below, "Signing agent releases") and
-the operator key entered in the integration's options, *Configure → Install the agent on a Linux host (SSH)* reaches
-the host once over SSH, checks the release and runs `vordr-agent install` there; nothing of the SSH access is stored
-([ha/README.md](../ha/README.md),
-[ADR-0161](../docs/adr/0161-home-assistant-installs-the-agent-once-over-ssh-and-keeps-no-credentials.md)). The host
+the operator key entered in the integration's options (*Configure → Operator keys*), the button *Add host* on the
+integration's page reaches the host once over SSH, checks the release and runs `vordr-agent install` there; nothing of
+the SSH access is stored, and the host is not stored in Home Assistant either ([ha/README.md](../ha/README.md),
+[ADR-0161](../docs/adr/0161-home-assistant-installs-the-agent-once-over-ssh-and-keeps-no-credentials.md),
+[ADR-0185](../docs/adr/0185-the-agent-install-starts-from-an-add-host-button-and-stores-no-subentry.md)). The host
 then waits for approval at the hub, as below.
 
 ## Agent

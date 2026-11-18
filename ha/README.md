@@ -131,7 +131,9 @@ sensor works without the hub.
 
 Home Assistant can set up a new host itself: it reaches it once over SSH, has it fetch the signed agent release from
 the hub, checks it, and runs `vordr-agent install` there. Nothing of the SSH access is stored
-([ADR-0161](../docs/adr/0161-home-assistant-installs-the-agent-once-over-ssh-and-keeps-no-credentials.md)). For
+([ADR-0161](../docs/adr/0161-home-assistant-installs-the-agent-once-over-ssh-and-keeps-no-credentials.md)), and
+neither is the host: the hub keeps the list of hosts, and the host shows in Home Assistant once it is approved there
+([ADR-0185](../docs/adr/0185-the-agent-install-starts-from-an-add-host-button-and-stores-no-subentry.md)). For
 Linux with systemd and apt (Debian, Ubuntu, Raspberry Pi OS) on x86_64, aarch64 or armv7.
 
 What it needs:
@@ -145,7 +147,10 @@ What it needs:
 - on the host: SSH, `root` or a user with `sudo`, `curl` or `wget`, and the hub reachable at the address this
   integration uses.
 
-Then *Configure → Install the agent on a Linux host (SSH)*:
+Then press *Add host* on the integration's page (*Settings → Devices & services → Vördr*; with several hubs, at the
+entry of the hub the host should join). If something it needs is missing, the dialog says what before it asks for
+anything: the integration not running, no operator key, the hub not connected or not handing out the release, the SSH
+library missing. Otherwise:
 
 1. host, SSH port, user and node name (empty: the host's own name);
 2. the host key the server presents: compare it with the host's own on its console
@@ -161,8 +166,9 @@ Then *Configure → Install the agent on a Linux host (SSH)*:
    every case.
 
 At the end the dialog shows the agent's fingerprint. The host now waits for approval at the hub; as soon as the hub
-lists it, the repair "Host … waits for approval" shows the command. Compare the fingerprint, then approve at the hub.
-Every other end names what happened on the host and what to do next. A host with a policy of its own is still set up
+lists it, the repair "Host … waits for approval" shows the command. Compare the fingerprint, then approve at the hub;
+the host then shows as a device of the integration. The button stores no entry of its own for the host, so the
+integration's page lists none. Every other end names what happened on the host and what to do next. A host with a policy of its own is still set up
 by hand (`deploy/README.md`); the agent installed this way checks and reports, and installs nothing until its
 `agent.yaml` allows it.
 

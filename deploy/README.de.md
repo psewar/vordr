@@ -44,10 +44,12 @@ vordr-hub approve-client <name> --fingerprint <fp>       # nach Abgleich mit dem
 
 Der kurze Weg zu einem Agenten auf einem neuen Linux-Host (systemd, apt) beginnt dann in Home Assistant: Mit der Rolle
 `admin` (`vordr-hub client-role <name> --role admin`), einem signierten Agenten-Release auf der Leitstelle (unten,
-„Agent-Releases signieren“) und dem in den Optionen der Integration eingegebenen Betreiberschlüssel erreicht
-*Konfigurieren → Agent auf einem Linux-Host installieren (SSH)* den Host einmal über SSH, prüft das Release und führt
-dort `vordr-agent install` aus; vom SSH-Zugang wird nichts gespeichert ([ha/README.de.md](../ha/README.de.md),
-[ADR-0161](../docs/adr/0161-home-assistant-installs-the-agent-once-over-ssh-and-keeps-no-credentials.md)). Danach
+„Agent-Releases signieren“) und dem in den Optionen der Integration eingegebenen Betreiberschlüssel (*Konfigurieren →
+Betreiberschlüssel*) erreicht der Knopf *Host hinzufügen* auf der Seite der Integration den Host einmal über SSH, prüft
+das Release und führt dort `vordr-agent install` aus; vom SSH-Zugang wird nichts gespeichert, und auch der Host wird in
+Home Assistant nicht gespeichert ([ha/README.de.md](../ha/README.de.md),
+[ADR-0161](../docs/adr/0161-home-assistant-installs-the-agent-once-over-ssh-and-keeps-no-credentials.md),
+[ADR-0185](../docs/adr/0185-the-agent-install-starts-from-an-add-host-button-and-stores-no-subentry.md)). Danach
 wartet der Host wie unten auf die Freigabe an der Leitstelle.
 
 ## Agent

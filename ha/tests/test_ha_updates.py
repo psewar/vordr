@@ -436,7 +436,7 @@ async def test_invalid_stored_options_allow_nothing(
 async def start_options(hass: HomeAssistant, entry: MockConfigEntry) -> dict[str, Any]:
     result = await hass.config_entries.options.async_init(entry.entry_id)
     assert result["type"] is FlowResultType.MENU
-    assert result["menu_options"] == ["ha_updates", "operator_keys", "install_agent", "ai_explanations"]
+    assert result["menu_options"] == ["ha_updates", "operator_keys", "ai_explanations"]
     return await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "ha_updates"})
 
 

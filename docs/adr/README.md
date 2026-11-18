@@ -218,4 +218,5 @@ Generated from the files by `python3 docs/adr/check_index.py --write`. `build.sh
 | [0182](0182-the-repairs-fix-installs-a-failed-home-assistant-update-at-once.md) | The repair's fix installs a failed Home Assistant update at once | accepted | 2026-11-17 |
 | [0183](0183-device-firmware-and-the-radio-adapter-get-two-hours-to-report-their-version.md) | Device firmware and the radio adapter get two hours to report their version | accepted | 2026-11-17 |
 | [0184](0184-with-ai-explanations-off-nothing-is-sent-and-no-event-is-fired.md) | With AI explanations off, nothing is sent and no event is fired | accepted | 2026-11-17 |
+| [0185](0185-the-agent-install-starts-from-an-add-host-button-and-stores-no-subentry.md) | The agent install starts from an "Add host" button and stores no subentry | proposed | 2026-11-18 |
 <!-- adr-index:end -->

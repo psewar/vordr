@@ -32,8 +32,8 @@ an approved client and creates one device per host, with its update sources and 
 - Home Assistant's own updates (Core, OS, apps, HACS, ESPHome, device firmware) under Vördr's rules – allowed kinds,
   window, minimum age, major versions by hand – installed once you switch it on: one at a time, Core, OS and
   Supervisor last, each with a backup, checked by the version it reaches, a failure kept as a repair.
-- A new Linux host set up from Home Assistant: once over SSH, the signed agent release checked before it runs, nothing
-  of the SSH access stored; the host then waits for approval at the hub.
+- A new Linux host set up from Home Assistant with the button "Add host": once over SSH, the signed agent release
+  checked before it runs, nothing of the SSH access stored; the host then waits for approval at the hub.
 - Optionally, a failed run explained by an AI Task entity of Home Assistant: a short text, a cause and next steps from
   fixed lists, and a quote checked against the log; host names and addresses replaced before sending, advice only.
 

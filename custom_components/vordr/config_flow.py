@@ -1,7 +1,8 @@
 """Config flow: address of the hub, own key, wait until the operator admits this client at the hub. Options flow: a
 menu of the integration's settings: the rules for Home Assistant's own updates (ADR-0158) and whether Vördr installs
-them (ADR-0162), the operator keys, installing the agent on a new Linux host over SSH (ADR-0161), and the optional AI
-explanations of failed runs (ADR-0166)."""
+them (ADR-0162), the operator keys (ADR-0161), and the optional AI explanations of failed runs (ADR-0166). Subentry
+flow "Add host": installing the agent on a new Linux host over SSH (ADR-0161), a button on the integration's page that
+stores nothing (ADR-0185)."""
 
 from __future__ import annotations
 
@@ -12,7 +13,14 @@ from types import ModuleType
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.update import DOMAIN as UPDATE_DOMAIN
-from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult, OptionsFlow
+from homeassistant.config_entries import (
+    ConfigEntry,
+    ConfigFlow,
+    ConfigFlowResult,
+    ConfigSubentryFlow,
+    OptionsFlow,
+    SubentryFlowResult,
+)
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.importlib import async_import_module
@@ -104,6 +112,13 @@ class VordrConfigFlow(ConfigFlow, domain=DOMAIN):
     @callback
     def async_get_options_flow(config_entry: ConfigEntry) -> VordrOptionsFlow:
         return VordrOptionsFlow()
+
+    @classmethod
+    @callback
+    def async_get_supported_subentry_types(cls, config_entry: ConfigEntry) -> dict[str, type[ConfigSubentryFlow]]:
+        """The button "Add host" on the integration's page (ADR-0185). Offered for every entry: whether it can run now
+        is what its first step checks and says."""
+        return {HOST_SUBENTRY: AddHostFlow}
 
     def __init__(self) -> None:
         self._data: dict[str, Any] = {}
@@ -201,10 +216,12 @@ class VordrConfigFlow(ConfigFlow, domain=DOMAIN):
 
 _REJECT_REASONS = {"key_mismatch", "too_many_pending", "rejected", "protocol_mismatch", "bad_hello"}
 
-# The items of the options menu; each that has options keeps them under its own key of the entry's options. The install
-# has none: it stores nothing.
-INSTALL_STEP = "install_agent"
-OPTIONS_MENU = [hu.OPTIONS_KEY, ai.OPTIONS_KEY, INSTALL_STEP, ax.OPTIONS_KEY]
+# The items of the options menu, the integration's settings; each keeps its options under its own key of the entry's
+# options. Installing the agent is no setting: it is the button "Add host" (ADR-0185).
+OPTIONS_MENU = [hu.OPTIONS_KEY, ai.OPTIONS_KEY, ax.OPTIONS_KEY]
+# The subentry type behind the button "Add host". No subentry of it is ever stored: the hub's registry is the one list
+# of hosts (ADR-0185).
+HOST_SUBENTRY = "host"
 
 
 def _secret(key: str, required: bool = False) -> tuple[vol.Marker, TextSelector]:
@@ -217,9 +234,9 @@ SSH_LIBRARY = "asyncssh"
 
 
 async def _agent_installer(hass: HomeAssistant) -> ModuleType | None:
-    """The install over SSH, imported when its item is opened, not when the integration loads (outside the event loop:
-    it brings asyncssh). None when the SSH library is not installed: everything else of the integration works without
-    it, and the item says why it cannot run."""
+    """The install over SSH, imported when "Add host" is opened, not when the integration loads (outside the event
+    loop: it brings asyncssh). None when the SSH library is not installed: everything else of the integration works
+    without it, and "Add host" says why it cannot run."""
     if await hass.async_add_executor_job(importlib.util.find_spec, SSH_LIBRARY) is None:
         return None
     return await async_import_module(hass, f"{__package__}.agent_installer")
@@ -228,19 +245,6 @@ async def _agent_installer(hass: HomeAssistant) -> ModuleType | None:
 class VordrOptionsFlow(OptionsFlow):
     """The integration's settings as a menu; only Home Assistant's administrators reach it. Saving one item keeps the
     options of the others."""
-
-    def __init__(self) -> None:
-        self._install: AgentInstall | None = None
-        self._task: asyncio.Task[ai.Outcome] | None = None
-
-    @callback
-    def async_remove(self) -> None:
-        """The flow ended in any way: done, aborted, or the dialog closed. Credentials, the connection and the download
-        token go with it (ADR-0161); a login under way stops at once and starts nothing, a running install task is
-        cancelled by the flow manager and closes its end."""
-        if self._install is not None:
-            self._install.clear()
-        self._install = None
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         return self.async_show_menu(step_id="init", menu_options=OPTIONS_MENU)
@@ -296,109 +300,6 @@ class VordrOptionsFlow(OptionsFlow):
             }
         )
         return self.async_show_form(step_id=ax.OPTIONS_KEY, data_schema=schema, errors=errors)
-
-    # --- install the agent on a host over SSH (ADR-0161)
-
-    async def async_step_install_agent(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        """Host, port, user and node: nothing secret yet. Fetches the host key without logging in."""
-        if self._install is None:
-            if (installer := await _agent_installer(self.hass)) is None:
-                return self.async_abort(reason="install_needs_ssh_library")
-            self._install = installer.AgentInstall(self.hass, self.config_entry)
-        if (reason := self._install.precondition()) is not None:
-            return self.async_abort(reason=reason)
-        errors: dict[str, str] = {}
-        if user_input is not None:
-            target, errors = ai.check_target(user_input)
-            if target is not None:
-                code = await self._install.fetch_host_key(target)
-                if code == ai.OK:
-                    return await self.async_step_install_host_key()
-                errors["base"] = code
-        shown = user_input or {}
-        schema = vol.Schema(
-            {
-                vol.Required(ai.CONF_HOST, default=str(shown.get(ai.CONF_HOST, ""))): str,
-                vol.Required(ai.CONF_PORT, default=shown.get(ai.CONF_PORT, ai.DEFAULT_PORT)): NumberSelector(
-                    NumberSelectorConfig(min=1, max=65535, step=1, mode=NumberSelectorMode.BOX)
-                ),
-                vol.Required(ai.CONF_USERNAME, default=str(shown.get(ai.CONF_USERNAME, ai.DEFAULT_USERNAME))): str,
-                vol.Optional(ai.CONF_NODE, default=str(shown.get(ai.CONF_NODE, ""))): str,
-            }
-        )
-        return self.async_show_form(step_id=INSTALL_STEP, data_schema=schema, errors=errors)
-
-    async def async_step_install_host_key(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        """The host key as the server presented it: the person compares it with the host's own before anything secret
-        is entered. Nothing is written to a known_hosts file; the login accepts only this key."""
-        assert self._install is not None
-        return self.async_show_menu(
-            step_id="install_host_key",
-            menu_options=["install_login", "install_host_key_rejected"],
-            description_placeholders=self._install.host_key_names(),
-        )
-
-    async def async_step_install_host_key_rejected(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        assert self._install is not None
-        reason = "host_key_rejected"
-        return self.async_abort(reason=reason, description_placeholders=self._install.names(reason))
-
-    async def async_step_install_login(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        """The credentials: used for this login and the install, kept nowhere."""
-        install = self._install
-        assert install is not None and install.target is not None
-        errors: dict[str, str] = {}
-        if user_input is not None:
-            creds, errors = ai.check_credentials(user_input)
-            if creds is not None:
-                code, names = await install.login(creds)
-                creds.clear()
-                if install.ended:
-                    # The dialog was closed while logging in (login answered install_cancelled): the flow is gone and
-                    # its connection closed; nothing starts. Home Assistant takes an abort from a removed flow.
-                    return self.async_abort(reason="install_cancelled")
-                if code == ai.OK:
-                    self._task = self.hass.async_create_task(install.install(), "vordr agent install")
-                    return await self.async_step_install_run()
-                if code not in ai.LOGIN_FORM_ERRORS:
-                    return self.async_abort(reason=code, description_placeholders=install.names(code, names))
-                errors[ai.LOGIN_FORM_ERRORS[code]] = code
-        schema = vol.Schema(
-            dict(
-                [
-                    _secret(ai.CONF_PASSWORD),
-                    (vol.Optional(ai.CONF_SSH_KEY), TextSelector(TextSelectorConfig(multiline=True))),
-                    _secret(ai.CONF_SSH_KEY_PASSPHRASE),
-                    _secret(ai.CONF_SUDO_PASSWORD),
-                ]
-            )
-        )
-        return self.async_show_form(
-            step_id="install_login",
-            data_schema=schema,
-            errors=errors,
-            description_placeholders={"host": install.target.host, "username": install.target.username},
-        )
-
-    async def async_step_install_run(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        assert self._task is not None and self._install is not None and self._install.target is not None
-        if not self._task.done():
-            return self.async_show_progress(
-                step_id="install_run",
-                progress_action="install_run",
-                progress_task=self._task,
-                description_placeholders={"host": self._install.target.host},
-            )
-        return self.async_show_progress_done(next_step_id="install_result")
-
-    async def async_step_install_result(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        """The end: on success the fingerprint and that the host waits for approval at the hub; otherwise the code's
-        text with the next step. Ends the flow, which drops what it held."""
-        assert self._task is not None and self._install is not None
-        outcome = self._task.result()
-        return self.async_abort(
-            reason=outcome.code, description_placeholders=self._install.names(outcome.code, outcome.names)
-        )
 
     async def async_step_ha_updates(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Home Assistant's own updates (ADR-0158): what Vördr's rules allow, the window, the minimum age, and whether
@@ -476,4 +377,134 @@ class VordrOptionsFlow(OptionsFlow):
                 ),
                 vol.Required(hu.CONF_AUTO_INSTALL, default=shown.get(hu.CONF_AUTO_INSTALL, False)): BooleanSelector(),
             }
+        )
+
+
+class AddHostFlow(ConfigSubentryFlow):
+    """The button "Add host": installs the agent on a new Linux host once over SSH (ADR-0161). Only Home Assistant's
+    administrators reach it. It ends with an abort whose text says how it went, the fingerprint on success, and stores
+    nothing, not even a subentry: the hub's registry stays the one list of hosts, and the new host waits there for
+    approval (ADR-0185)."""
+
+    def __init__(self) -> None:
+        self._install: AgentInstall | None = None
+        self._task: asyncio.Task[ai.Outcome] | None = None
+
+    @callback
+    def async_remove(self) -> None:
+        """The flow ended in any way: done, aborted, or the dialog closed. Credentials, the connection and the download
+        token go with it (ADR-0161); a login under way stops at once and starts nothing, a running install task is
+        cancelled by the flow manager and closes its end."""
+        if self._install is not None:
+            self._install.clear()
+        self._install = None
+
+    async def async_step_user(self, user_input: dict[str, Any] | None = None) -> SubentryFlowResult:
+        """Host, port, user and node: nothing secret yet. First what "Add host" needs, each missing piece with its own
+        text; then the host key, fetched without logging in."""
+        entry = self._get_entry()
+        if self._install is None:
+            if (installer := await _agent_installer(self.hass)) is None:
+                return self.async_abort(reason="install_needs_ssh_library")
+            self._install = installer.AgentInstall(self.hass, entry)
+        if (reason := self._install.precondition()) is not None:
+            return self.async_abort(reason=reason)
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            target, errors = ai.check_target(user_input)
+            if target is not None:
+                code = await self._install.fetch_host_key(target)
+                if code == ai.OK:
+                    return await self.async_step_host_key()
+                errors["base"] = code
+        shown = user_input or {}
+        schema = vol.Schema(
+            {
+                vol.Required(ai.CONF_HOST, default=str(shown.get(ai.CONF_HOST, ""))): str,
+                vol.Required(ai.CONF_PORT, default=shown.get(ai.CONF_PORT, ai.DEFAULT_PORT)): NumberSelector(
+                    NumberSelectorConfig(min=1, max=65535, step=1, mode=NumberSelectorMode.BOX)
+                ),
+                vol.Required(ai.CONF_USERNAME, default=str(shown.get(ai.CONF_USERNAME, ai.DEFAULT_USERNAME))): str,
+                vol.Optional(ai.CONF_NODE, default=str(shown.get(ai.CONF_NODE, ""))): str,
+            }
+        )
+        return self.async_show_form(
+            step_id="user",
+            data_schema=schema,
+            errors=errors,
+            # The role the hub asks for: the hub does not tell a client its role, so the text names it (ADR-0185).
+            description_placeholders={"client": entry.data[CONF_NAME]},
+        )
+
+    async def async_step_host_key(self, user_input: dict[str, Any] | None = None) -> SubentryFlowResult:
+        """The host key as the server presented it: the person compares it with the host's own before anything secret
+        is entered. Nothing is written to a known_hosts file; the login accepts only this key."""
+        assert self._install is not None
+        return self.async_show_menu(
+            step_id="host_key",
+            menu_options=["login", "host_key_rejected"],
+            description_placeholders=self._install.host_key_names(),
+        )
+
+    async def async_step_host_key_rejected(self, user_input: dict[str, Any] | None = None) -> SubentryFlowResult:
+        assert self._install is not None
+        reason = "host_key_rejected"
+        return self.async_abort(reason=reason, description_placeholders=self._install.names(reason))
+
+    async def async_step_login(self, user_input: dict[str, Any] | None = None) -> SubentryFlowResult:
+        """The credentials: used for this login and the install, kept nowhere."""
+        install = self._install
+        assert install is not None and install.target is not None
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            creds, errors = ai.check_credentials(user_input)
+            if creds is not None:
+                code, names = await install.login(creds)
+                creds.clear()
+                if install.ended:
+                    # The dialog was closed while logging in (login answered install_cancelled): the flow is gone and
+                    # its connection closed; nothing starts. Home Assistant takes an abort from a removed flow.
+                    return self.async_abort(reason="install_cancelled")
+                if code == ai.OK:
+                    self._task = self.hass.async_create_task(install.install(), "vordr agent install")
+                    return await self.async_step_install()
+                if code not in ai.LOGIN_FORM_ERRORS:
+                    return self.async_abort(reason=code, description_placeholders=install.names(code, names))
+                errors[ai.LOGIN_FORM_ERRORS[code]] = code
+        schema = vol.Schema(
+            dict(
+                [
+                    _secret(ai.CONF_PASSWORD),
+                    (vol.Optional(ai.CONF_SSH_KEY), TextSelector(TextSelectorConfig(multiline=True))),
+                    _secret(ai.CONF_SSH_KEY_PASSPHRASE),
+                    _secret(ai.CONF_SUDO_PASSWORD),
+                ]
+            )
+        )
+        return self.async_show_form(
+            step_id="login",
+            data_schema=schema,
+            errors=errors,
+            description_placeholders={"host": install.target.host, "username": install.target.username},
+        )
+
+    async def async_step_install(self, user_input: dict[str, Any] | None = None) -> SubentryFlowResult:
+        assert self._task is not None and self._install is not None and self._install.target is not None
+        if not self._task.done():
+            return self.async_show_progress(
+                step_id="install",
+                progress_action="install",
+                progress_task=self._task,
+                description_placeholders={"host": self._install.target.host},
+            )
+        return self.async_show_progress_done(next_step_id="result")
+
+    async def async_step_result(self, user_input: dict[str, Any] | None = None) -> SubentryFlowResult:
+        """The end: on success the fingerprint and that the host waits for approval at the hub; otherwise the code's
+        text with the next step. An abort, not a created subentry, also on success: nothing is stored (ADR-0185). Ends
+        the flow, which drops what it held."""
+        assert self._task is not None and self._install is not None
+        outcome = self._task.result()
+        return self.async_abort(
+            reason=outcome.code, description_placeholders=self._install.names(outcome.code, outcome.names)
         )
