@@ -1,5 +1,5 @@
 """Installing the agent on a new Linux host over SSH from the button "Add host" (ADR-0161, ADR-0185): the steps and
-what they hold.
+what they hold, and the approval of the new host right after it where the hub allows it (ADR-0192).
 
 The credentials, the open connection and the hub's single-use download token live only in an AgentInstall, in the
 flow's memory. clear() drops them and ends the install; the flow calls it however it ends (done, aborted, the dialog
@@ -14,6 +14,7 @@ opened.
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.config_entries import ConfigEntry, ConfigEntryState
@@ -22,6 +23,7 @@ from homeassistant.helpers.storage import Store
 
 from . import agent_install as ai, ssh
 from .const import CONF_CA_PEM, CONF_NAME, CONF_URL
+from .coordinator import waiting_hosts
 
 if TYPE_CHECKING:
     from .coordinator import VordrCoordinator
@@ -32,6 +34,10 @@ SUDO_TIMEOUT = 30.0
 # installs.
 INSTALL_TIMEOUT = 1200.0
 RELEASE_STORE_VERSION = 1
+# ADR-0192: after the install, while the hub lets this Home Assistant approve hosts, how long "Add host" waits for the
+# hub to list the new host as waiting, and how often it looks at the hub's view in the meantime.
+APPROVE_WAIT = 60.0
+APPROVE_POLL = 1.0
 
 # The hub's answers that have their own text (ai.ABORTS); any other shows as hub_refused with its code.
 HUB_ANSWERS = {*ai.HUB_CODES, "hub_not_connected", "hub_without_download", "no_answer"}
@@ -146,13 +152,17 @@ class AgentInstall:
     # --- the install
 
     async def install(self) -> ai.Outcome:
-        """Ask the hub for the release, check it, install on the host. The connection and every secret go at the end,
-        however it ends (also when the flow is closed and this task cancelled)."""
+        """Ask the hub for the release, check it, install on the host, and approve the new host where the hub lets this
+        Home Assistant do so. The connection and every secret go once the install ended, however it ends (also when
+        the flow is closed and this task cancelled), before the approval waits for the hub."""
         try:
-            return await self._install()
+            done = await self._install()
         finally:
             await ssh.close(self._conn)
             self.clear()
+        if not done.installed:
+            return done
+        return await self._approve(done)
 
     async def _install(self) -> ai.Outcome:
         if self.ended:
@@ -192,6 +202,40 @@ class AgentInstall:
         if ran.code != ssh.OK:
             return ai.Outcome(ran.code)
         return ai.outcome(ran.stdout, release.version)
+
+    # --- the approval (ADR-0192)
+
+    def _coordinator(self) -> VordrCoordinator | None:
+        if self.entry.state is not ConfigEntryState.LOADED:
+            return None
+        return self.entry.runtime_data
+
+    async def _approve(self, installed: ai.Outcome) -> ai.Outcome:
+        """While the hub lets this Home Assistant approve hosts, wait up to APPROVE_WAIT for the hub to list the new
+        host as waiting with exactly the fingerprint the install read on the host, then approve it. The person confirmed
+        the host's SSH key in this flow, so that fingerprint came over a checked connection: the comparison the person
+        would make is made by construction. Without the hub's permission, or when the host does not show up in time,
+        the outcome stays agent_installed and the waiting repair remains; a refusal of the hub says its code. Where the
+        person named the node, only that node is approved: an agent that reports another one is left to the repair,
+        without waiting."""
+        node, fingerprint = installed.names["node"], installed.names["fingerprint"]
+        if self.target is not None and self.target.node and self.target.node != node:
+            return installed
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + APPROVE_WAIT
+        while True:
+            coordinator = self._coordinator()
+            if coordinator is None or not coordinator.client.offers_host_approval:
+                return installed
+            if (waiting_hosts(coordinator.data.hub).get(node) or {}).get("fingerprint") == fingerprint:
+                break
+            if loop.time() >= deadline:
+                return installed
+            await asyncio.sleep(APPROVE_POLL)
+        code = await coordinator.client.approve_host(node, fingerprint)
+        if code == ai.OK:
+            return ai.Outcome("agent_installed_approved", installed.names)
+        return ai.Outcome("agent_installed_not_approved", {**installed.names, "code": ai.shown(code)})
 
     # --- texts and the end
 

@@ -72,7 +72,8 @@ Nicht-Ziele ([ADR-0013](../docs/adr/0013-scope-limits.md)):
 4. **Kleinste Angriffsfläche.** Geschlossene Verbmenge, keine Shell, keine Paketnamen von aussen, keine Weboberfläche
    in der Leitstelle. Agenten sprechen nur mit der Leitstelle, nie mit Home Assistant
    ([ADR-0005](../docs/adr/0005-closed-verbs-without-shell.md),
-   [ADR-0010](../docs/adr/0010-administration-only-local.md), [ADR-0023](../docs/adr/0023-own-ha-integration.md)).
+   [ADR-0010](../docs/adr/0010-administration-only-local.md), [ADR-0023](../docs/adr/0023-own-ha-integration.md),
+   [ADR-0192](../docs/adr/0192-an-admin-home-assistant-may-approve-a-waiting-host-when-the-hub-allows-it.md)).
 5. **Nur Entitäten, die hier etwas bedeuten**, und gelöscht wird nur auf eine sichere Auskunft hin (Lehre aus
    dem Vorbild-Projekt: sonst flackern Entitäten bei jedem Neustart).
 6. **Sonderfälle nur ausdrücklich und mit Grund**, der im Protokoll und in HA sichtbar bleibt (z. B. ein Lauf
@@ -149,7 +150,7 @@ TLS sichert die Vertraulichkeit. Das Vertrauen in Aufträge und Binaries hängt 
 |---|---|---|
 | einen Host übernommen | dessen Zustand fälschen | andere Hosts beeinflussen, Aufträge erzeugen |
 | den Hub übernommen | den Bestand lesen; erlaubte Aufträge auslösen, mit einem Grund auch ausserhalb des Fensters (ADR-0087); die HA-Anzeige fälschen | Befehle oder Code auf Hosts bringen, Pakete wählen, Umfang erweitern, Neustartverbot oder Mindestabstand umgehen, Agent-Binaries tauschen |
-| ein freigegebenes Home Assistant | Prüfen und Installieren anstossen, mit Grund auch ausserhalb des Fensters, mit Rolle `admin` auch Neustarts (12) – über den Hub, also innerhalb der Richtlinien; mit Rolle `admin` die signierte Agent-Release für einen neuen Host holen, höchstens 4 Einmal-Downloads je 15 Minuten (10.4) | mehr als der Hub; einen Host neu starten, der es nicht braucht, erneut nach einem Neustart, der nicht gewirkt hat (ADR-0153), ausserhalb eines Fensters, das der Host geschlossen hält (ADR-0154), oder solange seine Leerlauf-Prüfung „beschäftigt“ sagt (ADR-0155) |
+| ein freigegebenes Home Assistant | Prüfen und Installieren anstossen, mit Grund auch ausserhalb des Fensters, mit Rolle `admin` auch Neustarts (12) – über den Hub, also innerhalb der Richtlinien; mit Rolle `admin` die signierte Agent-Release für einen neuen Host holen, höchstens 4 Einmal-Downloads je 15 Minuten (10.4); wo `hub.yaml` `ha_approves_hosts` setzt, mit Rolle `admin` einen wartenden Host mit dem Fingerprint freigeben, den der Hub führt (10.1) | mehr als der Hub; eine Ablehnung aufheben, einen Host ablehnen oder vergessen, den Namen eines bekannten Hosts mit einem anderen Schlüssel übernehmen; einen Host neu starten, der es nicht braucht, erneut nach einem Neustart, der nicht gewirkt hat (ADR-0153), ausserhalb eines Fensters, das der Host geschlossen hält (ADR-0154), oder solange seine Leerlauf-Prüfung „beschäftigt“ sagt (ADR-0155) |
 | das Netz (mitlesen, umlenken) | Verbindungen stören | Aufträge fälschen (Hub-Signatur), Binaries unterschieben (Betreiber-Signatur und SHA-256) |
 | den Betreiber-Schlüssel | Code auf alle Agenten bringen | – darum nie auf dem Hub; Rotation über einen neuen öffentlichen Schlüssel in der Agent-Konfiguration |
 
@@ -587,9 +588,16 @@ automatisches Installieren, nur `check`. `vordr-agent check-config` prüft die D
 1. Beim ersten Start erzeugt der Agent seine Identität, verbindet sich, prüft die Signatur der Leitstelle auf der
    Challenge gegen `hub.public_key` (6.2), signiert die Challenge und schickt `hello`.
 2. Der Hub legt den Host als `pending_approval` an; HA zeigt ihn unter „Wartende Freigaben“ mit Fingerprint.
-3. Freigegeben wird nur am Hub selbst: `vordr-hub approve <node> --fingerprint <fp>`, nach Abgleich mit
-   `vordr-agent identity` am Host. HA kann keine Hosts zulassen
-   ([ADR-0010](../docs/adr/0010-administration-only-local.md)).
+3. Freigegeben wird am Hub: `vordr-hub approve <node> --fingerprint <fp>`, nach Abgleich mit
+   `vordr-agent identity` am Host ([ADR-0010](../docs/adr/0010-administration-only-local.md)). Wo `hub.yaml`
+   `ha_approves_hosts` setzt (Standard `false`), darf auch ein Home-Assistant-Client mit Rolle `admin` einen wartenden
+   Host freigeben (`approve_host`, [ha-integration.de.md](ha-integration.de.md), Abschnitt 5): aus dem
+   Reparaturhinweis des Hosts mit dem Fingerprint, den `vordr-agent identity` ausgegeben hat, oder in „Host
+   hinzufügen“ gleich nach der Installation mit dem Fingerprint, der über die SSH-Verbindung gelesen wurde, deren
+   Host-Schlüssel die Person bestätigt hat. Der Hub gibt nur einen Knoten frei, der wartet, mit dem Fingerprint, den er
+   für dessen Schlüssel führt, entschieden unter der Sperre des Registers; ein abgelehnter Host bleibt abgelehnt. Das
+   Ereignisprotokoll nennt den Client (`approve`, `approve_refused` mit seinem Code). Ablehnen und Vergessen bleiben am
+   Hub ([ADR-0192](../docs/adr/0192-an-admin-home-assistant-may-approve-a-waiting-host-when-the-hub-allows-it.md)).
 4. Erst danach entstehen die HA-Entitäten, und der Hub nimmt Meldungen an.
 
 Vor Schritt 1 kommt der Agent auf den Host. Unter Linux erledigt das `vordr-agent install` allein aus der Binary
@@ -1878,7 +1886,9 @@ Aktualisieren von Compose-Diensten auf den Neubau ihres Tags per Knopf
   events`, für Home-Assistant-Clients (eigenes Register `clients.json`) `clients | approve-client <name> --fingerprint
   <fp> | reject-client <name> | forget-client <name> | client-role <name> --role <rolle>`. Ohne Socket: `key`,
   `check-config`, `version`. Noch nicht gebaut: ein Befehl für die Ringe (`rings`)
-  ([ADR-0010](../docs/adr/0010-administration-only-local.md)).
+  ([ADR-0010](../docs/adr/0010-administration-only-local.md)). Die eine Ausnahme: Wo `hub.yaml` `ha_approves_hosts`
+  setzt, darf ein Home-Assistant-Client mit Rolle `admin` auch einen wartenden Host freigeben (10.1,
+  [ADR-0192](../docs/adr/0192-an-admin-home-assistant-may-approve-a-waiting-host-when-the-hub-allows-it.md)).
 - **Beenden** (SIGTERM): Die Leitstelle nimmt nichts Neues mehr an, schliesst die Verbindungen der Agents und
   Home-Assistant-Clients und wartet bis zu 10 s, bis fertig ist, was sie angestossen haben (eine Meldung, die gerade
   gespeichert wird, das Ergebnis eines Jobs). Das Warten auf Job-Ergebnisse endet dabei mit `hub_stopping`, ohne
@@ -1936,7 +1946,10 @@ Aktualisieren von Compose-Diensten auf den Neubau ihres Tags per Knopf
   - `observe`: nur Sichten.
   - `operate`: Prüfen, Installieren, Agent-Update. Das ist der Standard.
   - `admin`: zusätzlich Neustart, und die Agent-Release für einen neuen Host (`agent_download`, 10.4,
-    [ADR-0167](../docs/adr/0167-home-assistant-gets-one-time-downloads-of-the-signed-agent-release.md)).
+    [ADR-0167](../docs/adr/0167-home-assistant-gets-one-time-downloads-of-the-signed-agent-release.md)); wo `hub.yaml`
+    `ha_approves_hosts` setzt, auch das Freigeben eines wartenden Hosts (`approve_host`, 10.1,
+    [ADR-0192](../docs/adr/0192-an-admin-home-assistant-may-approve-a-waiting-host-when-the-hub-allows-it.md)). Ein
+    Rollenwechsel schickt einem verbundenen Client seinen Status erneut, damit das Merkmal sofort kommt oder geht.
 
   Die Richtlinie des Hosts hat ohnehin das letzte Wort. Die Rolle begrenzt, was ein übernommenes Home Assistant
   die Leitstelle signieren lassen kann. Eine Ablehnung heisst `role_forbids`, HA zeigt dafür einen eigenen Text.

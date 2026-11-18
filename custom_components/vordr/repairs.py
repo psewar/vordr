@@ -1,16 +1,20 @@
 """Repairs with a fix: the reboot a host needs (ADR-0132), installing again after a kept failed install (ADR-0148),
-and installing one of Home Assistant's own updates again, at once, after its install failed (ADR-0165, ADR-0182)."""
+installing one of Home Assistant's own updates again, at once, after its install failed (ADR-0165, ADR-0182), and
+approving a waiting host where the hub allows it (ADR-0192)."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 from homeassistant.components.repairs import RepairsFlow
 from homeassistant.config_entries import ConfigEntryState
 import voluptuous as vol
 
+from .client import CODE_HUB_NOT_CONNECTED, CODE_HUB_WITHOUT_APPROVAL
 from .coordinator import (
+    APPROVE_HOST_KIND,
     BACKUP_REFUSALS,
+    FINGERPRINT_PATTERN,
     VordrCoordinator,
     failed_install,
     failed_install_names,
@@ -18,6 +22,7 @@ from .coordinator import (
     reboot_held,
     reboot_required,
     refusal,
+    waiting_hosts,
 )
 from .ha_updates_installer import FIX_KIND, STARTED, HaUpdatesInstaller, failure_names
 from .texts import can_reboot
@@ -142,6 +147,101 @@ class InstallAgainFlow(_HostFlow):
         return ""
 
 
+# ADR-0192: the field of the fix, and its two refusals in the form, where nothing is sent.
+CONF_FINGERPRINT: Final = "fingerprint"
+FORM_INVALID: Final = "invalid_fingerprint"
+FORM_DIFFERS: Final = "fingerprint_differs"
+# The hub's codes of approve_host besides ok, and no_answer of the client: each has its own text in the fix dialog
+# (approve_<code>). Any other shows with its code (approve_refused).
+APPROVE_REFUSALS: Final = frozenset(
+    {
+        "ha_approval_off",
+        "client_not_approved",
+        "role_forbids",
+        "unknown_node",
+        "not_waiting",
+        "fingerprint_mismatch",
+        "bad_request",
+        "store_failed",
+        "no_answer",
+    }
+)
+
+
+def normalized_fingerprint(value: Any) -> str | None:
+    """The fingerprint as the person entered it, without spaces and in lower case; None unless that is 64 hex digits."""
+    text = "".join(str(value or "").split()).lower()
+    return text if FINGERPRINT_PATTERN.fullmatch(text) else None
+
+
+def approve_refusal(node: str, code: str) -> tuple[str, dict[str, str]]:
+    """Why the hub did not approve node, as the fix dialog's abort reason and its placeholders."""
+    if code == CODE_HUB_NOT_CONNECTED:
+        return "hub_not_connected", {"node": node}
+    if code == CODE_HUB_WITHOUT_APPROVAL:  # the hub's last status no longer names approve_host
+        return "approval_not_offered", {"node": node}
+    if code in APPROVE_REFUSALS:
+        return f"approve_{code}", {"node": node}
+    return "approve_refused", {"node": node, "code": code}
+
+
+class ApproveHostFlow(RepairsFlow):
+    """Approve a waiting host from its repair (ADR-0192). The person enters the fingerprint `vordr-agent identity`
+    printed on the host; spaces and upper case do not matter. Anything but 64 hex digits, and a fingerprint other than
+    the one the hub saw, are refused in the form, and nothing is sent. A matching one goes to the hub, whose code
+    decides what the dialog says. Checked when the dialog opens and again before sending: the hub may have decided
+    meanwhile, the connection or the hub's permission may be gone; each has its own reason."""
+
+    def __init__(self, entry_id: str, node: str) -> None:
+        self._entry_id = entry_id
+        self._node = node
+
+    def _coordinator(self) -> VordrCoordinator | None:
+        entry = self.hass.config_entries.async_get_entry(self._entry_id)
+        if entry is None or entry.state is not ConfigEntryState.LOADED:
+            return None
+        return entry.runtime_data
+
+    def _unable(self, coordinator: VordrCoordinator | None) -> str:
+        """Why nothing can be sent now, as an abort reason; empty while the fingerprint can go to the hub."""
+        if coordinator is None or not coordinator.connected:
+            return "hub_not_connected"
+        if self._node not in waiting_hosts(coordinator.data.hub):
+            return "no_longer_waiting"
+        if not coordinator.client.offers_host_approval:
+            return "approval_not_offered"
+        return ""
+
+    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        return await self.async_step_confirm()
+
+    async def async_step_confirm(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        coordinator = self._coordinator()
+        if reason := self._unable(coordinator):
+            return self.async_abort(reason=reason, description_placeholders={"node": self._node})
+        assert coordinator is not None  # _unable said so
+        names = waiting_hosts(coordinator.data.hub)[self._node]
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            given = normalized_fingerprint(user_input.get(CONF_FINGERPRINT))
+            if given is None:
+                errors[CONF_FINGERPRINT] = FORM_INVALID
+            elif given != names["fingerprint"]:
+                errors[CONF_FINGERPRINT] = FORM_DIFFERS  # another key asks under this name: nothing goes to the hub
+            else:
+                code = await coordinator.client.approve_host(self._node, given)
+                if code != "ok":
+                    key, shown = approve_refusal(self._node, code)
+                    return self.async_abort(reason=key, description_placeholders=shown)
+                return self.async_create_entry(data={})
+        return self.async_show_form(
+            step_id="confirm",
+            data_schema=vol.Schema({vol.Required(CONF_FINGERPRINT): str}),
+            errors=errors,
+            description_placeholders=names,
+        )
+
+
 class HaUpdateRetryFlow(RepairsFlow):
     """A kept failed install of one of Home Assistant's own updates (ADR-0165): confirm, and Vördr installs it at
     once, outside the window, under every other rule (ADR-0182). Checked at confirmation: if it cannot start now -
@@ -179,10 +279,12 @@ class HaUpdateRetryFlow(RepairsFlow):
 async def async_create_fix_flow(
     hass: HomeAssistant, issue_id: str, data: dict[str, str | int | float | None] | None
 ) -> RepairsFlow:
-    """Home Assistant asks for the flow of a fixable repair: install_again_<node>, reboot_<node>, or
+    """Home Assistant asks for the flow of a fixable repair: install_again_<node>, reboot_<node>, waiting_<node>, or
     ha_update_failed_<object id>."""
     data = data or {}
     if data.get("kind") == FIX_KIND:
         return HaUpdateRetryFlow(str(data.get("entry_id") or ""), str(data.get("entity_id") or ""))
+    if data.get("kind") == APPROVE_HOST_KIND:
+        return ApproveHostFlow(str(data.get("entry_id") or ""), str(data.get("node") or ""))
     flow = InstallAgainFlow if data.get("kind") == "install_again" else RebootFlow
     return flow(str(data.get("entry_id") or ""), str(data.get("node") or ""))

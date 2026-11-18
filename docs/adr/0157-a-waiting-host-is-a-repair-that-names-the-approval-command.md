@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by ADR-0192
 date: 2026-11-17
 decision-makers: kay (2026-11-17, asked for setup to become simpler and allowed the proposals to be built; accepted with the merge); proposed by Claude
 ---

@@ -68,6 +68,8 @@ MAX_REASON_BYTES = 200
 # system the repair shows.
 FINGERPRINT_PATTERN = re.compile(r"[0-9a-f]{64}")
 WAITING_OS_MAX = 64
+# ADR-0192: the kind of the waiting host's repair while it is fixable, in the issue's data (repairs.py).
+APPROVE_HOST_KIND = "approve_host"
 
 
 def valid_reason(value: Any) -> str:
@@ -236,6 +238,7 @@ class VordrCoordinator(DataUpdateCoordinator[VordrData]):
         # node -> whether the install-again repair carries the whole problem (its own repair is gone then)
         self._carried: dict[str, bool] = {}
         self._waiting: set[str] = set()  # nodes with a repair "waits for approval" (ADR-0157)
+        self._waiting_fixable = False  # whether those repairs were made fixable (ADR-0192)
         self.hub_device_id = ""  # set at setup; host devices hang below it
         self.texts = Texts(hass)  # loaded at setup, before the first message
         # Home Assistant's own updates under Vördr's rules (ADR-0158): held here, but independent of the hub.
@@ -293,6 +296,10 @@ class VordrCoordinator(DataUpdateCoordinator[VordrData]):
     def _on_connection(self, state: Connection, reason: str) -> None:
         synced = self.data.synced and state == Connection.APPROVED
         self._connection_issues(state, reason)
+        if self.client.offers_host_approval != self._waiting_fixable:
+            # The hub's status named approve_host or no longer does (a role change, a connection that ended or came):
+            # the waiting hosts' repairs follow now, not with the next change of the hub's view (ADR-0192).
+            self._waiting_issues(self.data.hub)
         if state == self.data.connection and reason == self.data.reason and synced == self.data.synced:
             return
         self.async_set_updated_data(replace(self.data, connection=state, reason=reason, synced=synced))
@@ -536,10 +543,12 @@ class VordrCoordinator(DataUpdateCoordinator[VordrData]):
 
     def _waiting_issues(self, hub: dict[str, Any] | None) -> None:
         """ADR-0157: a host waiting for approval at the hub is a repair that shows the fingerprint the hub saw and the
-        command that approves it, to be run at the hub after comparing with the host's own `vordr-agent identity`. Not
-        fixable: approval stays at the hub (ADR-0010). A warning, because a new host is news, not an alarm. Gone as soon
-        as the hub no longer lists the host as waiting: approved, rejected or forgotten."""
+        command that approves it, to be run at the hub after comparing with the host's own `vordr-agent identity`. A
+        warning, because a new host is news, not an alarm. Gone as soon as the hub no longer lists the host as waiting:
+        approved, rejected or forgotten. ADR-0192: while the hub's status names approve_host, the repair is fixable,
+        with a text of its own; its fix asks for the fingerprint the host printed (repairs.ApproveHostFlow)."""
         waiting = waiting_hosts(hub)
+        fixable = self.client.offers_host_approval
         for node in self._waiting - set(waiting):
             ir.async_delete_issue(self.hass, DOMAIN, f"waiting_{node}")
         for node, names in waiting.items():
@@ -547,12 +556,15 @@ class VordrCoordinator(DataUpdateCoordinator[VordrData]):
                 self.hass,
                 DOMAIN,
                 f"waiting_{node}",
-                is_fixable=False,
+                is_fixable=fixable,
                 severity=ir.IssueSeverity.WARNING,
-                translation_key="waiting_host",
+                translation_key="waiting_host_approve" if fixable else "waiting_host",
                 translation_placeholders=names,
+                data={"kind": APPROVE_HOST_KIND, "entry_id": self.config_entry.entry_id, "node": node}
+                if fixable
+                else None,
             )
-        self._waiting = set(waiting)
+        self._waiting, self._waiting_fixable = set(waiting), fixable
 
     def _connection_issues(self, state: Connection, reason: str) -> None:
         if state == Connection.REJECTED and reason == p.REASON_PROTOCOL_MISMATCH:

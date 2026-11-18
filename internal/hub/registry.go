@@ -234,6 +234,29 @@ func (r *Registry) Decide(node string, to wire.NodeState, fingerprint string, no
 	return AdminOK
 }
 
+// ApproveWaiting approves a host only while it waits for approval and fingerprint is the one of its key, decided under
+// the register's lock on the register as it is then (ADR-0192). Unlike Decide, it never changes an approved or a
+// rejected host: a rejection at the hub is not undone from Home Assistant.
+func (r *Registry) ApproveWaiting(node, fingerprint string, now time.Time) AdminCode {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e := r.nodes[node]
+	switch {
+	case e == nil:
+		return AdminUnknownNode
+	case e.State != wire.StatePendingApproval:
+		return AdminNotWaiting
+	case fingerprint != e.Fingerprint:
+		return AdminFingerprintMismatch
+	}
+	e.State, e.DecidedAt = wire.StateApproved, &now
+	if err := r.save(); err != nil {
+		e.State, e.DecidedAt = wire.StatePendingApproval, nil
+		return AdminStoreFailed
+	}
+	return AdminOK
+}
+
 // Forget removes a host; its next hello starts over as pending (e.g. after a reinstall with a new key).
 func (r *Registry) Forget(node string) AdminCode {
 	r.mu.Lock()

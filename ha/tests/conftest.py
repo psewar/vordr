@@ -136,7 +136,8 @@ def make_release(
 
 class FakeHub:
     """Enough of vordr-hub's /v1/ha for the integration: login with a real signature check, status, snapshot,
-    pushes, command results and the agent release for a new host, all driven by the test."""
+    pushes, command results, the agent release for a new host and the approval of a waiting host, all driven by the
+    test."""
 
     def __init__(self) -> None:
         self.cert_pem, self._key_pem = self_signed()
@@ -166,6 +167,10 @@ class FakeHub:
         self.release: FakeRelease | None = None
         self.tokens: dict[str, dict[str, Any]] = {}  # token -> {"file", "used"}
         self.download_refusal: tuple[int, str] | None = None  # (status, code) instead of the binary
+        # Approving a waiting host (ADR-0192): the requests, and the code to answer; with ok the host leaves the
+        # waiting list, as at the real hub.
+        self.approve_requests: list[dict[str, Any]] = []
+        self.approve_code: str | None = "ok"
         self.conns: list[tuple[str, web.WebSocketResponse]] = []
         self.port = 0
         self._runner: web.AppRunner | None = None
@@ -206,6 +211,12 @@ class FakeHub:
         """Change the hub's own view (e.g. the waiting hosts) and push it, as the hub does on a change."""
         self.hub.update(over)
         await self._on_hub(self._send_approved({"t": "hub", "hub": self.hub}))
+
+    async def set_features(self, features: list[str]) -> None:
+        """Change what the hub names and send every approved client its status again, as the hub does after a role
+        change (ADR-0192)."""
+        self.features = features
+        await self._on_hub(self._send_approved({"t": "status", "state": "approved", "features": features}))
 
     async def drop_connections(self) -> None:
         """End every connection while the hub keeps serving, as a restart of the hub does: clients come back and get a
@@ -307,6 +318,9 @@ class FakeHub:
                 elif data["t"] == "agent_download":
                     self.download_requests.append(data)
                     await ws.send_json(self._agent_download(data))
+                elif data["t"] == "approve_host":
+                    self.approve_requests.append(data)
+                    await self._approve_host(ws, data)
         finally:
             self.conns.remove((name, ws))
         return ws
@@ -335,6 +349,16 @@ class FakeHub:
             "expires_at": expires.isoformat().replace("+00:00", "Z"),
             "downloads": downloads,
         }
+
+    async def _approve_host(self, ws: web.WebSocketResponse, data: dict[str, Any]) -> None:
+        """The hub's approve_host_result. With ok, the host leaves the waiting list and the hub's view goes out, as
+        the real hub sends it after an approval. approve_code None: no answer at all."""
+        if self.approve_code is None:
+            return
+        await ws.send_json({"t": "approve_host_result", "request_id": data["request_id"], "code": self.approve_code})
+        if self.approve_code == "ok":
+            self.hub["waiting"] = [w for w in self.hub["waiting"] if w.get("node") != data.get("node")]
+            await self._send_approved({"t": "hub", "hub": self.hub})
 
     async def _download(self, request: web.Request) -> web.Response:
         """GET /v1/agent-download/<file>?token=: the binary once, or a fixed status with the code as the body."""

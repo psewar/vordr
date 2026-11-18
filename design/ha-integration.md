@@ -32,7 +32,7 @@ Rationale as an ADR: [ADR-0022](../docs/adr/0022-hub-stays-own-service.md).
 | Signing key | stays in the hub; HA can only ask | would sit in HA; a compromised HA signs jobs for all hosts |
 | Reachability | agents reach only the hub | every network would need a path to HA |
 | HA restart (updates!) | disconnects only the integration; agents stay connected | disconnects all tunnels |
-| Approval of new hosts | only at the hub, as today | in HA |
+| Approval of new hosts | at the hub; in HA only where the hub allows it (5c) | in HA |
 | Effort | endpoint in the hub + integration | rebuild the hub in Python |
 
 ## 3. Overview
@@ -53,16 +53,18 @@ path to HA. MQTT is gone entirely (section 8).
   again after a timeout, a closed dialog or a restart uses the same key and so continues the request the hub keeps; the
   entry takes the key over and the file forgets that hub
   ([ADR-0156](../docs/adr/0156-the-config-flow-keeps-its-key-until-the-client-is-set-up.md)).
-- It is approved **only at the hub**, like a host: `vordr-hub clients` shows waiting clients,
+- It is approved **only at the hub**, never by another client: `vordr-hub clients` shows waiting clients,
   `vordr-hub approve-client <name> --fingerprint <fp>` approves, `reject-client` / `forget-client` revoke.
   The config flow shows the fingerprint and the command and waits until the approval is there.
 - An approved HA client may:
   - read the state of all approved hosts and the list of waiting hosts (name, fingerprint, OS),
   - request commands from the fixed list (`check`, `install`, `install_security`, `install_app:<id>`, `reboot`,
     `agent_update`); the hub checks them against verbs and the host's policy as today and only then signs,
-  - with role `admin`: fetch the signed agent release to install a new host (`agent_download`, 5b).
-- It may not: approve, reject or forget hosts, change policies, sign by itself, see other clients, get the operator
-  key from the hub (it has it from the person who sets it up, 5b).
+  - with role `admin`: fetch the signed agent release to install a new host (`agent_download`, 5b),
+  - with role `admin`, where `hub.yaml` sets `ha_approves_hosts`: approve a host that waits for approval, with the
+    fingerprint the hub holds for it (`approve_host`, 5c).
+- It may not: reject or forget hosts, approve one without the hub's permission or undo a rejection, change policies,
+  sign by itself, see other clients, get the operator key from the hub (it has it from the person who sets it up, 5b).
 - Several HA clients are possible (e.g. a test HA), each approved individually and revocable.
 
 Change to the threat model (architecture.md, 5): A compromised HA can, as before, only trigger allowed jobs. The path
@@ -76,7 +78,7 @@ JSON messages over WebSocket, like the agent tunnel; `protocol: 1` in the hello.
 |---|---|---|
 | Hub → HA | `challenge` | nonce |
 | HA → Hub | `hello` | `role: "ha"`, name, public key, signature (context `vordr/ha-hello/v1`), integration version, `protocol` |
-| Hub → HA | `status` | `pending_approval` / `approved` / `rejected` with reason; again on change; `features`: what the hub accepts beyond the base protocol (`agent_download`) |
+| Hub → HA | `status` | `pending_approval` / `approved` / `rejected` with reason; again on change and after a role change; `features`: what the hub accepts beyond the base protocol (`agent_download`; `approve_host` only where 5c allows it) |
 | Hub → HA | `snapshot` | hub (version, `protocol`, waiting hosts) and all hosts as `HostView`; after every approval and every connection setup |
 | Hub → HA | `host` / `host_removed` | one `HostView` on every change / host forgotten or rejected |
 | Hub → HA | `hub` | hub state on change (waiting hosts) |
@@ -84,6 +86,8 @@ JSON messages over WebSocket, like the agent tunnel; `protocol: 1` in the hello.
 | Hub → HA | `command_result` | `request_id`, `code` (`ok` = job signed and sent, waits for the running run, or is that run already, then with its `job_id`; otherwise a fixed reason such as `verb_unsupported_by_agent`, `not_allowed_by_host_policy`, `not_connected`), `job_id`; the result of the run comes later in the `HostView` (`last_run`) |
 | HA → Hub | `agent_download` | `request_id`, optionally `os` and `arch` of a new host (5b); only to a hub whose `status` named `agent_download` |
 | Hub → HA | `agent_download_result` | `request_id`, `code`; with `ok` the signed manifest, its signature, the hub's key and a download path per binary (5b) |
+| HA → Hub | `approve_host` | `request_id`, `node`, `fingerprint` of a host waiting for approval (5c); only to a hub whose `status` named `approve_host` |
+| Hub → HA | `approve_host_result` | `request_id`, `code` (`ok` = approved, otherwise why not, 5c) |
 | both | `heartbeat` | every 30 s; 90 s of silence = connection dead |
 
 `HostView` is the transport-neutral version of the former MQTT state: device (name, model, agent version), `online`,
@@ -188,6 +192,33 @@ runs `vordr-agent install`. The hub has nothing to do with SSH and never sees th
 - **Event log:** `agent_download_issued`, `agent_downloaded`, `agent_download_refused`, with `download_id` instead of
   the token (architecture.md 10.4).
 
+### 5c. Approving a waiting host
+
+Off unless `hub.yaml` sets `ha_approves_hosts: true`; `check-config` names it either way
+([ADR-0192](../docs/adr/0192-an-admin-home-assistant-may-approve-a-waiting-host-when-the-hub-allows-it.md)).
+
+- **Feature:** the hub names `approve_host` in the `status` of a client that is approved with its key and role
+  `admin`, as the client register has it when the status goes out: at login, at the approval of the client, and again
+  after `vordr-hub client-role`, so that it comes or goes during the connection. The session is registered before
+  its login status goes out, and each of these statuses reads the register under the session's lock: of two at once,
+  the later names the state as it is then. As with every feature
+  ([ADR-0067](../docs/adr/0067-hub-announces-features.md)), a client sends the message only while its last status
+  named it.
+- **Request:** `approve_host` with `request_id` and `node` as with `command` (malformed: protocol violation, the
+  connection ends) and `fingerprint`.
+- **Decision**, on the registers as they are at that moment: a client that is not approved (or not with this key) gets
+  `client_not_approved`, and the connection ends as with `agent_download`; this comes first, so that a waiting client
+  cannot write the event log full. Then `ha_approval_off` (the switch), `role_forbids` (not `admin`), `bad_request`
+  (the fingerprint is not 64 lower-case hex digits). The node and its key are decided in one step under the host
+  register's lock: `unknown_node`, `not_waiting` (approved, or rejected: a rejection at the hub is never undone from
+  Home Assistant), `fingerprint_mismatch` (not the key the hub holds for the node); `store_failed` if the register
+  cannot be written, and nothing changes.
+- **With `ok`** the host is approved as by `vordr-hub approve`: a connected agent gets its `status`, the clients get
+  the new views (the host leaves `waiting` and comes as a `host`).
+- **Event log:** `approve` with the client's name and `code`, as `vordr-hub approve` logs it without one;
+  `approve_refused` with the client, its `code` and, for `role_forbids`, the role.
+- Rejecting and forgetting hosts, and everything about clients, stay at the hub's command line.
+
 ## 6. The integration `custom_components/vordr`
 
 - **Config flow:** address (e.g. `wss://vordr-hub.example:8443/v1/ha`), optional own CA certificate (PEM), name of the
@@ -269,10 +300,21 @@ runs `vordr-agent install`. The hub has nothing to do with SSH and never sees th
     `vordr_problem` stay); without the install offered, `problem_<node>` stays as before.
 - **Waiting host as a repair issue** `waiting_<node>` while the hub lists the host as waiting for approval
   ([ADR-0157](../docs/adr/0157-a-waiting-host-is-a-repair-that-names-the-approval-command.md)):
-  - not fixable, a warning: approval stays at the hub (section 4); a new host is news, not an alarm;
+  - a warning: a new host is news, not an alarm;
   - the text names the node, the system the host reports, the fingerprint the hub saw and
     `vordr-hub approve <node> --fingerprint <fp>`, and asks first to compare with `vordr-agent identity` on the host
     itself; if they differ, not to approve (`vordr-hub reject <node>`);
+  - not fixable unless the hub's last `status` names `approve_host` (5c,
+    [ADR-0192](../docs/adr/0192-an-admin-home-assistant-may-approve-a-waiting-host-when-the-hub-allows-it.md)). Then
+    it is fixable, with its own text (`waiting_host_approve`: compare on the host, then fix it here, or run the command
+    at the hub) and the data `kind: approve_host`. The issues follow every `status`: when the feature comes or goes, or
+    the connection ends, they are made again at once, not with the next change of the hub's view;
+  - its fix (`ApproveHostFlow` in `repairs.py`) asks for the fingerprint `vordr-agent identity` printed on the host,
+    without spaces and in lower case; anything but 64 hex digits is a form error, and so is a fingerprint other than
+    the one in the hub's waiting list, whose text says not to approve and how to reject at the hub; nothing is sent
+    then. When it opens and before it sends, it checks again: hub not connected, host no longer waiting, feature gone
+    each end it with their own reason. A matching fingerprint goes to the hub as `approve_host`; every code of 5c, and
+    `no_answer`, has its own text, any other is named as it is;
   - it follows the hub's own view (snapshot and `hub`): gone as soon as the host is approved, rejected or forgotten;
   - only for a node that is a host name and a fingerprint of 64 hex digits; the system is the host's own word and shows
     as one line of code, at most 64 characters, without backticks. `sensor.vordr_hub_pending_approvals` keeps listing
@@ -414,7 +456,9 @@ Home Assistant reaches a new host once over SSH, has it fetch and check the sign
 `vordr-agent install` there. It keeps nothing of the SSH access; afterwards the host waits for approval at the hub
 like any new host
 ([ADR-0161](../docs/adr/0161-home-assistant-installs-the-agent-once-over-ssh-and-keeps-no-credentials.md), with the
-threat comparison). Linux with systemd and apt only.
+threat comparison), unless the hub lets this Home Assistant approve hosts: then the flow approves it
+([ADR-0192](../docs/adr/0192-an-admin-home-assistant-may-approve-a-waiting-host-when-the-hub-allows-it.md)). Linux
+with systemd and apt only.
 
 - **Operator keys**, an item of the options menu (key `operator_keys`): the operator key and an optional backup,
   base64 Ed25519 as `vordr-release public-key` prints them. Checked (32 bytes, the backup not equal to the key and only
@@ -438,7 +482,8 @@ threat comparison). Linux with systemd and apt only.
 | Probe | as the user, `key=value` facts: `uname -s`, `uname -m`, `id -u`, systemd, `apt-get`, `curl`/`wget`, `sha256sum`, `base64`, `mktemp`, `timeout`, `systemd-run`, `sudo`; then `sudo -k -n true`, else `sudo -k -S` with the password on stdin | `not_linux`, `unknown_arch`, `no_systemd`, `no_apt`, `no_download_tool`, `missing_tools`, `no_sudo`, `probe_failed` |
 | Release | `agent_download` for `linux/<arch>` (`x86_64` → `amd64`, `aarch64` → `arm64`, `armv7l`/`armv8l` → `arm`); the operator's signature over `vordr/agent-manifest/v1\0` + manifest with the stored keys; the manifest read as strictly as the agent's `VerifyManifest`; file, SHA-256 and size only from it; the download path must open that file; not older than the newest release an install of this entry took (kept in `.storage/vordr.agent_release.<entry_id>`, compared as the agent's `NewerRelease`) | the hub's codes (`role_forbids` with `vordr-hub client-role <client> --role admin`, `no_release`, `too_many_downloads`, …), `hub_refused`, `manifest_signature_invalid`, `manifest_invalid`, `no_binary_for_platform`, `release_too_old`, `download_invalid` |
 | Install (`install`, progress) | as root, as a transient service of its own (`systemd-run --pipe --wait --collect`), outside the login session; one script, with no `${…}` and no `$$` in it or its values, as systemd expands them in a service's command line; a private temporary folder (`mktemp -d`, umask 077, refused if nothing may run from it); download over HTTPS from the integration's host and port with the hub's CA if it has one, the URL read from a file in that folder (`curl -K`, `wget -i`), bounded by the signed size (`curl --max-filesize`, `ulimit -f` for both) and in time (`curl --max-time 900`, `timeout 900 wget`); both give up on a connection after 20 s (`--connect-timeout`, wget with `--tries=1`); curl without a connection made (`%{num_connects}` is 0) stops with `download_unreachable`, every other failure, and every wget failure (wget's exit 4 does not tell a refused connection from a failed TLS handshake), with `download_failed`; size and SHA-256 compared before anything runs; the hub's CA to `/etc/vordr/hub-ca.pem` (compared if there, removed again after a refusal); `vordr-agent install --hub wss://<host>:<port>/v1/tunnel --hub-key <from the answer> --operator-key … [--backup-operator-key] [--node] [--ca-file]`; the folder removed by a trap in every case | `size_mismatch`, `hash_mismatch`, `download_failed`, `download_unreachable`, `download_refused`, `download_too_large`, `ca_differs`, `ca_failed`, `temp_noexec`, `temp_failed`, `bad_input`; the agent's codes as `agent_<code>`, others as `agent_refused`/`agent_failed`; `agent_no_result`, `install_no_result`, `ssh_lost`, `ssh_timeout` |
-| End (`result`) | the agent's last line `result=installed node=<n> fingerprint=<hex>`; an abort, also on success: no subentry is stored | `agent_installed` with node, fingerprint and version; the repair `waiting_<node>` then names the approval command, and once approved the host is a device of the entry |
+| Approval (`install`, progress) | only after `agent_installed` and while the hub's status names `approve_host` (5c), and, where the person named the node, only if the agent reports that node; the SSH connection and every secret are gone by then. Waits up to 60 s, looking at the hub's view every second, until its waiting list has the node with exactly the fingerprint the install read on the host, then sends `approve_host`. That fingerprint came over the connection whose host key the person confirmed: the comparison is made by construction | `agent_installed_approved`; `agent_installed_not_approved` with the hub's code; without the feature, for another node than the one named, or when the host does not show up in time, `agent_installed` |
+| End (`result`) | the agent's last line `result=installed node=<n> fingerprint=<hex>`; an abort, also on success: no subentry is stored | `agent_installed` with node, fingerprint and version; the repair `waiting_<node>` then names the approval command, and once approved the host is a device of the entry; `agent_installed_approved`: the host is approved and shows as a device shortly |
 
 - **What is read from the host:** only `key=value` fields: the probe's lines, the script's own last line
   (`step=<step> code=<code>`), and after `step=agent exit=<n>` the agent's last line. Prose is never read; a line that is
@@ -458,9 +503,9 @@ threat comparison). Linux with systemd and apt only.
   its type and reads nothing from `~/.ssh`, uses no SSH agent and no default keys. `agent_install.py` holds the pure
   parts (checks, scripts, reading), `agent_installer.py` the steps and what they hold, `config_flow.py` the subentry
   flow of "Add host".
-- **The client** keeps the `features` of the hub's last status and sends `agent_download` only to a hub that named it
-  ([ADR-0067](../docs/adr/0067-hub-announces-features.md)); the answer goes to the one who asked, never to the
-  coordinator or an entity.
+- **The client** keeps the `features` of the hub's last status and sends `agent_download` and `approve_host` only to a
+  hub that named them ([ADR-0067](../docs/adr/0067-hub-announces-features.md)); the answer goes to the one who asked,
+  never to the coordinator or an entity.
 
 ### 6e. AI explanations of failed runs (optional)
 
@@ -553,6 +598,7 @@ Four automation blueprints in `blueprints/automation/vordr/` turn the events and
 - `HostView` computed in one place (`internal/hub/view.go`, 5a); `/v1/ha` is the only way to HA.
 - Commands go through the same `Resolve` as the MQTT commands did before.
 - `agent_download` and the download path `/v1/agent-download/` for installing a new host (5b).
+- `approve_host` where `hub.yaml` sets `ha_approves_hosts`, for clients with role `admin` (5c).
 - For the migration, up to hub 0.5 there was `mqtt.mode: remove`: connect once, delete all own retained topics,
   disconnect.
 
@@ -572,8 +618,9 @@ right away (`ha/README.md`).
 
 ## 9. Testing
 
-- Hub (Go): approval of the client, client cannot approve hosts, snapshot and push, commands with all reasons for
-  refusal, revocation disconnects; mutation test on the rights check.
+- Hub (Go): approval of the client, client cannot approve hosts unless the hub allows it and it has role `admin` (5c:
+  every code, the feature with switch and role and again after a role change), snapshot and push, commands with all
+  reasons for refusal, revocation disconnects; mutation test on the rights check.
 - Integration (Python): `pytest-homeassistant-custom-component` under Linux, with the HA version that
   `ha/requirements_test.txt` fixes. Config flow including waiting for approval, all entities, `None` → unknown,
   availability, buttons → commands, entity IDs, repair issues. The install over SSH (6d) against a fake hub and a real
@@ -617,7 +664,10 @@ right away (`ha/README.md`).
    against the operator key entered in Home Assistant and on the host before it runs, approval at the hub**
    ([ADR-0161](../docs/adr/0161-home-assistant-installs-the-agent-once-over-ssh-and-keeps-no-credentials.md));
    **started from the button "Add host", which stores nothing, not even a subentry**
-   ([ADR-0185](../docs/adr/0185-the-agent-install-starts-from-an-add-host-button-and-stores-no-subentry.md)).
+   ([ADR-0185](../docs/adr/0185-the-agent-install-starts-from-an-add-host-button-and-stores-no-subentry.md));
+   **approval in Home Assistant only where `hub.yaml` allows it, for role `admin`: in "Add host" and in the waiting
+   host's repair**
+   ([ADR-0192](../docs/adr/0192-an-admin-home-assistant-may-approve-a-waiting-host-when-the-hub-allows-it.md)).
 7. Installing Home Assistant's own updates: **only when switched on, from one entry, with a pause**
    ([ADR-0162](../docs/adr/0162-home-assistants-own-updates-install-only-when-switched-on-and-a-pause-holds-them.md)); **a backup before each**, the entity's own or Home Assistant's automatic backup at most 26 h old
    ([ADR-0163](../docs/adr/0163-a-backup-before-every-automatic-home-assistant-update.md)); **one at a time, Core, OS and Supervisor last, checked again before acting, verified by the

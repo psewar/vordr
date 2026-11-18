@@ -8,7 +8,7 @@ import "github.com/psewar/vordr/internal/protocol"
 const (
 	RoleObserve = "observe" // views only, no commands
 	RoleOperate = "operate" // check, install, agent update - the default
-	RoleAdmin   = "admin"   // also reboot
+	RoleAdmin   = "admin"   // also reboot, the agent release for a new host and, where hub.yaml allows it, approving hosts
 )
 
 // AdminRoleForbids: the client's role does not allow the command. AdminUnknownRole: no such role.
@@ -42,6 +42,10 @@ func RoleAllows(role string, verb protocol.Verb) bool {
 // RoleAllowsAgentDownload reports whether a client with role may fetch the agent release to install a new host
 // (ADR-0167): admin only. The client sets up a host with it, which is more than any button on a known host does.
 func RoleAllowsAgentDownload(role string) bool { return EffectiveRole(role) == RoleAdmin }
+
+// RoleAllowsHostApproval reports whether a client with role may approve a waiting host where hub.yaml allows it
+// (ADR-0192): admin only, as for the agent release that sets the host up.
+func RoleAllowsHostApproval(role string) bool { return EffectiveRole(role) == RoleAdmin }
 
 // SetRole gives a client a role.
 func (r *ClientRegistry) SetRole(name, role string) AdminCode {

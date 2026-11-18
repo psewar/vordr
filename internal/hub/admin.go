@@ -16,7 +16,9 @@ import (
 )
 
 // Administration runs only through a local Unix socket (mode 0600 in a 0700 directory): whoever may use it is
-// already root on the hub host. There is no web interface, and Home Assistant cannot admit hosts.
+// already root on the hub host. There is no web interface. The one exception: where hub.yaml sets ha_approves_hosts, a
+// Home Assistant client with role admin may approve a waiting host (approvehost.go, ADR-0192); rejecting and
+// forgetting hosts and everything about clients stay here.
 
 type AdminRequest struct {
 	// list | show | approve | reject | forget | check | backup | events, and for Home Assistant clients:
@@ -237,6 +239,9 @@ func (s *Server) Admin(req AdminRequest) AdminResponse {
 	case "client-role":
 		code := s.Clients.SetRole(req.Client, req.Role)
 		s.Events.Log("", "client_role", map[string]any{"client": req.Client, "role": req.Role, "code": code})
+		if code == AdminOK {
+			s.resendStatus(req.Client) // approve_host comes or goes with the role (ADR-0192)
+		}
 		return AdminResponse{Code: code}
 	case "approve-client", "reject-client":
 		to := wire.StateApproved

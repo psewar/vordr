@@ -36,7 +36,8 @@ darunter die Update-Quellen und wichtigen Programme mit ihrem Stand.
   Fehlschlag als Reparaturhinweis festgehalten.
 - Einen neuen Linux-Host aus Home Assistant einrichten, mit dem Knopf „Host hinzufügen“: einmal über SSH, das signierte
   Agenten-Release geprüft, bevor es läuft, vom SSH-Zugang nichts gespeichert; danach wartet der Host auf die Freigabe an
-  der Leitstelle.
+  der Leitstelle, oder er wird, wo `hub.yaml` `ha_approves_hosts` setzt und Home Assistant die Rolle `admin` hat, im
+  selben Dialog freigegeben.
 - Freiwillig ein gescheiterter Lauf, erklärt von einer AI-Task-Entität von Home Assistant: ein kurzer Text, Ursache
   und nächste Schritte aus festen Listen und ein am Log geprüftes Zitat; Hostnamen und Adressen vor dem Senden
   ersetzt, nur als Rat.
@@ -48,8 +49,9 @@ Mitarbeit (englisch): [AGENTS.md](AGENTS.md). Sicherheitslücken: [SECURITY.de.m
 
 ## Installieren
 
-- **Home Assistant:** über HACS (dieses Repository als benutzerdefiniertes Repository, Typ Integration) oder von Hand;
-  siehe [ha/README.de.md](ha/README.de.md).
+- **Home Assistant:** über HACS, in Home Assistant als Marketplace angezeigt: nach „Vördr“ suchen, installieren und
+  Home Assistant neu starten. Fehlt es in der Liste, dieses Repository als benutzerdefiniertes Repository (Typ
+  Integration) hinzufügen. Von Hand geht es auch; siehe [ha/README.de.md](ha/README.de.md).
 - **Leitstelle und Agenten:** `./build.sh` baut die Binaries; Einrichtung, systemd-Units und Abschottung stehen in
   [deploy/README.de.md](deploy/README.de.md), ebenso das Signieren eigener Agent-Releases.
 

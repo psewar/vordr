@@ -20,7 +20,7 @@ from homeassistant.data_entry_flow import FlowResultType, InvalidData
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.vordr import agent_install as ai, config_flow, ssh
+from custom_components.vordr import agent_install as ai, agent_installer, config_flow, ssh
 from custom_components.vordr.diagnostics import async_get_config_entry_diagnostics
 
 from .conftest import FakeHub, make_release, wait_until
@@ -450,6 +450,129 @@ async def test_install_as_root_with_a_key(
     pem_line = pem.splitlines()[2]
     await no_secret_left(hass, ready, fake_hub, caplog, hass_storage, pem_line)
     assert_nothing_stored(hass, ready, fake_host, hass_storage, "arm-1")
+
+
+# --- the approval right after the install (ADR-0192)
+
+INSTALLED = {"node": "web-01", "fingerprint": FINGERPRINT, "version": "1.4.0"}
+
+
+@pytest.fixture
+async def approves(ready: MockConfigEntry, fake_hub: FakeHub, monkeypatch: pytest.MonkeyPatch) -> MockConfigEntry:
+    """The hub lets this Home Assistant approve hosts; the wait for the new host is short and looks often."""
+    monkeypatch.setattr(agent_installer, "APPROVE_WAIT", 1.0)
+    monkeypatch.setattr(agent_installer, "APPROVE_POLL", 0.02)
+    await fake_hub.set_features(["agent_download", "approve_host"])
+    await wait_until(lambda: ready.runtime_data.client.offers_host_approval)
+    return ready
+
+
+def waiting_host(node: str = "web-01", fingerprint: str = FINGERPRINT) -> dict[str, str]:
+    return {"node": node, "fingerprint": fingerprint, "os": "Debian GNU/Linux 13 (trixie)"}
+
+
+async def test_add_host_approves_the_host_once_the_hub_lists_it(
+    hass: HomeAssistant,
+    approves: MockConfigEntry,
+    fake_hub: FakeHub,
+    fake_host: FakeHost,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After agent_installed the flow waits, its progress still showing, until the hub lists the new host as waiting
+    with exactly the fingerprint the install read on the host, then approves it. The SSH connection and every secret
+    are gone before the wait."""
+    monkeypatch.setattr(agent_installer, "APPROVE_WAIT", 30.0)  # the host shows up within it
+    result = await to_host_key(hass, approves, fake_host)
+    held = handler(hass, result["flow_id"])._install
+    result = await log_in(hass, result, password=PASSWORD, sudo_password=SUDO_PASSWORD)
+    assert result["type"] is FlowResultType.SHOW_PROGRESS
+    await wait_until(lambda: held.ended, 30)
+    assert held._conn is None and held._sudo_password == ""
+    assert fake_hub.approve_requests == []
+    await fake_hub.push_hub(waiting=[waiting_host("web-01", "cd" * 32), waiting_host("other", FINGERPRINT)])
+    await fake_hub.push_hub(waiting=[waiting_host()])
+    result = await finish(hass, result)
+    assert result["reason"] == "agent_installed_approved"
+    assert result["description_placeholders"] == INSTALLED
+    assert [(r["node"], r["fingerprint"]) for r in fake_hub.approve_requests] == [("web-01", FINGERPRINT)]
+
+
+async def listed(entry: MockConfigEntry, fake_hub: FakeHub, hosts: list[dict[str, str]]) -> None:
+    """The hub lists these hosts as waiting, and Home Assistant has its view."""
+    await fake_hub.push_hub(waiting=hosts)
+    await wait_until(lambda: entry.runtime_data.data.hub["waiting"] == hosts)
+
+
+@pytest.mark.parametrize("listed_as", ["nothing", "another_key", "another_node"])
+async def test_add_host_keeps_agent_installed_when_the_host_does_not_show_up(
+    hass: HomeAssistant, approves: MockConfigEntry, fake_hub: FakeHub, fake_host: FakeHost, listed_as: str
+) -> None:
+    """The hub does not list the new host with its fingerprint in time: nothing is sent, and the end is ADR-0161's
+    text; the repair remains for the approval."""
+    await listed(approves, fake_hub, {
+        "nothing": [],
+        "another_key": [waiting_host("web-01", "cd" * 32)],
+        "another_node": [waiting_host("other")],
+    }[listed_as])  # fmt: skip
+    result = await install(hass, approves, fake_host, password=PASSWORD, sudo_password=SUDO_PASSWORD)
+    assert result["reason"] == "agent_installed" and result["description_placeholders"] == INSTALLED
+    assert fake_hub.approve_requests == []
+
+
+async def test_add_host_without_the_feature_does_not_wait(
+    hass: HomeAssistant, ready: MockConfigEntry, fake_hub: FakeHub, fake_host: FakeHost, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A hub that does not name approve_host (switched off, or not role admin): the host is listed, but nothing is
+    sent and the flow ends at once with ADR-0161's text."""
+    monkeypatch.setattr(agent_installer, "APPROVE_WAIT", 600.0)  # a wait would show as a test that does not end
+    await listed(ready, fake_hub, [waiting_host()])
+    assert not ready.runtime_data.client.offers_host_approval
+    result = await install(hass, ready, fake_host, password=PASSWORD, sudo_password=SUDO_PASSWORD)
+    assert result["reason"] == "agent_installed" and result["description_placeholders"] == INSTALLED
+    assert fake_hub.approve_requests == []
+
+
+async def test_add_host_says_why_the_hub_did_not_approve(
+    hass: HomeAssistant, approves: MockConfigEntry, fake_hub: FakeHub, fake_host: FakeHost
+) -> None:
+    """The hub refuses the approval: ADR-0161's text, with the hub's code."""
+    await listed(approves, fake_hub, [waiting_host()])
+    fake_hub.approve_code = "role_forbids"
+    result = await install(hass, approves, fake_host, password=PASSWORD, sudo_password=SUDO_PASSWORD)
+    assert result["reason"] == "agent_installed_not_approved"
+    assert result["description_placeholders"] == {**INSTALLED, "code": "role_forbids"}
+    assert len(fake_hub.approve_requests) == 1
+
+
+async def test_add_host_approves_only_the_node_the_person_named(
+    hass: HomeAssistant,
+    approves: MockConfigEntry,
+    fake_hub: FakeHub,
+    fake_host: FakeHost,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The person named web-01, but the agent reports another node: the flow neither waits nor approves, although the
+    hub lists that node with the installed fingerprint; the end is ADR-0161's text and the repair stays."""
+    monkeypatch.setattr(agent_installer, "APPROVE_WAIT", 600.0)  # a wait would show as a test that does not end
+    fake_host.set(agent_out=installed("other-node"))
+    await listed(approves, fake_hub, [waiting_host("other-node")])
+    result = await install(hass, approves, fake_host, password=PASSWORD, sudo_password=SUDO_PASSWORD)
+    assert result["reason"] == "agent_installed"
+    assert result["description_placeholders"] == {**INSTALLED, "node": "other-node"}
+    assert fake_hub.approve_requests == []
+
+
+async def test_add_host_without_a_node_approves_the_hosts_own_name(
+    hass: HomeAssistant, approves: MockConfigEntry, fake_hub: FakeHub, fake_host: FakeHost
+) -> None:
+    """The node left empty: the agent takes the host's own name, and that node is approved."""
+    fake_host.set(agent_out=installed("own-name"))
+    await listed(approves, fake_hub, [waiting_host("own-name")])
+    result = await to_host_key(hass, approves, fake_host, node="")
+    result = await finish(hass, await log_in(hass, result, password=PASSWORD, sudo_password=SUDO_PASSWORD))
+    assert result["reason"] == "agent_installed_approved"
+    assert result["description_placeholders"] == {**INSTALLED, "node": "own-name"}
+    assert [(r["node"], r["fingerprint"]) for r in fake_hub.approve_requests] == [("own-name", FINGERPRINT)]
 
 
 # --- the host key

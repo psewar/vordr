@@ -20,6 +20,12 @@ event_log:
 
 # Home Assistant connects itself (integration custom_components/vordr, endpoint /v1/ha on the same port); admit it
 # with `vordr-hub approve-client`. There is no MQTT any more (since 0.6).
+# Optional (ADR-0192, docs/adr/0192-an-admin-home-assistant-may-approve-a-waiting-host-when-the-hub-allows-it.md):
+# true lets a Home Assistant client with role admin (`vordr-hub client-role <name> --role admin`) approve a host that
+# waits for approval, with the fingerprint the hub holds for it: from the waiting host's repair after comparing with
+# `vordr-agent identity` on the host, and in "Add host" right after the install. Rejecting and forgetting stay here.
+# Off by default: hosts are approved only with `vordr-hub approve`.
+ha_approves_hosts: false
 
 # Optional backup check: an install only starts when the host's last backup on Proxmox Backup Server is younger than
 # max_age_hours. Without this section installs do not wait for a backup.

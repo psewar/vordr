@@ -33,7 +33,8 @@ an approved client and creates one device per host, with its update sources and 
   window, minimum age, major versions by hand – installed once you switch it on: one at a time, Core, OS and
   Supervisor last, each with a backup, checked by the version it reaches, a failure kept as a repair.
 - A new Linux host set up from Home Assistant with the button "Add host": once over SSH, the signed agent release
-  checked before it runs, nothing of the SSH access stored; the host then waits for approval at the hub.
+  checked before it runs, nothing of the SSH access stored; the host then waits for approval at the hub, or, where
+  `hub.yaml` sets `ha_approves_hosts` and Home Assistant has role `admin`, is approved in the same dialog.
 - Optionally, a failed run explained by an AI Task entity of Home Assistant: a short text, a cause and next steps from
   fixed lists, and a quote checked against the log; host names and addresses replaced before sending, advice only.
 
@@ -45,8 +46,9 @@ Every document except the ADRs and `AGENTS.md` also exists in German, as `*.de.m
 
 ## Install
 
-- **Home Assistant:** through HACS (add this repository as a custom repository, type Integration) or by hand; see
-  [ha/README.md](ha/README.md).
+- **Home Assistant:** through HACS, which Home Assistant shows as Marketplace: search for "Vördr", install it and
+  restart Home Assistant. If it is not listed, add this repository as a custom repository (type Integration). Installing
+  by hand also works; see [ha/README.md](ha/README.md).
 - **Hub and agents:** `./build.sh` builds the binaries; setup, systemd units and hardening are in
   [deploy/README.md](deploy/README.md), as is signing your own agent releases.
 

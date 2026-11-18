@@ -67,7 +67,8 @@ Non-goals ([ADR-0013](../docs/adr/0013-scope-limits.md)):
 4. **Smallest attack surface.** Closed set of verbs, no shell, no package names from outside, no web interface in the
    hub. Agents talk only to the hub, never to Home Assistant
    ([ADR-0005](../docs/adr/0005-closed-verbs-without-shell.md),
-   [ADR-0010](../docs/adr/0010-administration-only-local.md), [ADR-0023](../docs/adr/0023-own-ha-integration.md)).
+   [ADR-0010](../docs/adr/0010-administration-only-local.md), [ADR-0023](../docs/adr/0023-own-ha-integration.md),
+   [ADR-0192](../docs/adr/0192-an-admin-home-assistant-may-approve-a-waiting-host-when-the-hub-allows-it.md)).
 5. **Only entities that mean something here**, and deletion only on a reliable answer (lesson from the earlier
    agent: otherwise entities flicker on every restart).
 6. **Special cases only explicitly and with a reason** that stays visible in the log and in HA (e.g. a run outside the
@@ -142,7 +143,7 @@ TLS secures confidentiality. Trust in jobs and binaries rests on the signatures
 |---|---|---|
 | taken over a host | forge its state | influence other hosts, create jobs |
 | taken over the hub | read the inventory; trigger allowed jobs, with a reason also outside the window (ADR-0087); forge the HA display | put commands or code on hosts, choose packages, widen the scope, get around the reboot ban or the minimum interval, swap agent binaries |
-| an approved Home Assistant | trigger check and install, with a reason also outside the window, with role `admin` also reboots (12) – through the hub, so within the policies; with role `admin` fetch the signed agent release for a new host, at most 4 one-time downloads per 15 minutes (10.4) | more than the hub; reboot a host that does not need it, again after a reboot that did not take (ADR-0153), outside a window the host keeps shut (ADR-0154) or while its idle check says busy (ADR-0155) |
+| an approved Home Assistant | trigger check and install, with a reason also outside the window, with role `admin` also reboots (12) – through the hub, so within the policies; with role `admin` fetch the signed agent release for a new host, at most 4 one-time downloads per 15 minutes (10.4); where `hub.yaml` sets `ha_approves_hosts`, with role `admin` approve a waiting host with the fingerprint the hub holds (10.1) | more than the hub; undo a rejection, reject or forget a host, take a known host's name with another key; reboot a host that does not need it, again after a reboot that did not take (ADR-0153), outside a window the host keeps shut (ADR-0154) or while its idle check says busy (ADR-0155) |
 | the network (eavesdrop, redirect) | disturb connections | forge jobs (hub signature), slip in binaries (operator signature and SHA-256) |
 | the operator key | put code on all agents | – hence never on the hub; rotation through a new public key in the agent configuration |
 
@@ -570,9 +571,15 @@ install, only `check`. `vordr-agent check-config` checks the file before the ser
 1. On first start the agent creates its identity, connects, checks the hub's signature on the challenge against
    `hub.public_key` (6.2), signs the challenge and sends `hello`.
 2. The hub registers the host as `pending_approval`; HA shows it under "Pending approvals" with its fingerprint.
-3. Approval happens only at the hub itself: `vordr-hub approve <node> --fingerprint <fp>`, after comparing with
-   `vordr-agent identity` on the host. HA cannot admit hosts
-   ([ADR-0010](../docs/adr/0010-administration-only-local.md)).
+3. Approval happens at the hub: `vordr-hub approve <node> --fingerprint <fp>`, after comparing with
+   `vordr-agent identity` on the host ([ADR-0010](../docs/adr/0010-administration-only-local.md)). Where `hub.yaml`
+   sets `ha_approves_hosts` (default `false`), a Home Assistant client with role `admin` may approve a waiting host as
+   well (`approve_host`, [ha-integration.md](ha-integration.md), section 5): from the host's repair with the
+   fingerprint `vordr-agent identity` printed, or in "Add host" right after the install with the fingerprint read over
+   the SSH connection whose host key the person confirmed. The hub approves only a node that waits, with the fingerprint
+   it holds for the node's key, decided under the register's lock; a rejected host stays rejected. The event log names
+   the client (`approve`, `approve_refused` with its code). Rejecting and forgetting stay at the hub
+   ([ADR-0192](../docs/adr/0192-an-admin-home-assistant-may-approve-a-waiting-host-when-the-hub-allows-it.md)).
 4. Only then do the HA entities appear, and the hub accepts reports.
 
 Before step 1 the agent comes onto the host. On Linux `vordr-agent install` does that from the binary alone
@@ -1825,7 +1832,9 @@ entry in `install.allowed_scopes`, Vördr only reports and pulls, starts or chan
   events`, for Home Assistant clients (own registry `clients.json`) `clients | approve-client <name> --fingerprint
   <fp> | reject-client <name> | forget-client <name> | client-role <name> --role <role>`. Without the socket: `key`,
   `check-config`, `version`. Not built yet: a command for the rings (`rings`)
-  ([ADR-0010](../docs/adr/0010-administration-only-local.md)).
+  ([ADR-0010](../docs/adr/0010-administration-only-local.md)). The one exception: where `hub.yaml` sets
+  `ha_approves_hosts`, a Home Assistant client with role `admin` may also approve a waiting host (10.1,
+  [ADR-0192](../docs/adr/0192-an-admin-home-assistant-may-approve-a-waiting-host-when-the-hub-allows-it.md)).
 - **Stopping** (SIGTERM): The hub accepts nothing new, closes the connections of the agents and Home Assistant clients
   and waits up to 10 s until what it started is done (a report that is being saved, the result of a job). Waiting for
   job results ends with `hub_stopping` and records nothing: the run stays open, and the agent's next hello settles it
@@ -1878,7 +1887,10 @@ entry in `install.allowed_scopes`, Vördr only reports and pulls, starts or chan
   - `observe`: views only.
   - `operate`: check, install, agent update. This is the default.
   - `admin`: additionally reboot, and the agent release for a new host (`agent_download`, 10.4,
-    [ADR-0167](../docs/adr/0167-home-assistant-gets-one-time-downloads-of-the-signed-agent-release.md)).
+    [ADR-0167](../docs/adr/0167-home-assistant-gets-one-time-downloads-of-the-signed-agent-release.md)); where
+    `hub.yaml` sets `ha_approves_hosts`, also approving a waiting host (`approve_host`, 10.1,
+    [ADR-0192](../docs/adr/0192-an-admin-home-assistant-may-approve-a-waiting-host-when-the-hub-allows-it.md)). A role
+    change sends a connected client its status again, so that the feature comes or goes at once.
 
   The host's policy has the last word anyway. The role limits what a compromised Home Assistant can make the hub
   sign. A refusal is called `role_forbids`, and HA shows its own text for it.

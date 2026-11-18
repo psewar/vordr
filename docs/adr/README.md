@@ -43,7 +43,7 @@ Generated from the files by `python3 docs/adr/check_index.py --write`. `build.sh
 | [0007](0007-fixed-codes-instead-of-error-texts.md) | Fixed codes instead of error texts | accepted | 2026-10-28 |
 | [0008](0008-hub-writes-ha-texts.md) | The hub writes the texts for Home Assistant, in German | superseded by ADR-0027 | 2026-10-28 |
 | [0009](0009-ha-via-mqtt-discovery.md) | Home Assistant via MQTT discovery from the hub, agents without MQTT | superseded by ADR-0023 | 2026-10-28 |
-| [0010](0010-administration-only-local.md) | Administration and approval only locally at the hub | accepted | 2026-10-28 |
+| [0010](0010-administration-only-local.md) | Administration and approval only locally at the hub | superseded by ADR-0192 | 2026-10-28 |
 | [0011](0011-state-in-files.md) | Hub state in files, no database | accepted | 2026-10-28 |
 | [0012](0012-copy-parts-of-the-earlier-agent.md) | Copy parts of the earlier agent instead of a shared library | accepted | 2026-10-28 |
 | [0013](0013-scope-limits.md) | Scope limits: what Vördr does not do, and who gets no agent | accepted | 2026-10-28 |
@@ -190,7 +190,7 @@ Generated from the files by `python3 docs/adr/check_index.py --write`. `build.sh
 | [0154](0154-a-host-can-keep-reboots-inside-its-window-even-with-a-reason.md) | A host can keep reboots inside its window even with a reason | accepted | 2026-11-16 |
 | [0155](0155-an-idle-check-of-the-host-can-hold-a-reboot.md) | An idle check of the host can hold a reboot | accepted | 2026-11-16 |
 | [0156](0156-the-config-flow-keeps-its-key-until-the-client-is-set-up.md) | The config flow keeps its key for a hub and client name until the client is set up | accepted | 2026-11-17 |
-| [0157](0157-a-waiting-host-is-a-repair-that-names-the-approval-command.md) | A waiting host is a repair that names the approval command | accepted | 2026-11-17 |
+| [0157](0157-a-waiting-host-is-a-repair-that-names-the-approval-command.md) | A waiting host is a repair that names the approval command | superseded by ADR-0192 | 2026-11-17 |
 | [0158](0158-home-assistants-own-updates-follow-vordrs-rules-in-the-integration.md) | Home Assistant's own updates follow Vördr's rules in the integration, closed by default | accepted | 2026-11-17 |
 | [0159](0159-the-minimum-age-of-a-home-assistant-update-counts-from-its-first-sight.md) | The minimum age of a Home Assistant update counts from its first sight | accepted | 2026-11-17 |
 | [0160](0160-a-new-major-version-of-a-home-assistant-update-stays-manual.md) | A new major version of a Home Assistant update stays manual | accepted | 2026-11-17 |
@@ -225,4 +225,5 @@ Generated from the files by `python3 docs/adr/check_index.py --write`. `build.sh
 | [0189](0189-the-diagnostics-download-names-no-site.md) | The diagnostics download names no site | proposed | 2026-11-18 |
 | [0190](0190-one-public-check-runs-the-install-script-as-root-under-the-real-systemd.md) | One public check runs the install script as root under the real systemd | proposed | 2026-11-18 |
 | [0191](0191-the-hub-bounds-every-field-of-an-agents-hello-before-it-keeps-it.md) | The hub bounds every field of an agent's hello before it keeps it | proposed | 2026-11-18 |
+| [0192](0192-an-admin-home-assistant-may-approve-a-waiting-host-when-the-hub-allows-it.md) | An admin Home Assistant may approve a waiting host when the hub allows it | accepted | 2026-11-18 |
 <!-- adr-index:end -->

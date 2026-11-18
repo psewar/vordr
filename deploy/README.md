@@ -51,6 +51,13 @@ the SSH access is stored, and the host is not stored in Home Assistant either ([
 [ADR-0185](../docs/adr/0185-the-agent-install-starts-from-an-add-host-button-and-stores-no-subentry.md)). The host
 then waits for approval at the hub, as below.
 
+Hosts are approved at the hub. To let Home Assistant approve them as well, set `ha_approves_hosts: true` in `hub.yaml`
+(off by default; `check-config` names it) and give the client role `admin`: then *Add host* approves the new host in
+the same dialog, with the fingerprint it read over the SSH connection whose host key the person confirmed, and the
+repair of any other waiting host approves it with the fingerprint `vordr-agent identity` prints on that host.
+Rejecting and forgetting hosts stay at the hub
+([ADR-0192](../docs/adr/0192-an-admin-home-assistant-may-approve-a-waiting-host-when-the-hub-allows-it.md)).
+
 ## Agent
 
 The short way needs only the binary for the host's architecture. Before it runs as root, compare its SHA-256 with the
@@ -219,6 +226,8 @@ the sandbox.
 ## Commands from Home Assistant
 
 Commands come only over the authenticated connection of an approved HA client. The hub checks them against the host's
-verbs and policy before it signs them, and the agent checks every job once more. A client cannot approve hosts or
-change anything in their policies; `vordr-hub reject-client` / `forget-client` revoke it and cut its connection
-immediately.
+verbs and policy before it signs them, and the agent checks every job once more. A client cannot change anything in
+the hosts' policies, and it approves a waiting host only where `hub.yaml` sets `ha_approves_hosts` and it has role
+`admin`, with the fingerprint the hub holds; it never rejects or forgets a host
+([ADR-0192](../docs/adr/0192-an-admin-home-assistant-may-approve-a-waiting-host-when-the-hub-allows-it.md)).
+`vordr-hub reject-client` / `forget-client` revoke it and cut its connection immediately.

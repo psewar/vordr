@@ -48,7 +48,7 @@
       "step": {
         "user": {
           "title": "Add a host",
-          "description": "Installs the Vördr agent on a new host. For Linux with systemd and apt only (Debian, Ubuntu, Raspberry Pi OS). Home Assistant reaches the host once over SSH, has it fetch the signed agent release from the hub, checks size and SHA-256 against the manifest signed with your operator key, and runs `vordr-agent install`. Nothing of the SSH access is stored: no password, no key, no host key; nor is the host stored here: the hub keeps the list of hosts. Afterwards the host waits for approval at the hub, like any new host.\n\nThe hub hands out the agent release only to a client with role admin. If this Home Assistant has another role, at the hub: `vordr-hub client-role {client} --role admin`.\n\nNext you check the host key, before you enter a password.",
+          "description": "Installs the Vördr agent on a new host. For Linux with systemd and apt only (Debian, Ubuntu, Raspberry Pi OS). Home Assistant reaches the host once over SSH, has it fetch the signed agent release from the hub, checks size and SHA-256 against the manifest signed with your operator key, and runs `vordr-agent install`. Nothing of the SSH access is stored: no password, no key, no host key; nor is the host stored here: the hub keeps the list of hosts. Afterwards the host waits for approval at the hub, like any new host; where the hub lets this Home Assistant approve hosts (`ha_approves_hosts` in hub.yaml, role admin), this dialog approves it right after the install.\n\nThe hub hands out the agent release only to a client with role admin. If this Home Assistant has another role, at the hub: `vordr-hub client-role {client} --role admin`.\n\nNext you check the host key, before you enter a password.",
           "data": {
             "host": "Host",
             "port": "SSH port",
@@ -88,7 +88,7 @@
         }
       },
       "progress": {
-        "install": "Installing the agent on {host}: the signed release from the hub, checked against your operator key; downloaded on the host, its size and SHA-256 compared; then `vordr-agent install`. This may take a few minutes. Closing this dialog stops waiting for the result; the host finishes or stops on its own and removes its temporary folder."
+        "install": "Installing the agent on {host}: the signed release from the hub, checked against your operator key; downloaded on the host, its size and SHA-256 compared; then `vordr-agent install`. Where the hub lets this Home Assistant approve hosts, up to a minute more until the hub lists the new host, which is then approved. This may take a few minutes. Closing this dialog stops waiting for the result; the host finishes or stops on its own and removes its temporary folder."
       },
       "error": {
         "invalid_host": "A host name or an IP address (IPv6 without brackets).",
@@ -152,7 +152,9 @@
         "ssh_lost": "The connection to the host ended during the install. Its state is unknown: on the host, `systemctl status vordr-agent` and `vordr-agent identity` tell.",
         "ssh_timeout": "The install did not end in time. Its state is unknown: on the host, `systemctl status vordr-agent` and `vordr-agent identity` tell.",
         "install_no_result": "The install on the host gave no result Home Assistant can read. Its state is unknown: on the host, `systemctl status vordr-agent` and `vordr-agent identity` tell.",
-        "agent_installed": "The agent {version} is installed on `{node}` and waits for approval at the hub. Its fingerprint:\n\n`{fingerprint}`\n\nAs soon as the hub lists the host, Home Assistant shows a repair with the command that approves it: compare the fingerprint there with this one, then run the command at the hub. Once approved, the host shows as a device of this integration. Nothing of the SSH access was stored, and the host is not stored here either: the hub keeps the list of hosts.",
+        "agent_installed": "The agent {version} is installed on `{node}` and waits for approval at the hub. Its fingerprint:\n\n`{fingerprint}`\n\nAs soon as the hub lists the host, Home Assistant shows a repair with the command that approves it: compare the fingerprint there with this one, then run the command at the hub, or, where the hub lets this Home Assistant approve hosts, fix the repair here. Once approved, the host shows as a device of this integration. Nothing of the SSH access was stored, and the host is not stored here either: the hub keeps the list of hosts.",
+        "agent_installed_approved": "The agent {version} is installed on `{node}` and approved at the hub. Its fingerprint:\n\n`{fingerprint}`\n\nHome Assistant read it over the SSH connection whose host key you confirmed, and the hub listed the new host with exactly this fingerprint. The host shows as a device of this integration shortly. Nothing of the SSH access was stored, and the host is not stored here either: the hub keeps the list of hosts.",
+        "agent_installed_not_approved": "The agent {version} is installed on `{node}` and waits for approval at the hub; the hub did not approve it from here (`{code}`). Its fingerprint:\n\n`{fingerprint}`\n\nAs soon as the hub lists the host, Home Assistant shows a repair with the command that approves it: compare the fingerprint there with this one, then run the command at the hub, or, where the hub lets this Home Assistant approve hosts, fix the repair here. Once approved, the host shows as a device of this integration. Nothing of the SSH access was stored, and the host is not stored here either: the hub keeps the list of hosts.",
         "agent_config_invalid": "`vordr-agent install` refused: the agent.yaml for these values has issues; run it on the host to see them. Nothing was changed on the host.",
         "agent_config_differs": "`vordr-agent install` refused: there is an /etc/vordr/agent.yaml on the host already, and it differs. Compare it there; to replace it, run `vordr-agent install` on the host with `--replace-config` and your reason. Nothing was changed on the host.",
         "agent_hub_unreachable": "`vordr-agent install` refused: the host does not reach the hub at `{hub}` (stage `{stage}`). Nothing was changed on the host.",
@@ -877,7 +879,43 @@
     },
     "waiting_host": {
       "title": "Vördr: host {node} waits for approval",
-      "description": "A host asks the hub to admit it as {node} (system `{os}`). The hub saw its key with this fingerprint:\n\n`{fingerprint}`\n\nApproval stays at the hub. If you expect this host, run `vordr-agent identity` on the host itself (for a device behind a proxy agent, with the `--config` of its instance) and compare. Only if both fingerprints are the same, run on the hub:\n\n`{command}`\n\nIf they differ, do not approve: another key asks under this name, and `vordr-hub reject {node}` keeps it out. This hint goes away once the host is approved, rejected or forgotten."
+      "description": "A host asks the hub to admit it as {node} (system `{os}`). The hub saw its key with this fingerprint:\n\n`{fingerprint}`\n\nApproval is at the hub: Home Assistant may approve hosts only where hub.yaml sets `ha_approves_hosts` and this client has role admin. If you expect this host, run `vordr-agent identity` on the host itself (for a device behind a proxy agent, with the `--config` of its instance) and compare. Only if both fingerprints are the same, run on the hub:\n\n`{command}`\n\nIf they differ, do not approve: another key asks under this name, and `vordr-hub reject {node}` keeps it out. This hint goes away once the host is approved, rejected or forgotten."
+    },
+    "waiting_host_approve": {
+      "title": "Vördr: host {node} waits for approval",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Approve {node}?",
+            "description": "A host asks the hub to admit it as {node} (system `{os}`). The hub saw its key with this fingerprint:\n\n`{fingerprint}`\n\nIf you expect this host, run `vordr-agent identity` on the host itself (for a device behind a proxy agent, with the `--config` of its instance) and enter the fingerprint it prints below - from the host, not from this text: only that comparison shows that the key is the host's. If both are the same, Home Assistant asks the hub to approve the host, and it shows as a device of this integration shortly. Instead, you can also run on the hub:\n\n`{command}`\n\nIf they differ, do not approve: another key asks under this name, and `vordr-hub reject {node}` on the hub keeps it out. This repair goes away once the host is approved, rejected or forgotten.",
+            "data": {
+              "fingerprint": "Fingerprint from the host"
+            },
+            "data_description": {
+              "fingerprint": "As `vordr-agent identity` prints it on the host: 64 hex digits. Spaces and upper case do not matter."
+            }
+          }
+        },
+        "error": {
+          "invalid_fingerprint": "That is no fingerprint: `vordr-agent identity` prints 64 hex digits (0-9, a-f).",
+          "fingerprint_differs": "This is not the fingerprint the hub saw for this host. Do not approve it: another key asks under this name. Nothing was sent; keep it out at the hub with `vordr-hub reject` and the host's name, as shown above."
+        },
+        "abort": {
+          "hub_not_connected": "Home Assistant is not connected to the Vördr hub right now. Try again once it is.",
+          "no_longer_waiting": "{node} no longer waits for approval: the hub approved, rejected or forgot it meanwhile.",
+          "approval_not_offered": "The hub no longer lets this Home Assistant approve hosts (hub.yaml `ha_approves_hosts`, role admin). Approve {node} at the hub with the command its repair shows.",
+          "approve_ha_approval_off": "The hub refused: it does not let Home Assistant approve hosts (`ha_approves_hosts` in hub.yaml is off). Approve {node} at the hub with the command its repair shows.",
+          "approve_client_not_approved": "The hub refused: it does not count this Home Assistant as an approved client (any more); `vordr-hub clients` at the hub tells. {node} still waits.",
+          "approve_role_forbids": "The hub refused: only a client with role admin may approve hosts, and this Home Assistant has another role (vordr-hub client-role). {node} still waits.",
+          "approve_unknown_node": "The hub refused: it does not know {node} (any more); it was forgotten meanwhile.",
+          "approve_not_waiting": "The hub refused: {node} no longer waits for approval, it was approved or rejected meanwhile. A rejection is undone only at the hub.",
+          "approve_fingerprint_mismatch": "The hub refused: {node} waits with another key than this fingerprint names. Do not approve it; check the host, and keep it out at the hub with `vordr-hub reject {node}` if in doubt.",
+          "approve_bad_request": "The hub refused the fingerprint as malformed. {node} still waits.",
+          "approve_store_failed": "The hub could not write its register, so {node} still waits. Check the hub's log and disk, then try again.",
+          "approve_no_answer": "The hub did not answer in time. Whether {node} was approved shows shortly: this repair goes away once it is.",
+          "approve_refused": "The hub refused to approve {node} (code {code})."
+        }
+      }
     },
     "ha_update_failed": {
       "title": "Vördr: installing {entity_id} failed",

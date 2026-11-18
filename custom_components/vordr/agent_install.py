@@ -782,6 +782,9 @@ ABORTS: Final = {
     "install_no_result": (),
     # vordr-agent install
     "agent_installed": ("node", "fingerprint", "version"),
+    # ... and the approval right after it, where the hub lets this Home Assistant approve hosts (ADR-0192)
+    "agent_installed_approved": ("node", "fingerprint", "version"),
+    "agent_installed_not_approved": ("node", "fingerprint", "version", "code"),
     "agent_config_invalid": (),
     "agent_config_differs": (),
     "agent_hub_unreachable": ("stage", "hub"),

@@ -3,14 +3,17 @@
 English · [Deutsch](README.de.md)
 
 `custom_components/vordr` makes Home Assistant a client of the hub (`vordr-hub`) over `/v1/ha`
-([design/ha-integration.md](../design/ha-integration.md)). The hub stays the only place that approves hosts and signs
-jobs; the integration shows its views and requests commands.
+([design/ha-integration.md](../design/ha-integration.md)). The hub signs every job and approves hosts; only where its
+`hub.yaml` sets `ha_approves_hosts` may a client with role `admin` approve a waiting host from Home Assistant
+([ADR-0192](../docs/adr/0192-an-admin-home-assistant-may-approve-a-waiting-host-when-the-hub-allows-it.md)). The
+integration shows the hub's views and requests commands.
 
 ## Setup
 
-1. Through HACS: add this repository as a custom repository (type Integration), install "Vördr", restart Home
-   Assistant. HACS shows new versions as an update. Without HACS: copy `custom_components/vordr` to
-   `/config/custom_components/vordr` and restart Home Assistant.
+1. Through HACS, which Home Assistant shows as Marketplace: search for "Vördr", install it and restart Home
+   Assistant. HACS shows new versions as an update. If "Vördr" is not listed, first add this repository as a custom
+   repository (type Integration). Without HACS: copy `custom_components/vordr` to `/config/custom_components/vordr`
+   and restart Home Assistant.
 2. Add the integration "Vördr": address `wss://<hub>:8443/v1/ha`, the name of the client, and the CA certificate
    if you use your own CA. The integration checks reachability in stages (name, connection, TLS, endpoint, challenge)
    and names the one that fails.
@@ -63,9 +66,14 @@ was checked and has nothing to update, e.g. as a template condition
   ([ADR-0148](../docs/adr/0148-a-kept-failed-install-is-a-repair-that-installs-again.md)).
 - A host waiting for approval at the hub shows up as a repair hint (a warning) with the fingerprint the hub saw and the
   command for the hub, `vordr-hub approve <node> --fingerprint <fp>`. Compare the fingerprint with
-  `vordr-agent identity` on the host first. Home Assistant cannot approve; the hint goes once the host is approved,
-  rejected or forgotten
-  ([ADR-0157](../docs/adr/0157-a-waiting-host-is-a-repair-that-names-the-approval-command.md)).
+  `vordr-agent identity` on the host first. The hint goes once the host is approved, rejected or forgotten
+  ([ADR-0157](../docs/adr/0157-a-waiting-host-is-a-repair-that-names-the-approval-command.md)). Where the hub's
+  `hub.yaml` sets `ha_approves_hosts: true` and this Home Assistant has role `admin`
+  (`vordr-hub client-role <name> --role admin`), the hub names `approve_host` in its status and the hint can be fixed
+  here: "Fix" asks for the fingerprint `vordr-agent identity` printed on the host (spaces and upper case do not
+  matter), refuses one that differs from the hub's without sending anything, and otherwise asks the hub to approve the
+  host. Without that, Home Assistant cannot approve; rejecting and forgetting stay at the hub either way
+  ([ADR-0192](../docs/adr/0192-an-admin-home-assistant-may-approve-a-waiting-host-when-the-hub-allows-it.md)).
 - Vulnerable pip/npm packages make a problem only if someone can take the fix now: by button, by refreshing the
   dependencies or by hand. If a finding waits on others (a package or a project file pins the version, there is no fix
   yet, or it is younger than the minimum age), it appears only on the sensor `_vulnerable_packages`: per finding
@@ -157,7 +165,8 @@ What it needs:
   Operator keys*, as `vordr-release public-key` prints them. Home Assistant checks every release against them and
   never takes a key from the hub;
 - on the host: SSH, `root` or a user with `sudo`, `curl` or `wget`, and the hub reachable at the address this
-  integration uses.
+  integration uses;
+- optionally, for the approval in the same dialog: `ha_approves_hosts: true` in the hub's `hub.yaml`.
 
 Then press *Add host* on the integration's page (*Settings → Devices & services → Vördr*; with several hubs, at the
 entry of the hub the host should join). If something it needs is missing, the dialog says what before it asks for
@@ -178,9 +187,15 @@ library missing. Otherwise:
    compares its size and SHA-256 with the signed manifest and only then runs `vordr-agent install`. The folder goes in
    every case.
 
-At the end the dialog shows the agent's fingerprint. The host now waits for approval at the hub; as soon as the hub
-lists it, the repair "Host … waits for approval" shows the command. Compare the fingerprint, then approve at the hub;
-the host then shows as a device of the integration. The button stores no entry of its own for the host, so the
+At the end the dialog shows the agent's fingerprint. Where the hub names `approve_host` (above), the dialog first waits
+up to a minute for the hub to list the new host as waiting with exactly that fingerprint (under the node name you
+entered, if you entered one), and then approves it: the
+fingerprint came over the SSH connection whose host key you confirmed, so the comparison is made by construction
+([ADR-0192](../docs/adr/0192-an-admin-home-assistant-may-approve-a-waiting-host-when-the-hub-allows-it.md)). Its
+end then says that the host is approved, or, if the hub refused, its code. Otherwise, or if the host does not show up
+in time, the host waits for approval at the hub; as soon as the hub lists it, the repair "Host … waits for approval"
+shows the command. Compare the fingerprint, then approve at the hub (or fix the repair, where the hub allows it); the
+host then shows as a device of the integration. The button stores no entry of its own for the host, so the
 integration's page lists none. Every other end names what happened on the host and what to do next. A host with a policy of its own is still set up
 by hand (`deploy/README.md`); the agent installed this way checks and reports, and installs nothing until its
 `agent.yaml` allows it.

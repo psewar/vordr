@@ -30,6 +30,10 @@ type Config struct {
 	// NoReportAfterHours: a connected host that has not reported a check this long sets the problem sensor (agents
 	// check every 6 hours).
 	NoReportAfterHours int `yaml:"no_report_after_hours"`
+	// HAApprovesHosts: a Home Assistant client with role admin may approve a host that waits for approval, with the
+	// fingerprint the hub holds for it (ADR-0192). Off by default: then hosts are approved only at the hub's command
+	// line.
+	HAApprovesHosts bool `yaml:"ha_approves_hosts"`
 	// MQTT is gone since 0.6 (Home Assistant connects itself over /v1/ha). Still read, so that an old hub.yaml gets
 	// told what to do instead of a bare "unknown field".
 	MQTT any `yaml:"mqtt"`

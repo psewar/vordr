@@ -33,7 +33,7 @@ Begründung als ADR: [ADR-0022](../docs/adr/0022-hub-stays-own-service.md).
 | Signierschlüssel | bleibt in der Leitstelle; HA kann nur anfragen | läge in HA; ein übernommenes HA signiert Aufträge an alle Hosts |
 | Erreichbarkeit | Agenten erreichen nur die Leitstelle | jedes Netz bräuchte einen Weg zu HA |
 | HA-Neustart (Updates!) | trennt nur die Integration; Agenten bleiben verbunden | trennt alle Tunnel |
-| Freigabe neuer Hosts | nur an der Leitstelle, wie heute | in HA |
+| Freigabe neuer Hosts | an der Leitstelle; in HA nur, wo die Leitstelle es erlaubt (5c) | in HA |
 | Aufwand | Endpunkt in der Leitstelle + Integration | Leitstelle in Python neu bauen |
 
 ## 3. Überblick
@@ -55,16 +55,20 @@ Leitstelle braucht keinen Weg zu HA. MQTT ist ganz entfallen (Abschnitt 8).
   denselben Schlüssel und setzt so die Anfrage fort, die die Leitstelle behält; der Entry übernimmt den Schlüssel, und
   die Datei vergisst diese Leitstelle
   ([ADR-0156](../docs/adr/0156-the-config-flow-keeps-its-key-until-the-client-is-set-up.md)).
-- Freigegeben wird sie **nur an der Leitstelle**, wie ein Host: `vordr-hub clients` zeigt wartende Clients,
+- Freigegeben wird sie **nur an der Leitstelle**, nie durch einen anderen Client: `vordr-hub clients` zeigt wartende
+  Clients,
   `vordr-hub approve-client <name> --fingerprint <fp>` gibt frei, `reject-client` / `forget-client` widerrufen.
   Der Config-Flow zeigt Fingerprint und Befehl und wartet, bis die Freigabe da ist.
 - Ein freigegebener HA-Client darf:
   - den Zustand aller freigegebenen Hosts und die Liste wartender Hosts (Name, Fingerprint, OS) lesen,
   - Befehle aus der festen Liste anfragen (`check`, `install`, `install_security`, `install_app:<id>`, `reboot`,
     `agent_update`); die Leitstelle prüft sie wie heute gegen Verben und Richtlinie des Hosts und signiert erst dann,
-  - mit Rolle `admin`: die signierte Agent-Release holen, um einen neuen Host einzurichten (`agent_download`, 5b).
-- Er darf nicht: Hosts freigeben, ablehnen oder vergessen, Richtlinien ändern, selbst signieren, andere Clients sehen,
-  den Betreiberschlüssel von der Leitstelle beziehen (er hat ihn von der Person, die ihn einrichtet, 5b).
+  - mit Rolle `admin`: die signierte Agent-Release holen, um einen neuen Host einzurichten (`agent_download`, 5b),
+  - mit Rolle `admin`, wo `hub.yaml` `ha_approves_hosts` setzt: einen Host freigeben, der auf Freigabe wartet, mit dem
+    Fingerprint, den die Leitstelle für ihn führt (`approve_host`, 5c).
+- Er darf nicht: Hosts ablehnen oder vergessen, einen ohne Erlaubnis der Leitstelle freigeben oder eine Ablehnung
+  aufheben, Richtlinien ändern, selbst signieren, andere Clients sehen, den Betreiberschlüssel von der Leitstelle
+  beziehen (er hat ihn von der Person, die ihn einrichtet, 5b).
 - Mehrere HA-Clients sind möglich (z. B. ein Test-HA), jeder einzeln freigegeben und widerrufbar.
 
 Änderung am Bedrohungsmodell (architecture.de.md, 5): Ein übernommenes HA kann wie bisher nur erlaubte Aufträge anstossen.
@@ -78,7 +82,7 @@ JSON-Nachrichten über WebSocket, wie der Agenten-Tunnel; `protocol: 1` im Hello
 |---|---|---|
 | Hub → HA | `challenge` | Nonce |
 | HA → Hub | `hello` | `role: "ha"`, Name, öffentlicher Schlüssel, Signatur (Kontext `vordr/ha-hello/v1`), Integrationsversion, `protocol` |
-| Hub → HA | `status` | `pending_approval` / `approved` / `rejected` mit Grund; erneut bei Änderung; `features`: was die Leitstelle über das Grundprotokoll hinaus annimmt (`agent_download`) |
+| Hub → HA | `status` | `pending_approval` / `approved` / `rejected` mit Grund; erneut bei Änderung und nach einem Rollenwechsel; `features`: was die Leitstelle über das Grundprotokoll hinaus annimmt (`agent_download`; `approve_host` nur, wo 5c es erlaubt) |
 | Hub → HA | `snapshot` | Leitstelle (Version, `protocol`, wartende Hosts) und alle Hosts als `HostView`; nach jeder Freigabe und jedem Verbindungsaufbau |
 | Hub → HA | `host` / `host_removed` | ein `HostView` bei jeder Änderung / Host vergessen oder abgelehnt |
 | Hub → HA | `hub` | Leitstellen-Zustand bei Änderung (wartende Hosts) |
@@ -86,6 +90,8 @@ JSON-Nachrichten über WebSocket, wie der Agenten-Tunnel; `protocol: 1` im Hello
 | Hub → HA | `command_result` | `request_id`, `code` (`ok` = Auftrag signiert und gesendet, wartet auf den laufenden Lauf, oder ist dieser Lauf schon, dann mit dessen `job_id`; sonst fester Grund wie `verb_unsupported_by_agent`, `not_allowed_by_host_policy`, `not_connected`), `job_id`; das Ergebnis des Laufs kommt später im `HostView` (`last_run`) |
 | HA → Hub | `agent_download` | `request_id`, wahlweise `os` und `arch` eines neuen Hosts (5b); nur an eine Leitstelle, deren `status` `agent_download` nannte |
 | Hub → HA | `agent_download_result` | `request_id`, `code`; mit `ok` das signierte Manifest, seine Signatur, der Schlüssel der Leitstelle und je Binary ein Download-Pfad (5b) |
+| HA → Hub | `approve_host` | `request_id`, `node`, `fingerprint` eines Hosts, der auf Freigabe wartet (5c); nur an eine Leitstelle, deren `status` `approve_host` genannt hat |
+| Hub → HA | `approve_host_result` | `request_id`, `code` (`ok` = freigegeben, sonst warum nicht, 5c) |
 | beide | `heartbeat` | alle 30 s; 90 s Stille = Verbindung tot |
 
 `HostView` ist die transportneutrale Fassung des früheren MQTT-Zustands: Gerät (Name, Modell, Agent-Version),
@@ -194,6 +200,34 @@ Geräts nie.
 - **Ereignisprotokoll:** `agent_download_issued`, `agent_downloaded`, `agent_download_refused`, mit `download_id`
   statt des Tokens (architecture.de.md 10.4).
 
+### 5c. Einen wartenden Host freigeben
+
+Aus, solange `hub.yaml` nicht `ha_approves_hosts: true` setzt; `check-config` nennt es in jedem Fall
+([ADR-0192](../docs/adr/0192-an-admin-home-assistant-may-approve-a-waiting-host-when-the-hub-allows-it.md)).
+
+- **Merkmal:** Die Leitstelle nennt `approve_host` im `status` eines Clients, der mit seinem Schlüssel und der Rolle
+  `admin` freigegeben ist, so wie das Client-Register es hat, wenn der Status hinausgeht: bei der Anmeldung, bei der
+  Freigabe des Clients und erneut nach `vordr-hub client-role`, damit es während der Verbindung kommt oder geht. Die
+  Sitzung wird eingetragen, bevor ihr Status der Anmeldung hinausgeht, und jeder dieser Status liest das Register unter
+  der Sperre der Sitzung: Von zweien zugleich nennt der spätere den Zustand, wie er dann ist. Wie bei jedem Merkmal
+  ([ADR-0067](../docs/adr/0067-hub-announces-features.md)) sendet ein Client die Nachricht nur, solange sein letzter
+  Status sie genannt hat.
+- **Anfrage:** `approve_host` mit `request_id` und `node` wie bei `command` (fehlerhaft: Protokollverletzung, die
+  Verbindung endet) und `fingerprint`.
+- **Entscheidung**, auf den Registern, wie sie in diesem Moment sind: Ein Client, der nicht (oder nicht mit diesem
+  Schlüssel) freigegeben ist, bekommt `client_not_approved`, und die Verbindung endet wie bei `agent_download`; das
+  kommt zuerst, damit ein wartender Client das Ereignisprotokoll nicht vollschreiben kann. Dann `ha_approval_off` (der
+  Schalter), `role_forbids` (nicht `admin`), `bad_request` (der Fingerprint ist nicht 64 kleine Hex-Ziffern). Knoten
+  und Schlüssel werden in einem Schritt unter der Sperre des Host-Registers entschieden: `unknown_node`, `not_waiting`
+  (freigegeben oder abgelehnt: Eine Ablehnung an der Leitstelle wird nie aus Home Assistant aufgehoben),
+  `fingerprint_mismatch` (nicht der Schlüssel, den die Leitstelle für den Knoten führt); `store_failed`, wenn das
+  Register nicht geschrieben werden kann, und nichts ändert sich.
+- **Mit `ok`** ist der Host freigegeben wie durch `vordr-hub approve`: Ein verbundener Agent bekommt seinen `status`,
+  die Clients bekommen die neuen Sichten (der Host verlässt `waiting` und kommt als `host`).
+- **Ereignisprotokoll:** `approve` mit dem Namen des Clients und `code`, so wie `vordr-hub approve` es ohne ihn
+  protokolliert; `approve_refused` mit dem Client, seinem `code` und, bei `role_forbids`, der Rolle.
+- Ablehnen und Vergessen von Hosts und alles zu Clients bleiben auf der Kommandozeile der Leitstelle.
+
 ## 6. Die Integration `custom_components/vordr`
 
 - **Config-Flow:** Adresse (z. B. `wss://vordr-hub.example:8443/v1/ha`), optional eigenes CA-Zertifikat (PEM),
@@ -278,11 +312,23 @@ Geräts nie.
     `vordr_problem` bleiben); ohne angebotenen Install bleibt `problem_<node>` wie bisher.
 - **Wartender Host als Reparaturhinweis** `waiting_<node>`, solange die Leitstelle den Host als wartend auf Freigabe
   führt ([ADR-0157](../docs/adr/0157-a-waiting-host-is-a-repair-that-names-the-approval-command.md)):
-  - nicht behebbar, eine Warnung: Freigegeben wird nur an der Leitstelle (Abschnitt 4); ein neuer Host ist eine
-    Nachricht, kein Alarm;
+  - eine Warnung: Ein neuer Host ist eine Nachricht, kein Alarm;
   - der Text nennt den Knoten, das System, das der Host meldet, den Fingerprint, den die Leitstelle gesehen hat, und
     `vordr-hub approve <node> --fingerprint <fp>`, und verlangt zuerst den Vergleich mit `vordr-agent identity` auf dem
     Host selbst; weichen sie ab, nicht freigeben (`vordr-hub reject <node>`);
+  - nicht behebbar, ausser der letzte `status` der Leitstelle nennt `approve_host` (5c,
+    [ADR-0192](../docs/adr/0192-an-admin-home-assistant-may-approve-a-waiting-host-when-the-hub-allows-it.md)). Dann
+    ist er behebbar, mit eigenem Text (`waiting_host_approve`: auf dem Host vergleichen, dann hier beheben oder den
+    Befehl an der Leitstelle ausführen) und den Daten `kind: approve_host`. Die Hinweise folgen jedem `status`: Kommt
+    oder geht das Merkmal oder endet die Verbindung, werden sie sofort neu angelegt, nicht erst mit der nächsten
+    Änderung der Sicht der Leitstelle;
+  - sein Beheben (`ApproveHostFlow` in `repairs.py`) fragt nach dem Fingerprint, den `vordr-agent identity` auf dem
+    Host ausgegeben hat, ohne Leerzeichen und in Kleinbuchstaben; alles ausser 64 Hex-Ziffern ist ein Formularfehler,
+    ebenso ein Fingerprint, der nicht der in der Warteliste der Leitstelle ist, dessen Text sagt, nicht freizugeben und
+    wie an der Leitstelle abzulehnen ist; dann wird nichts gesendet. Beim Öffnen und vor dem Senden prüft er erneut:
+    Leitstelle nicht verbunden, Host wartet nicht mehr, Merkmal weg beenden ihn je mit eigenem Grund. Ein passender
+    Fingerprint geht als `approve_host` an die Leitstelle; jeder Code aus 5c und `no_answer` hat einen eigenen Text,
+    jeder andere wird genannt, wie er ist;
   - er folgt der eigenen Sicht der Leitstelle (Snapshot und `hub`): weg, sobald der Host freigegeben, abgelehnt oder
     vergessen ist;
   - nur für einen Knoten, der ein Host-Name ist, und einen Fingerprint aus 64 Hex-Ziffern; das System ist das eigene
@@ -438,7 +484,9 @@ Home Assistant erreicht einen neuen Host einmal über SSH, lässt ihn das signie
 führt dort `vordr-agent install` aus. Vom SSH-Zugang behält es nichts; danach wartet der Host wie jeder neue Host auf
 die Freigabe an der Leitstelle
 ([ADR-0161](../docs/adr/0161-home-assistant-installs-the-agent-once-over-ssh-and-keeps-no-credentials.md), mit dem
-Bedrohungsvergleich). Nur Linux mit systemd und apt.
+Bedrohungsvergleich), ausser die Leitstelle lässt dieses Home Assistant Hosts freigeben: Dann gibt der Flow ihn frei
+([ADR-0192](../docs/adr/0192-an-admin-home-assistant-may-approve-a-waiting-host-when-the-hub-allows-it.md)). Nur Linux
+mit systemd und apt.
 
 - **Betreiberschlüssel**, ein Punkt des Options-Menüs (Schlüssel `operator_keys`): der Betreiberschlüssel und ein
   optionaler Ersatz, Base64-Ed25519, wie `vordr-release public-key` sie ausgibt. Geprüft (32 Bytes, der Ersatz ungleich
@@ -463,7 +511,8 @@ Bedrohungsvergleich). Nur Linux mit systemd und apt.
 | Erkundung | als Benutzer, Fakten als `key=value`: `uname -s`, `uname -m`, `id -u`, systemd, `apt-get`, `curl`/`wget`, `sha256sum`, `base64`, `mktemp`, `timeout`, `systemd-run`, `sudo`; dann `sudo -k -n true`, sonst `sudo -k -S` mit dem Passwort auf stdin | `not_linux`, `unknown_arch`, `no_systemd`, `no_apt`, `no_download_tool`, `missing_tools`, `no_sudo`, `probe_failed` |
 | Release | `agent_download` für `linux/<arch>` (`x86_64` → `amd64`, `aarch64` → `arm64`, `armv7l`/`armv8l` → `arm`); die Signatur des Betreibers über `vordr/agent-manifest/v1\0` + Manifest mit den gespeicherten Schlüsseln; das Manifest so streng gelesen wie `VerifyManifest` des Agenten; Datei, SHA-256 und Grösse nur daraus; der Download-Pfad muss genau diese Datei öffnen; nicht älter als das neuste Release, das eine Installation dieses Eintrags genommen hat (gehalten in `.storage/vordr.agent_release.<entry_id>`, verglichen wie `NewerRelease` des Agenten) | die Codes der Leitstelle (`role_forbids` mit `vordr-hub client-role <client> --role admin`, `no_release`, `too_many_downloads`, …), `hub_refused`, `manifest_signature_invalid`, `manifest_invalid`, `no_binary_for_platform`, `release_too_old`, `download_invalid` |
 | Installation (`install`, Fortschritt) | als root, als eigener vorübergehender Dienst (`systemd-run --pipe --wait --collect`), ausserhalb der Anmeldesitzung; ein Skript, ohne `${…}` und `$$` in ihm und seinen Werten, da systemd sie in der Befehlszeile eines Dienstes ersetzt; ein privater temporärer Ordner (`mktemp -d`, umask 077, abgelehnt, wenn daraus nichts laufen darf); Download über HTTPS von Host und Port der Integration, mit der CA der Leitstelle, falls sie eine hat, die URL aus einer Datei in diesem Ordner gelesen (`curl -K`, `wget -i`), begrenzt auf die signierte Grösse (`curl --max-filesize`, `ulimit -f` für beide) und in der Zeit (`curl --max-time 900`, `timeout 900 wget`); beide geben eine Verbindung nach 20 s auf (`--connect-timeout`, wget mit `--tries=1`); curl ohne zustande gekommene Verbindung (`%{num_connects}` ist 0) endet mit `download_unreachable`, jeder andere Fehler und jeder Fehler von wget (sein Exit 4 unterscheidet eine abgewiesene Verbindung nicht von einem gescheiterten TLS-Handshake) mit `download_failed`; Grösse und SHA-256 verglichen, bevor etwas läuft; die CA der Leitstelle nach `/etc/vordr/hub-ca.pem` (verglichen, wenn sie schon da ist, nach einer Ablehnung wieder entfernt); `vordr-agent install --hub wss://<host>:<port>/v1/tunnel --hub-key <aus der Antwort> --operator-key … [--backup-operator-key] [--node] [--ca-file]`; der Ordner in jedem Fall per trap entfernt | `size_mismatch`, `hash_mismatch`, `download_failed`, `download_unreachable`, `download_refused`, `download_too_large`, `ca_differs`, `ca_failed`, `temp_noexec`, `temp_failed`, `bad_input`; die Codes des Agenten als `agent_<code>`, andere als `agent_refused`/`agent_failed`; `agent_no_result`, `install_no_result`, `ssh_lost`, `ssh_timeout` |
-| Ende (`result`) | die letzte Zeile des Agenten `result=installed node=<n> fingerprint=<hex>`; ein Abbruch, auch beim Erfolg: Kein Subentry wird gespeichert | `agent_installed` mit Knoten, Fingerprint und Version; der Reparaturhinweis `waiting_<node>` nennt dann den Befehl zur Freigabe, und nach der Freigabe ist der Host ein Gerät des Eintrags |
+| Freigabe (`install`, Fortschritt) | nur nach `agent_installed` und solange der Status der Leitstelle `approve_host` nennt (5c), und wo die Person den Knoten genannt hat, nur wenn der Agent diesen Knoten meldet; die SSH-Verbindung und alles Geheime sind dann schon weg. Wartet bis zu 60 s und schaut jede Sekunde in die Sicht der Leitstelle, bis deren Warteliste den Knoten mit genau dem Fingerprint hat, den die Installation auf dem Host gelesen hat, dann sendet es `approve_host`. Dieser Fingerprint kam über die Verbindung, deren Host-Schlüssel die Person bestätigt hat: Der Vergleich ist durch den Ablauf gemacht | `agent_installed_approved`; `agent_installed_not_approved` mit dem Code der Leitstelle; ohne das Merkmal, für einen anderen als den genannten Knoten oder wenn der Host nicht rechtzeitig erscheint, `agent_installed` |
+| Ende (`result`) | die letzte Zeile des Agenten `result=installed node=<n> fingerprint=<hex>`; ein Abbruch, auch beim Erfolg: Kein Subentry wird gespeichert | `agent_installed` mit Knoten, Fingerprint und Version; der Reparaturhinweis `waiting_<node>` nennt dann den Befehl zur Freigabe, und nach der Freigabe ist der Host ein Gerät des Eintrags; `agent_installed_approved`: Der Host ist freigegeben und erscheint in Kürze als Gerät |
 
 - **Was vom Host gelesen wird:** nur `key=value`-Felder: die Zeilen der Erkundung, die eigene letzte Zeile des Skripts
   (`step=<step> code=<code>`) und nach `step=agent exit=<n>` die letzte Zeile des Agenten. Prosa wird nie gelesen;
@@ -485,9 +534,9 @@ Bedrohungsvergleich). Nur Linux mit systemd und apt.
   seinem Typ auf einen Code ab, liest nichts aus `~/.ssh`, verwendet keinen SSH-Agenten und keine Standardschlüssel.
   `agent_install.py` enthält die reinen Teile (Prüfungen, Skripte, Lesen), `agent_installer.py` die Schritte und was
   sie halten, `config_flow.py` den Subentry-Flow von „Host hinzufügen“.
-- **Der Client** behält die `features` des letzten Status der Leitstelle und sendet `agent_download` nur an eine
-  Leitstelle, die es genannt hat ([ADR-0067](../docs/adr/0067-hub-announces-features.md)); die Antwort geht an den, der
-  gefragt hat, nie an den Koordinator oder eine Entität.
+- **Der Client** behält die `features` des letzten Status der Leitstelle und sendet `agent_download` und
+  `approve_host` nur an eine Leitstelle, die sie genannt hat ([ADR-0067](../docs/adr/0067-hub-announces-features.md));
+  die Antwort geht an den, der gefragt hat, nie an den Koordinator oder eine Entität.
 
 ### 6e. KI-Erklärungen gescheiterter Läufe (freiwillig)
 
@@ -585,6 +634,7 @@ sie (`ha/README.de.md`); die Integration installiert sie nicht, und ihre Version
 - `HostView` an einer Stelle berechnet (`internal/hub/view.go`, 5a); `/v1/ha` ist der einzige Weg zu HA.
 - Befehle laufen durch dasselbe `Resolve` wie früher die MQTT-Befehle.
 - `agent_download` und der Download-Pfad `/v1/agent-download/` für das Einrichten eines neuen Hosts (5b).
+- `approve_host`, wo `hub.yaml` `ha_approves_hosts` setzt, für Clients mit Rolle `admin` (5c).
 - Für den Umstieg gab es bis Leitstelle 0.5 `mqtt.mode: remove`: einmal verbinden, alle eigenen retained Themen
   löschen, trennen.
 
@@ -604,8 +654,9 @@ gleich die Integration ein (`ha/README.de.md`).
 
 ## 9. Prüfen
 
-- Leitstelle (Go): Freigabe des Clients, Client kann keine Hosts freigeben, Snapshot und Push, Befehle mit allen
-  Ablehnungsgründen, Widerruf trennt; Mutationsprobe auf die Rechteprüfung.
+- Leitstelle (Go): Freigabe des Clients, Client kann keine Hosts freigeben, ausser die Leitstelle erlaubt es und er
+  hat die Rolle `admin` (5c: jeder Code, das Merkmal mit Schalter und Rolle und erneut nach einem Rollenwechsel),
+  Snapshot und Push, Befehle mit allen Ablehnungsgründen, Widerruf trennt; Mutationsprobe auf die Rechteprüfung.
 - Integration (Python): `pytest-homeassistant-custom-component` unter Linux, mit der HA-Version, die
   `ha/requirements_test.txt` festlegt. Config-Flow samt Warten auf Freigabe, alle Entitäten, `None` → unbekannt,
   Verfügbarkeit, Knöpfe → Befehle, Entitäts-IDs, Reparaturhinweise. Die Installation über SSH (6d) gegen eine
@@ -651,7 +702,10 @@ gleich die Integration ein (`ha/README.de.md`).
    der Leitstelle**
    ([ADR-0161](../docs/adr/0161-home-assistant-installs-the-agent-once-over-ssh-and-keeps-no-credentials.md));
    **gestartet vom Knopf „Host hinzufügen“, der nichts speichert, auch keinen Subentry**
-   ([ADR-0185](../docs/adr/0185-the-agent-install-starts-from-an-add-host-button-and-stores-no-subentry.md)).
+   ([ADR-0185](../docs/adr/0185-the-agent-install-starts-from-an-add-host-button-and-stores-no-subentry.md));
+   **Freigabe in Home Assistant nur, wo `hub.yaml` es erlaubt, für die Rolle `admin`: in „Host hinzufügen“ und im
+   Reparaturhinweis des wartenden Hosts**
+   ([ADR-0192](../docs/adr/0192-an-admin-home-assistant-may-approve-a-waiting-host-when-the-hub-allows-it.md)).
 7. Updates von Home Assistant selbst installieren: **nur eingeschaltet, aus einem Eintrag, mit Pause**
    ([ADR-0162](../docs/adr/0162-home-assistants-own-updates-install-only-when-switched-on-and-a-pause-holds-them.md)); **vor jedem ein Backup**, das eigene der Entität oder das automatische Backup von Home Assistant,
    höchstens 26 h alt ([ADR-0163](../docs/adr/0163-a-backup-before-every-automatic-home-assistant-update.md)); **eines nach dem anderen, Core, OS und Supervisor zuletzt, vor dem Handeln

@@ -3,14 +3,18 @@
 [English](README.md) · Deutsch
 
 `custom_components/vordr` macht Home Assistant zu einem Client der Leitstelle (`vordr-hub`) über `/v1/ha`
-([design/ha-integration.de.md](../design/ha-integration.de.md)). Die Leitstelle bleibt der einzige Ort, der Hosts freigibt
-und Aufträge signiert; die Integration zeigt ihre Sichten und fragt Befehle an.
+([design/ha-integration.de.md](../design/ha-integration.de.md)). Die Leitstelle signiert jeden Auftrag und gibt Hosts
+frei; nur wo ihre `hub.yaml` `ha_approves_hosts` setzt, darf ein Client mit der Rolle `admin` einen wartenden Host aus
+Home Assistant freigeben
+([ADR-0192](../docs/adr/0192-an-admin-home-assistant-may-approve-a-waiting-host-when-the-hub-allows-it.md)). Die
+Integration zeigt die Sichten der Leitstelle und fragt Befehle an.
 
 ## Einrichten
 
-1. Über HACS: dieses Repository als benutzerdefiniertes Repository (Typ Integration) hinzufügen, „Vördr“
-   installieren, Home Assistant neu starten. HACS zeigt neue Versionen als Update. Ohne HACS: `custom_components/vordr`
-   nach `/config/custom_components/vordr` kopieren und Home Assistant neu starten.
+1. Über HACS, in Home Assistant als Marketplace angezeigt: nach „Vördr“ suchen, installieren und Home Assistant neu
+   starten. HACS zeigt neue Versionen als Update. Fehlt „Vördr“ in der Liste, zuerst dieses Repository als
+   benutzerdefiniertes Repository (Typ Integration) hinzufügen. Ohne HACS: `custom_components/vordr` nach
+   `/config/custom_components/vordr` kopieren und Home Assistant neu starten.
 2. Integration „Vördr“ hinzufügen: Adresse `wss://<leitstelle>:8443/v1/ha`, Name des Clients, bei eigener CA deren
    Zertifikat. Die Integration prüft die Erreichbarkeit in Stufen (Name, Verbindung, TLS, Endpunkt, Challenge) und
    nennt die scheiternde.
@@ -62,9 +66,16 @@ Host wurde geprüft und hat nichts zu aktualisieren, z. B. als Template-Bedingun
   ([ADR-0148](../docs/adr/0148-a-kept-failed-install-is-a-repair-that-installs-again.md)).
 - Ein Host, der an der Leitstelle auf Freigabe wartet, steht als Reparaturhinweis (eine Warnung) mit dem Fingerprint,
   den die Leitstelle gesehen hat, und dem Befehl für die Leitstelle, `vordr-hub approve <node> --fingerprint <fp>`.
-  Zuerst den Fingerprint mit `vordr-agent identity` auf dem Host vergleichen. Home Assistant kann nicht freigeben; der
-  Hinweis verschwindet, sobald der Host freigegeben, abgelehnt oder vergessen ist
-  ([ADR-0157](../docs/adr/0157-a-waiting-host-is-a-repair-that-names-the-approval-command.md)).
+  Zuerst den Fingerprint mit `vordr-agent identity` auf dem Host vergleichen. Der Hinweis verschwindet, sobald der Host
+  freigegeben, abgelehnt oder vergessen ist
+  ([ADR-0157](../docs/adr/0157-a-waiting-host-is-a-repair-that-names-the-approval-command.md)). Wo die `hub.yaml` der
+  Leitstelle `ha_approves_hosts: true` setzt und dieses Home Assistant die Rolle `admin` hat
+  (`vordr-hub client-role <name> --role admin`), nennt die Leitstelle `approve_host` in ihrem Status, und der Hinweis
+  lässt sich hier beheben: „Beheben“ fragt nach dem Fingerprint, den `vordr-agent identity` auf dem Host ausgegeben hat
+  (Leerzeichen und Grossbuchstaben spielen keine Rolle), lehnt einen ab, der von dem der Leitstelle abweicht, ohne etwas
+  zu senden, und bittet sonst die Leitstelle, den Host freizugeben. Ohne das kann Home Assistant nicht freigeben;
+  Ablehnen und Vergessen bleiben in jedem Fall an der Leitstelle
+  ([ADR-0192](../docs/adr/0192-an-admin-home-assistant-may-approve-a-waiting-host-when-the-hub-allows-it.md)).
 - Verwundbare pip/npm-Pakete machen nur dann ein Problem, wenn jetzt jemand die Behebung nehmen kann: per Knopf, per
   Auffrischen der Abhängigkeiten oder von Hand. Wartet ein Fund auf andere (ein Paket oder eine Projektdatei hält die
   Version fest, es gibt noch keine Behebung, oder sie ist jünger als das Mindestalter), steht er nur am Sensor
@@ -165,7 +176,8 @@ Was es braucht:
   Dienste → Vördr → Konfigurieren → Betreiberschlüssel*, wie `vordr-release public-key` sie ausgibt. Home Assistant
   prüft jedes Release dagegen und nimmt nie einen Schlüssel von der Leitstelle;
 - auf dem Host: SSH, `root` oder einen Benutzer mit `sudo`, `curl` oder `wget`, und die Leitstelle erreichbar unter der
-  Adresse, die diese Integration verwendet.
+  Adresse, die diese Integration verwendet;
+- freiwillig, für die Freigabe im selben Dialog: `ha_approves_hosts: true` in der `hub.yaml` der Leitstelle.
 
 Dann auf der Seite der Integration *Host hinzufügen* drücken (*Einstellungen → Geräte & Dienste → Vördr*; bei mehreren
 Leitstellen beim Eintrag der Leitstelle, zu der der Host gehören soll). Fehlt etwas, das es braucht, sagt der Dialog
@@ -187,9 +199,17 @@ oder sie gibt das Release nicht heraus, die SSH-Bibliothek fehlt. Sonst:
    temporären Ordner, vergleicht Grösse und SHA-256 mit dem signierten Manifest und führt erst dann
    `vordr-agent install` aus. Der Ordner wird in jedem Fall entfernt.
 
-Am Ende zeigt der Dialog den Fingerprint des Agenten. Der Host wartet nun auf die Freigabe an der Leitstelle; sobald
-die Leitstelle ihn aufführt, zeigt der Reparaturhinweis „Host … wartet auf Freigabe“ den Befehl. Fingerprint
-vergleichen, dann an der Leitstelle freigeben; danach erscheint der Host als Gerät der Integration. Der Knopf legt für
+Am Ende zeigt der Dialog den Fingerprint des Agenten. Wo die Leitstelle `approve_host` nennt (oben), wartet der Dialog
+zuerst bis zu einer Minute, bis die Leitstelle den neuen Host mit genau diesem Fingerprint als wartend aufführt (unter
+dem eingegebenen Namen des Knotens, falls einer eingegeben wurde), und
+gibt ihn dann frei: Der Fingerprint kam über die SSH-Verbindung, deren Host-Schlüssel du bestätigt hast, der Vergleich
+ist also durch den Ablauf gemacht
+([ADR-0192](../docs/adr/0192-an-admin-home-assistant-may-approve-a-waiting-host-when-the-hub-allows-it.md)). Sein Ende
+sagt dann, dass der Host freigegeben ist, oder, falls die Leitstelle abgelehnt hat, ihren Code. Sonst, oder wenn der
+Host nicht rechtzeitig erscheint, wartet der Host auf die Freigabe an der Leitstelle; sobald die Leitstelle ihn
+aufführt, zeigt der Reparaturhinweis „Host … wartet auf Freigabe“ den Befehl. Fingerprint vergleichen, dann an der
+Leitstelle freigeben (oder den Hinweis beheben, wo die Leitstelle es erlaubt); danach erscheint der Host als Gerät der
+Integration. Der Knopf legt für
 den Host keinen eigenen Eintrag an, die Seite der Integration führt also keinen auf. Jedes andere Ende nennt, was auf
 dem Host geschehen ist und was als Nächstes zu tun ist. Ein Host mit eigener Richtlinie wird weiter von Hand eingerichtet (`deploy/README.de.md`); der so
 installierte Agent prüft und meldet und installiert nichts, bis seine `agent.yaml` es erlaubt.

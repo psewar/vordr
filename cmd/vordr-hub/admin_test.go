@@ -220,3 +220,16 @@ func TestOlderHubGivesNoHostView(t *testing.T) {
 		}
 	}
 }
+
+// check-config names ha_approves_hosts either way and says what it means (ADR-0192).
+func TestHAApprovalSummary(t *testing.T) {
+	off := haApprovalSummary(hub.Config{})
+	if off != "approval in Home Assistant: off (ha_approves_hosts) - hosts are approved only here (vordr-hub approve)" {
+		t.Errorf("off: %q", off)
+	}
+	on := haApprovalSummary(hub.Config{HAApprovesHosts: true})
+	if !strings.HasPrefix(on, "approval in Home Assistant: on (ha_approves_hosts) - ") ||
+		!strings.Contains(on, "role admin") || !strings.Contains(on, "rejecting and forgetting stay here") {
+		t.Errorf("on: %q", on)
+	}
+}

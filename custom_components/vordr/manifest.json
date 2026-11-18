@@ -8,5 +8,5 @@
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/psewar/vordr/issues",
   "requirements": ["asyncssh>=2.24.0,<3"],
-  "version": "0.48.0"
+  "version": "0.49.0"
 }

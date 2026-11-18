@@ -1,5 +1,6 @@
 // vordr-hub is the control centre (Leitstelle): agents connect to it, the operator admits them here, and it signs
-// every job. Administration runs only locally through the admin socket (design/architecture.md, section 12).
+// every job. Administration runs locally through the admin socket (design/architecture.md, section 12); only where
+// hub.yaml sets ha_approves_hosts may a Home Assistant client with role admin approve a waiting host (ADR-0192).
 package main
 
 import (
@@ -59,7 +60,8 @@ func usage() {
   reject-client <name>                 refuse a client; its connection is closed and stays refused
   forget-client <name>                 remove a client; its next hello starts over as pending
   client-role <name> --role <role>     what a client may start: observe (nothing), operate (check, install, agent
-                                       update; the default), admin (also reboot)
+                                       update; the default), admin (also reboot, the agent release for "Add host",
+                                       and approving a waiting host where hub.yaml sets ha_approves_hosts)
   check-config                         load hub.yaml and list every issue
   version
 
@@ -137,6 +139,7 @@ func main() {
 		fmt.Printf("       Home Assistant through %s (vordr-hub clients)\n       stale after %d days, offline after "+
 			"%d min, reboot pending after %d days, no report after %d h\n", wire.HAPath, cfg.StaleAfterDays,
 			cfg.OfflineAfterMin, cfg.RebootPendingAfterDays, cfg.NoReportAfterHours)
+		fmt.Printf("       %s\n", haApprovalSummary(cfg))
 		if b := cfg.Backup; b != nil {
 			fmt.Printf("       backup check: installs need a backup younger than %d h on %s (datastore %s), "+
 				"%d guest(s)\n", b.MaxAgeHours, b.PBSURL, b.Datastore, len(b.Guests))
@@ -213,6 +216,15 @@ func main() {
 		usage()
 		os.Exit(2)
 	}
+}
+
+// haApprovalSummary: what check-config says about ha_approves_hosts (ADR-0192), on or off.
+func haApprovalSummary(cfg hub.Config) string {
+	if cfg.HAApprovesHosts {
+		return "approval in Home Assistant: on (ha_approves_hosts) - a client with role admin may approve a waiting " +
+			"host whose fingerprint matches; rejecting and forgetting stay here"
+	}
+	return "approval in Home Assistant: off (ha_approves_hosts) - hosts are approved only here (vordr-hub approve)"
 }
 
 // loadConfig returns the exit status like the agent's check-config: 0 ok, 1 issues, 2 not found or unreadable.
@@ -294,6 +306,7 @@ func run(cfg hub.Config) int {
 	}
 	srv := hub.NewServer(reg, clients, events, key, cfg.MaxPending, logger)
 	srv.Version = version
+	srv.HAApprovesHosts = cfg.HAApprovesHosts
 	srv.Limits = hub.Limits{StaleAfter: time.Duration(cfg.StaleAfterDays) * 24 * time.Hour,
 		OfflineAfter:  time.Duration(cfg.OfflineAfterMin) * time.Minute,
 		RebootAfter:   time.Duration(cfg.RebootPendingAfterDays) * 24 * time.Hour,

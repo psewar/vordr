@@ -32,10 +32,12 @@ COMMAND_TIMEOUT = 15.0
 REJECTED_RETRY = 600.0  # like the agent: a refused client asks again after 10 minutes
 BACKOFF_MAX = 30.0
 
-# Codes of the client itself, besides those the hub sends in command_result and agent_download_result.
+# Codes of the client itself, besides those the hub sends in command_result, agent_download_result and
+# approve_host_result.
 CODE_HUB_NOT_CONNECTED = "hub_not_connected"
 CODE_NO_ANSWER = "no_answer"
 CODE_HUB_WITHOUT_DOWNLOAD = "hub_without_download"  # the hub's status does not name agent_download
+CODE_HUB_WITHOUT_APPROVAL = "hub_without_approval"  # the hub's status does not name approve_host
 
 
 class Connection(StrEnum):
@@ -65,7 +67,7 @@ class Status:
     state: str
     reason: str
     fingerprint: str
-    # What the hub accepts beyond the base protocol (agent_download); older hubs send none.
+    # What the hub accepts beyond the base protocol (agent_download, approve_host); older hubs send none.
     features: frozenset[str] = frozenset()
 
     @classmethod
@@ -268,7 +270,7 @@ class VordrClient:
         t = data["t"]
         if t == p.T_STATUS:
             return self._status(Status.of(data))
-        if t in (p.T_COMMAND_RESULT, p.T_AGENT_DOWNLOAD_RESULT):
+        if t in (p.T_COMMAND_RESULT, p.T_AGENT_DOWNLOAD_RESULT, p.T_APPROVE_HOST_RESULT):
             # Answers go to who asked, and nowhere else: an agent_download_result carries single-use tokens.
             fut = self._pending.get(str(data.get("request_id", "")))
             if fut and not fut.done():
@@ -307,6 +309,24 @@ class VordrClient:
         if p.FEATURE_AGENT_DOWNLOAD not in self.features:
             return {"code": CODE_HUB_WITHOUT_DOWNLOAD}
         return await self._request({"t": p.T_AGENT_DOWNLOAD, "os": os_name, "arch": arch})
+
+    @property
+    def offers_host_approval(self) -> bool:
+        """Approved, connected, and the hub's last status names approve_host: hub.yaml lets Home Assistant approve
+        hosts and this client has role admin (ADR-0192). Follows every status the hub sends, also after a role
+        change."""
+        return self._ws is not None and self._approved and p.FEATURE_APPROVE_HOST in self.features
+
+    async def approve_host(self, node: str, fingerprint: str) -> str:
+        """Ask the hub to approve a waiting host with the fingerprint of its key; returns the code (ok, the hub's
+        refusal, or one of ours). Sent only while the hub names the feature: an older hub ends the connection on a
+        message it does not know."""
+        if self._ws is None or not self._approved:
+            return CODE_HUB_NOT_CONNECTED
+        if p.FEATURE_APPROVE_HOST not in self.features:
+            return CODE_HUB_WITHOUT_APPROVAL
+        result = await self._request({"t": p.T_APPROVE_HOST, "node": node, "fingerprint": fingerprint})
+        return str(result.get("code", ""))
 
     async def _request(self, msg: dict[str, Any]) -> dict[str, Any]:
         """Send a message with a fresh request_id and wait for the answer that names it."""

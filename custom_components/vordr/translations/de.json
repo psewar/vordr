@@ -48,7 +48,7 @@
       "step": {
         "user": {
           "title": "Host hinzufügen",
-          "description": "Installiert den Vördr-Agenten auf einem neuen Host. Nur für Linux mit systemd und apt (Debian, Ubuntu, Raspberry Pi OS). Home Assistant erreicht den Host einmal über SSH, lässt ihn das signierte Agenten-Release von der Leitstelle holen, prüft Grösse und SHA-256 gegen das mit deinem Betreiberschlüssel signierte Manifest und führt `vordr-agent install` aus. Vom SSH-Zugang wird nichts gespeichert: kein Passwort, kein Schlüssel, kein Host-Schlüssel; auch der Host selbst wird hier nicht gespeichert: Die Liste der Hosts führt die Leitstelle. Danach wartet der Host wie jeder neue Host auf die Freigabe an der Leitstelle.\n\nDas Agenten-Release gibt die Leitstelle nur einem Client mit der Rolle admin heraus. Hat dieses Home Assistant eine andere Rolle, an der Leitstelle: `vordr-hub client-role {client} --role admin`.\n\nAls Nächstes prüfst du den Host-Schlüssel, bevor du ein Passwort eingibst.",
+          "description": "Installiert den Vördr-Agenten auf einem neuen Host. Nur für Linux mit systemd und apt (Debian, Ubuntu, Raspberry Pi OS). Home Assistant erreicht den Host einmal über SSH, lässt ihn das signierte Agenten-Release von der Leitstelle holen, prüft Grösse und SHA-256 gegen das mit deinem Betreiberschlüssel signierte Manifest und führt `vordr-agent install` aus. Vom SSH-Zugang wird nichts gespeichert: kein Passwort, kein Schlüssel, kein Host-Schlüssel; auch der Host selbst wird hier nicht gespeichert: Die Liste der Hosts führt die Leitstelle. Danach wartet der Host wie jeder neue Host auf die Freigabe an der Leitstelle; lässt die Leitstelle dieses Home Assistant Hosts freigeben (`ha_approves_hosts` in hub.yaml, Rolle admin), gibt dieser Dialog ihn gleich nach der Installation frei.\n\nDas Agenten-Release gibt die Leitstelle nur einem Client mit der Rolle admin heraus. Hat dieses Home Assistant eine andere Rolle, an der Leitstelle: `vordr-hub client-role {client} --role admin`.\n\nAls Nächstes prüfst du den Host-Schlüssel, bevor du ein Passwort eingibst.",
           "data": {
             "host": "Host",
             "port": "SSH-Port",
@@ -88,7 +88,7 @@
         }
       },
       "progress": {
-        "install": "Der Agent wird auf {host} installiert: das signierte Release der Leitstelle, geprüft gegen deinen Betreiberschlüssel; auf dem Host heruntergeladen, Grösse und SHA-256 verglichen; dann `vordr-agent install`. Das kann einige Minuten dauern. Wird dieser Dialog geschlossen, wartet Home Assistant nicht mehr auf das Ergebnis; der Host macht von sich aus fertig oder hört auf und entfernt seinen temporären Ordner."
+        "install": "Der Agent wird auf {host} installiert: das signierte Release der Leitstelle, geprüft gegen deinen Betreiberschlüssel; auf dem Host heruntergeladen, Grösse und SHA-256 verglichen; dann `vordr-agent install`. Lässt die Leitstelle dieses Home Assistant Hosts freigeben, bis zu einer Minute mehr, bis die Leitstelle den neuen Host aufführt, der dann freigegeben wird. Das kann einige Minuten dauern. Wird dieser Dialog geschlossen, wartet Home Assistant nicht mehr auf das Ergebnis; der Host macht von sich aus fertig oder hört auf und entfernt seinen temporären Ordner."
       },
       "error": {
         "invalid_host": "Ein Hostname oder eine IP-Adresse (IPv6 ohne Klammern).",
@@ -152,7 +152,9 @@
         "ssh_lost": "Die Verbindung zum Host ist während der Installation abgebrochen. Sein Zustand ist unbekannt: Auf dem Host geben `systemctl status vordr-agent` und `vordr-agent identity` Auskunft.",
         "ssh_timeout": "Die Installation ist nicht rechtzeitig zu Ende gegangen. Sein Zustand ist unbekannt: Auf dem Host geben `systemctl status vordr-agent` und `vordr-agent identity` Auskunft.",
         "install_no_result": "Die Installation auf dem Host hat kein Ergebnis geliefert, das Home Assistant lesen kann. Sein Zustand ist unbekannt: Auf dem Host geben `systemctl status vordr-agent` und `vordr-agent identity` Auskunft.",
-        "agent_installed": "Der Agent {version} ist auf `{node}` installiert und wartet auf die Freigabe an der Leitstelle. Sein Fingerprint:\n\n`{fingerprint}`\n\nSobald die Leitstelle den Host aufführt, zeigt Home Assistant eine Reparatur mit dem Befehl, der ihn freigibt: den Fingerprint dort mit diesem vergleichen, dann den Befehl an der Leitstelle ausführen. Nach der Freigabe erscheint der Host als Gerät dieser Integration. Vom SSH-Zugang wurde nichts gespeichert, und auch der Host wird hier nicht gespeichert: Die Liste der Hosts führt die Leitstelle.",
+        "agent_installed": "Der Agent {version} ist auf `{node}` installiert und wartet auf die Freigabe an der Leitstelle. Sein Fingerprint:\n\n`{fingerprint}`\n\nSobald die Leitstelle den Host aufführt, zeigt Home Assistant eine Reparatur mit dem Befehl, der ihn freigibt: den Fingerprint dort mit diesem vergleichen, dann den Befehl an der Leitstelle ausführen oder, wo die Leitstelle dieses Home Assistant Hosts freigeben lässt, die Reparatur hier beheben. Nach der Freigabe erscheint der Host als Gerät dieser Integration. Vom SSH-Zugang wurde nichts gespeichert, und auch der Host wird hier nicht gespeichert: Die Liste der Hosts führt die Leitstelle.",
+        "agent_installed_approved": "Der Agent {version} ist auf `{node}` installiert und an der Leitstelle freigegeben. Sein Fingerprint:\n\n`{fingerprint}`\n\nHome Assistant hat ihn über die SSH-Verbindung gelesen, deren Host-Schlüssel du bestätigt hast, und die Leitstelle hat den neuen Host mit genau diesem Fingerprint aufgeführt. Der Host erscheint in Kürze als Gerät dieser Integration. Vom SSH-Zugang wurde nichts gespeichert, und auch der Host wird hier nicht gespeichert: Die Liste der Hosts führt die Leitstelle.",
+        "agent_installed_not_approved": "Der Agent {version} ist auf `{node}` installiert und wartet auf die Freigabe an der Leitstelle; von hier aus hat die Leitstelle ihn nicht freigegeben (`{code}`). Sein Fingerprint:\n\n`{fingerprint}`\n\nSobald die Leitstelle den Host aufführt, zeigt Home Assistant eine Reparatur mit dem Befehl, der ihn freigibt: den Fingerprint dort mit diesem vergleichen, dann den Befehl an der Leitstelle ausführen oder, wo die Leitstelle dieses Home Assistant Hosts freigeben lässt, die Reparatur hier beheben. Nach der Freigabe erscheint der Host als Gerät dieser Integration. Vom SSH-Zugang wurde nichts gespeichert, und auch der Host wird hier nicht gespeichert: Die Liste der Hosts führt die Leitstelle.",
         "agent_config_invalid": "`vordr-agent install` lehnt ab: Die agent.yaml für diese Werte hat Mängel; auf dem Host ausführen, um sie zu sehen. Auf dem Host wurde nichts geändert.",
         "agent_config_differs": "`vordr-agent install` lehnt ab: Auf dem Host liegt schon eine /etc/vordr/agent.yaml, und sie weicht ab. Dort vergleichen; um sie zu ersetzen, `vordr-agent install` auf dem Host mit `--replace-config` und deinem Grund ausführen. Auf dem Host wurde nichts geändert.",
         "agent_hub_unreachable": "`vordr-agent install` lehnt ab: Der Host erreicht die Leitstelle unter `{hub}` nicht (Stufe `{stage}`). Auf dem Host wurde nichts geändert.",
@@ -877,7 +879,43 @@
     },
     "waiting_host": {
       "title": "Vördr: Host {node} wartet auf Freigabe",
-      "description": "Ein Host möchte an der Leitstelle als {node} zugelassen werden (System `{os}`). Die Leitstelle hat seinen Schlüssel mit diesem Fingerprint gesehen:\n\n`{fingerprint}`\n\nFreigegeben wird nur an der Leitstelle. Wird dieser Host erwartet, auf dem Host selbst `vordr-agent identity` ausführen (für ein Gerät hinter einem Stellvertreter-Agenten mit dem `--config` seiner Instanz) und vergleichen. Nur wenn beide Fingerprints gleich sind, an der Leitstelle ausführen:\n\n`{command}`\n\nWeichen sie ab, nicht freigeben: Dann fragt ein anderer Schlüssel unter diesem Namen, und `vordr-hub reject {node}` hält ihn draussen. Dieser Hinweis verschwindet, sobald der Host freigegeben, abgelehnt oder vergessen ist."
+      "description": "Ein Host möchte an der Leitstelle als {node} zugelassen werden (System `{os}`). Die Leitstelle hat seinen Schlüssel mit diesem Fingerprint gesehen:\n\n`{fingerprint}`\n\nFreigegeben wird an der Leitstelle: Home Assistant darf Hosts nur freigeben, wo hub.yaml `ha_approves_hosts` setzt und dieser Client die Rolle admin hat. Wird dieser Host erwartet, auf dem Host selbst `vordr-agent identity` ausführen (für ein Gerät hinter einem Stellvertreter-Agenten mit dem `--config` seiner Instanz) und vergleichen. Nur wenn beide Fingerprints gleich sind, an der Leitstelle ausführen:\n\n`{command}`\n\nWeichen sie ab, nicht freigeben: Dann fragt ein anderer Schlüssel unter diesem Namen, und `vordr-hub reject {node}` hält ihn draussen. Dieser Hinweis verschwindet, sobald der Host freigegeben, abgelehnt oder vergessen ist."
+    },
+    "waiting_host_approve": {
+      "title": "Vördr: Host {node} wartet auf Freigabe",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "{node} freigeben?",
+            "description": "Ein Host möchte an der Leitstelle als {node} zugelassen werden (System `{os}`). Die Leitstelle hat seinen Schlüssel mit diesem Fingerprint gesehen:\n\n`{fingerprint}`\n\nWird dieser Host erwartet, auf dem Host selbst `vordr-agent identity` ausführen (für ein Gerät hinter einem Stellvertreter-Agenten mit dem `--config` seiner Instanz) und den Fingerprint, den es ausgibt, unten eingeben - vom Host, nicht aus diesem Text: Nur dieser Vergleich zeigt, dass der Schlüssel der des Hosts ist. Sind beide gleich, bittet Home Assistant die Leitstelle, den Host freizugeben, und er erscheint in Kürze als Gerät dieser Integration. Stattdessen geht auch an der Leitstelle:\n\n`{command}`\n\nWeichen sie ab, nicht freigeben: Dann fragt ein anderer Schlüssel unter diesem Namen, und `vordr-hub reject {node}` an der Leitstelle hält ihn draussen. Diese Reparatur verschwindet, sobald der Host freigegeben, abgelehnt oder vergessen ist.",
+            "data": {
+              "fingerprint": "Fingerprint vom Host"
+            },
+            "data_description": {
+              "fingerprint": "So, wie `vordr-agent identity` ihn auf dem Host ausgibt: 64 Hex-Ziffern. Leerzeichen und Grossbuchstaben spielen keine Rolle."
+            }
+          }
+        },
+        "error": {
+          "invalid_fingerprint": "Das ist kein Fingerprint: `vordr-agent identity` gibt 64 Hex-Ziffern aus (0-9, a-f).",
+          "fingerprint_differs": "Das ist nicht der Fingerprint, den die Leitstelle für diesen Host gesehen hat. Nicht freigeben: Ein anderer Schlüssel fragt unter diesem Namen. Es wurde nichts gesendet; an der Leitstelle hält ihn `vordr-hub reject` mit dem Namen des Hosts draussen, wie oben gezeigt."
+        },
+        "abort": {
+          "hub_not_connected": "Home Assistant ist gerade nicht mit der Vördr-Leitstelle verbunden. Bitte später noch einmal versuchen.",
+          "no_longer_waiting": "{node} wartet nicht mehr auf die Freigabe: Die Leitstelle hat ihn inzwischen freigegeben, abgelehnt oder vergessen.",
+          "approval_not_offered": "Die Leitstelle lässt dieses Home Assistant keine Hosts mehr freigeben (hub.yaml `ha_approves_hosts`, Rolle admin). {node} an der Leitstelle mit dem Befehl aus seiner Reparatur freigeben.",
+          "approve_ha_approval_off": "Die Leitstelle hat abgelehnt: Sie lässt Home Assistant keine Hosts freigeben (`ha_approves_hosts` in hub.yaml ist aus). {node} an der Leitstelle mit dem Befehl aus seiner Reparatur freigeben.",
+          "approve_client_not_approved": "Die Leitstelle hat abgelehnt: Sie zählt dieses Home Assistant (nicht mehr) als freigegebenen Client; `vordr-hub clients` an der Leitstelle gibt Auskunft. {node} wartet weiter.",
+          "approve_role_forbids": "Die Leitstelle hat abgelehnt: Nur ein Client mit der Rolle admin darf Hosts freigeben, und dieses Home Assistant hat eine andere Rolle (vordr-hub client-role). {node} wartet weiter.",
+          "approve_unknown_node": "Die Leitstelle hat abgelehnt: Sie kennt {node} nicht (mehr); er wurde inzwischen vergessen.",
+          "approve_not_waiting": "Die Leitstelle hat abgelehnt: {node} wartet nicht mehr auf die Freigabe, er wurde inzwischen freigegeben oder abgelehnt. Eine Ablehnung wird nur an der Leitstelle aufgehoben.",
+          "approve_fingerprint_mismatch": "Die Leitstelle hat abgelehnt: {node} wartet mit einem anderen Schlüssel, als dieser Fingerprint nennt. Nicht freigeben; den Host prüfen und ihn im Zweifel an der Leitstelle mit `vordr-hub reject {node}` draussen halten.",
+          "approve_bad_request": "Die Leitstelle hat den Fingerprint als fehlerhaft abgelehnt. {node} wartet weiter.",
+          "approve_store_failed": "Die Leitstelle konnte ihr Register nicht schreiben, {node} wartet deshalb weiter. Log und Speicherplatz der Leitstelle prüfen, dann erneut versuchen.",
+          "approve_no_answer": "Die Leitstelle hat nicht rechtzeitig geantwortet. Ob {node} freigegeben wurde, zeigt sich in Kürze: Diese Reparatur verschwindet, sobald er es ist.",
+          "approve_refused": "Die Leitstelle hat die Freigabe von {node} abgelehnt (Code {code})."
+        }
+      }
     },
     "ha_update_failed": {
       "title": "Vördr: Installation von {entity_id} gescheitert",

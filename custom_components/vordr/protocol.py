@@ -39,6 +39,11 @@ T_COMMAND_RESULT: Final = "command_result"
 T_AGENT_DOWNLOAD: Final = "agent_download"
 T_AGENT_DOWNLOAD_RESULT: Final = "agent_download_result"
 FEATURE_AGENT_DOWNLOAD: Final = "agent_download"
+# Approving a waiting host (ADR-0192); only to a hub whose status names the feature, which it names only where hub.yaml
+# allows it and this client has role admin.
+T_APPROVE_HOST: Final = "approve_host"
+T_APPROVE_HOST_RESULT: Final = "approve_host_result"
+FEATURE_APPROVE_HOST: Final = "approve_host"
 
 # Registration states and reasons of the status message.
 STATE_PENDING: Final = "pending_approval"

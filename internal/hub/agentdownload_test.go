@@ -91,7 +91,7 @@ func replaceBinary(t *testing.T, path string, data []byte) {
 var replaced int // replaceBinary: each call moves the time of change on
 
 // haClient registers an approved Home Assistant client with role (empty: none set) and returns its session.
-func (f *releaseFixture) haClient(t *testing.T, name, role string) *haSession {
+func (f *viewFixture) haClient(t *testing.T, name, role string) *haSession {
 	t.Helper()
 	h, fp := haHello(t, name)
 	if _, _, err := f.srv.Clients.Admit(h, fp, f.now); err != nil {

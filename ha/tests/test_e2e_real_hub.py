@@ -1,8 +1,9 @@
 """End to end with the real binaries: vordr-hub, a vordr-agent checking this machine, and the integration.
 
 Proves that Go and Python agree on the protocol (hello signature, fingerprints, messages), that a button in
-Home Assistant ends as a signed job at the agent, and that the repair of a waiting host names the command the hub
-takes. Needs dist/vordr-hub-linux-amd64 and dist/vordr-agent-linux-amd64
+Home Assistant ends as a signed job at the agent, that the repair of a waiting host names the command the hub
+takes, and that its fix approves the host where the hub allows it. Needs dist/vordr-hub-linux-amd64 and
+dist/vordr-agent-linux-amd64
 (./build.sh); skipped without them.
 """
 
@@ -15,8 +16,11 @@ import subprocess
 import time
 from typing import Any
 
+from homeassistant.components.repairs import repairs_flow_manager
 from homeassistant.core import HomeAssistant
+from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import issue_registry as ir
+from homeassistant.setup import async_setup_component
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 import pytest_socket
@@ -57,7 +61,7 @@ def admin(sock: Path, req: dict[str, Any]) -> dict[str, Any]:
 
 
 class Stack:
-    def __init__(self, tmp: Path) -> None:
+    def __init__(self, tmp: Path, hub_extra: str = "") -> None:
         self.tmp = tmp
         self.cert_pem, key_pem = self_signed()
         (tmp / "tls.crt").write_text(self.cert_pem)
@@ -67,7 +71,7 @@ class Stack:
         self.config = tmp / "hub.yaml"
         self.config.write_text(
             f"listen: 127.0.0.1:{self.port}\ntls_cert: {tmp / 'tls.crt'}\ntls_key: {tmp / 'tls.key'}\n"
-            f"state_dir: {tmp / 'state'}\nadmin_socket: {self.sock}\nmax_pending: 5\n"
+            f"state_dir: {tmp / 'state'}\nadmin_socket: {self.sock}\nmax_pending: 5\n{hub_extra}"
         )
         self.procs: list[subprocess.Popen[bytes]] = []
         self.agent_config = tmp / "agent.yaml"
@@ -137,6 +141,16 @@ def waiting_stack(tmp_path: Path, socket_enabled: None) -> Stack:
     s.stop()
 
 
+@pytest.fixture
+def approving_stack(tmp_path: Path, socket_enabled: None) -> Stack:
+    """Like waiting_stack, on a hub that lets Home Assistant approve hosts (ha_approves_hosts, ADR-0192)."""
+    pytest_socket.socket_allow_hosts(["127.0.0.1"], allow_unix_socket=True)
+    s = Stack(tmp_path, "ha_approves_hosts: true\n")
+    s.start(approve=False)
+    yield s
+    s.stop()
+
+
 def entry_for(stack: Stack, key: str) -> MockConfigEntry:
     return MockConfigEntry(
         domain=DOMAIN,
@@ -189,6 +203,61 @@ async def test_waiting_host_repair_names_the_real_command(hass: HomeAssistant, w
     await wait_until(
         lambda: repair() is None and hass.states.get("binary_sensor.vordr_e2e_host_online") is not None, 30
     )
+    await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_the_waiting_repair_approves_at_the_real_hub(hass: HomeAssistant, approving_stack: Stack) -> None:
+    """ADR-0192 against the real hub and agent: with ha_approves_hosts, the hub names approve_host only once this
+    client has role admin, and the waiting host's repair turns fixable without a change of the hub's view. Its fix
+    refuses a fingerprint other than the one the hub saw, and approves the host with the one `vordr-agent identity`
+    prints on the host. The repair then goes, the host comes, and the hub's event log names the client."""
+    stack = approving_stack
+    assert await async_setup_component(hass, "repairs", {})
+    key = p.new_private_key()
+    entry = entry_for(stack, key)
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await wait_until(lambda: hass.states.get("sensor.vordr_hub_connection").state == "pending_approval", 10)
+    fp = p.fingerprint(p.public_key(p.load_private_key(key)))
+    resp = await hass.async_add_executor_job(
+        admin, stack.sock, {"cmd": "approve-client", "client": "e2e-ha", "fingerprint": fp}
+    )
+    assert resp["code"] == "ok", resp
+    await wait_until(lambda: entry.runtime_data.connected, 10)
+
+    def repair() -> ir.IssueEntry | None:
+        return ir.async_get(hass).async_get_issue(DOMAIN, "waiting_e2e-host")
+
+    await wait_until(lambda: repair() is not None, 10)
+    # Role operate, the default: the hub does not name the feature, the repair is not fixable.
+    assert not repair().is_fixable and not entry.runtime_data.client.offers_host_approval
+    resp = await hass.async_add_executor_job(
+        admin, stack.sock, {"cmd": "client-role", "client": "e2e-ha", "role": "admin"}
+    )
+    assert resp["code"] == "ok", resp
+    await wait_until(lambda: repair().is_fixable, 10)
+
+    ident = await hass.async_add_executor_job(
+        lambda: subprocess.run(
+            [AGENT_BIN, "identity", "--config", stack.agent_config], capture_output=True, text=True, check=True
+        )
+    )
+    printed = next(line.split()[1] for line in ident.stdout.splitlines() if line.startswith("fingerprint "))
+    manager = repairs_flow_manager(hass)
+    assert manager is not None
+    flow = await manager.async_init(DOMAIN, data={"issue_id": "waiting_e2e-host"})
+    assert flow["type"] is FlowResultType.FORM and flow["step_id"] == "confirm"
+    result = await manager.async_configure(flow["flow_id"], {"fingerprint": "0" * 64})
+    assert result["type"] is FlowResultType.FORM and result["errors"] == {"fingerprint": "fingerprint_differs"}
+    result = await manager.async_configure(flow["flow_id"], {"fingerprint": printed.upper()})
+    assert result["type"] is FlowResultType.CREATE_ENTRY, result
+    await wait_until(
+        lambda: repair() is None and hass.states.get("binary_sensor.vordr_e2e_host_online") is not None, 30
+    )
+    status, doc = await hass.async_add_executor_job(stack.hub_json, "show", "e2e-host")
+    assert status == 0 and doc["nodes"][0]["state"] == "approved", doc
+    events = await hass.async_add_executor_job(admin, stack.sock, {"cmd": "events", "events": {"event": "approve"}})
+    assert [(e["node"], e["client"], e["code"]) for e in events["events"]] == [("e2e-host", "e2e-ha", "ok")], events
     await hass.config_entries.async_unload(entry.entry_id)
 
 

@@ -21,7 +21,7 @@ import (
 // and is admitted only by the operator at the hub. Until then it gets its status and nothing else. Once approved it
 // gets a snapshot, then every change, and may ask for commands, which take the same way as MQTT's: Resolve, a job
 // signed by the hub, the agent's own checks. A client with role admin may also ask for the agent release to install a
-// new host (agentdownload.go).
+// new host (agentdownload.go) and, where hub.yaml allows it, approve a waiting host (approvehost.go).
 
 var requestIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
@@ -121,18 +121,39 @@ func (s *Server) loginHA(conn *wire.Conn, remote string) (*haSession, bool) {
 	}
 	s.Events.Log("", "ha_hello", map[string]any{"client": h.Name, "state": state, "reason": reason, "fingerprint": fp,
 		"integration_version": h.IntegrationVersion, "remote": remote})
-	if conn.Send(wire.Status{T: wire.TStatus, State: state, Reason: reason, Fingerprint: fp, Features: haFeatures()}) != nil ||
-		state == wire.StateRejected {
+	if state == wire.StateRejected {
+		_ = conn.Send(wire.Status{T: wire.TStatus, State: state, Reason: reason, Fingerprint: fp,
+			Features: s.haFeatures(h.Name, fp)})
 		return nil, false
 	}
+	// The session is registered before its status goes out, and the status is sent under sess.mu with the client
+	// register read inside the lock. A decision about the client that comes from now on (approve-client, client-role)
+	// finds the session and sends its status after this one; one that came since the hello is in this one. Either way
+	// the client's last status names its state and features as they are (ADR-0192).
 	sess := &haSession{name: h.Name, fingerprint: fp, conn: conn, dirty: make(chan struct{}, 1), done: make(chan struct{}),
-		approved: state == wire.StateApproved, hosts: map[string]string{}}
+		hosts: map[string]string{}}
+	sess.mu.Lock()
 	s.mu.Lock()
 	if old := s.haSessions[h.Name]; old != nil {
 		old.conn.Close() // the client reconnected; the old connection is dead or stale
 	}
 	s.haSessions[h.Name] = sess
 	s.mu.Unlock()
+	c, ok := s.Clients.Get(h.Name)
+	sent := ok && c.Fingerprint == fp // forgotten since the hello: the connection ends, as notifyClient ends it
+	if sent {
+		status := wire.Status{T: wire.TStatus, State: c.State, Fingerprint: fp, Features: s.haFeatures(h.Name, fp)}
+		if c.State == wire.StateRejected {
+			status.Reason = wire.ReasonRejected // rejected since the hello
+		}
+		sent = conn.Send(status) == nil && c.State != wire.StateRejected
+		sess.approved = sent && c.State == wire.StateApproved
+	}
+	sess.mu.Unlock()
+	if !sent {
+		s.dropHA(sess)
+		return nil, false
+	}
 	sess.markDirty()
 	return sess, true
 }
@@ -180,6 +201,16 @@ func (s *Server) loopHA(sess *haSession) {
 				// A client that is not approved has nothing to ask for: one answer with the code, one line in the event
 				// log, and the connection ends, so that a pending client cannot write the log full (ADR-0167).
 				return
+			}
+		case wire.TApproveHost:
+			var a wire.ApproveHost
+			if json.Unmarshal(raw, &a) != nil || !requestIDPattern.MatchString(a.RequestID) || !nodePattern.MatchString(a.Node) {
+				s.Events.Log("", "ha_protocol_violation", map[string]any{"client": sess.name, "type": t})
+				return
+			}
+			res := s.haApproveHost(sess, a)
+			if sess.conn.Send(res) != nil || res.Code == string(AdminClientNotApproved) {
+				return // as with agent_download: a client that is not approved gets one answer (ADR-0192)
 			}
 		default:
 			s.Events.Log("", "ha_protocol_violation", map[string]any{"client": sess.name, "type": t})
@@ -301,9 +332,6 @@ func (s *Server) approvedClient(sess *haSession) (ClientEntry, bool) {
 	return c, ok && c.State == wire.StateApproved && c.Fingerprint == sess.fingerprint
 }
 
-// haFeatures: what the hub accepts from Home Assistant beyond the base protocol, in every status it sends a client.
-func haFeatures() []string { return []string{wire.FeatureAgentDownload} }
-
 // haJob is the job a Home Assistant command becomes. It is decided when the job goes out, since a command that waited
 // in the queue may start later: the reason outside the window (ADR-0109), and the fixes the agent may take at its
 // shorter minimum age (ADR-0111).
@@ -416,8 +444,10 @@ func (s *Server) notifyClient(name string) {
 		sess.conn.Close()
 	case c.State == wire.StateApproved:
 		sess.mu.Lock()
-		// Status before the snapshot: sent under sess.mu, which syncHA needs as well.
-		err := sess.conn.Send(wire.Status{T: wire.TStatus, State: c.State, Fingerprint: c.Fingerprint, Features: haFeatures()})
+		// Status before the snapshot: sent under sess.mu, which syncHA needs as well. The features are read inside the
+		// lock, so that of this status and a resent one (client-role), the later names the role as it is then.
+		err := sess.conn.Send(wire.Status{T: wire.TStatus, State: c.State, Fingerprint: c.Fingerprint,
+			Features: s.haFeatures(name, c.Fingerprint)})
 		sess.approved, sess.synced = err == nil, false
 		sess.mu.Unlock()
 		sess.markDirty()

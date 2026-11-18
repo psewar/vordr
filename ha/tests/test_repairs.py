@@ -2,7 +2,8 @@
 longer needs one; one repair for the long-pending reboot instead of two. The install-again repair (ADR-0148): a kept
 failed install is fixable where the hub offers the install, and gone with the failure. Both say why the hub refused
 their command, as the buttons do. The waiting-host repair (ADR-0157): a host waiting for approval names the command
-for the hub and goes once the hub decided."""
+for the hub and goes once the hub decided; where the hub lets this Home Assistant approve hosts, its fix approves the
+host with the fingerprint read on the host (ADR-0192)."""
 
 from __future__ import annotations
 
@@ -16,10 +17,13 @@ from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.setup import async_setup_component
 from homeassistant.util import dt as dt_util
+import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.vordr import client as client_module
 from custom_components.vordr.const import DOMAIN
 from custom_components.vordr.coordinator import local_time
+from custom_components.vordr.repairs import APPROVE_REFUSALS, ApproveHostFlow
 
 from .conftest import FakeHub, host_view, wait_until
 
@@ -357,8 +361,9 @@ async def test_a_waiting_host_is_a_repair_with_the_approval_command(
     hass: HomeAssistant, fake_hub: FakeHub, entry: MockConfigEntry
 ) -> None:
     """ADR-0157: a warning per host waiting for approval, with the node, the fingerprint the hub saw and the command
-    for the hub. Not fixable: approval stays at the hub. None for an approved host, none for an entry a command could
-    not carry as it is; the system the host names for itself is shown as one short line of code."""
+    for the hub. Not fixable while the hub does not name approve_host (ADR-0192). None for an approved host, none for an
+    entry a command could not carry as it is; the system the host names for itself is shown as one short line of
+    code."""
     fake_hub.hosts["h"] = host_view("h")
     fake_hub.hub["waiting"] = [
         waiting("new-host", FP_NEW, "Debian GNU/Linux 13 (trixie)"),
@@ -420,3 +425,165 @@ async def test_the_waiting_repair_follows_the_snapshot_after_a_reconnect(
     fake_hub.hub["waiting"] = [waiting("later", FP_OTHER)]
     await fake_hub.drop_connections()
     await wait_until(lambda: issue(hass, "waiting_new-host") is None and issue(hass, "waiting_later") is not None)
+
+
+# --- approving a waiting host from its repair (ADR-0192)
+
+APPROVES = ["agent_download", "approve_host"]
+
+
+def fixable_waiting(hass: HomeAssistant, node: str) -> bool:
+    found = issue(hass, f"waiting_{node}")
+    return found is not None and found.is_fixable and found.translation_key == "waiting_host_approve"
+
+
+async def approve_with(hass: HomeAssistant, flow: dict[str, Any], fingerprint: str) -> dict[str, Any]:
+    manager = repairs_flow_manager(hass)
+    assert manager is not None
+    return await manager.async_configure(flow["flow_id"], {"fingerprint": fingerprint})
+
+
+async def test_the_waiting_repair_is_fixable_only_while_the_hub_names_the_feature(
+    hass: HomeAssistant, fake_hub: FakeHub, entry: MockConfigEntry
+) -> None:
+    """Without approve_host the repair is ADR-0157's, not fixable. Once the hub's status names it (a role change at
+    the hub), the repair turns fixable with its own text at once, without waiting for a change of the hub's view; the
+    names stay. When the hub stops naming it, the repair is not fixable any more."""
+    fake_hub.hub["waiting"] = [waiting("new-host", FP_NEW)]
+    await setup(hass, entry)
+    plain = issue(hass, "waiting_new-host")
+    assert plain is not None and not plain.is_fixable and plain.translation_key == "waiting_host" and plain.data is None
+    names = plain.translation_placeholders
+
+    await fake_hub.set_features(APPROVES)
+    await wait_until(lambda: fixable_waiting(hass, "new-host"))
+    fixable = issue(hass, "waiting_new-host")
+    assert fixable.data == {"kind": "approve_host", "entry_id": entry.entry_id, "node": "new-host"}
+    assert fixable.translation_placeholders == names and fixable.severity == ir.IssueSeverity.WARNING
+    assert fake_hub.approve_requests == []
+
+    await fake_hub.set_features(["agent_download"])
+    await wait_until(lambda: not issue(hass, "waiting_new-host").is_fixable)
+    assert issue(hass, "waiting_new-host").translation_key == "waiting_host"
+    assert issue(hass, "waiting_new-host").data is None
+
+
+async def test_the_fix_asks_for_the_hosts_fingerprint(
+    hass: HomeAssistant, fake_hub: FakeHub, entry: MockConfigEntry
+) -> None:
+    """The fix refuses in the form, sending nothing, anything that is no fingerprint and a fingerprint other than the
+    one the hub saw. Spaces and upper case do not matter: the matching one goes to the hub, the host is approved and the
+    repair goes."""
+    fake_hub.features = APPROVES
+    fake_hub.hub["waiting"] = [waiting("new-host", FP_NEW, "Debian GNU/Linux 13 (trixie)")]
+    await setup(hass, entry)
+    assert fixable_waiting(hass, "new-host")
+    flow = await start_fix(hass, "waiting_new-host")
+    assert flow["description_placeholders"] == issue(hass, "waiting_new-host").translation_placeholders
+    assert [str(k) for k in flow["data_schema"].schema] == ["fingerprint"]
+    for given, error in (
+        ("not a fingerprint", "invalid_fingerprint"),
+        (FP_NEW[:-1], "invalid_fingerprint"),
+        (FP_NEW[:-1] + "g", "invalid_fingerprint"),
+        (f"SHA256:{FP_NEW}", "invalid_fingerprint"),
+        (FP_OTHER, "fingerprint_differs"),
+        (FP_OTHER.upper(), "fingerprint_differs"),
+    ):
+        result = await approve_with(hass, flow, given)
+        assert result["type"] is FlowResultType.FORM and result["errors"] == {"fingerprint": error}, given
+    assert fake_hub.approve_requests == []
+    assert issue(hass, "waiting_new-host") is not None
+
+    spaced = " ".join(FP_NEW[i : i + 8] for i in range(0, 64, 8)).upper()
+    result = await approve_with(hass, flow, f"  {spaced}\n")
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert [(r["node"], r["fingerprint"]) for r in fake_hub.approve_requests] == [("new-host", FP_NEW)]
+    await wait_until(lambda: issue(hass, "waiting_new-host") is None)
+
+
+async def test_the_fix_says_why_the_hub_refused(
+    hass: HomeAssistant, fake_hub: FakeHub, entry: MockConfigEntry, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each code the hub answers has its own text; any other is named as it is. A hub that does not answer in time
+    has its own text too. Every refusal leaves the repair."""
+    monkeypatch.setattr(client_module, "COMMAND_TIMEOUT", 0.3)
+    fake_hub.features = APPROVES
+    fake_hub.hub["waiting"] = [waiting("new-host", FP_NEW)]
+    await setup(hass, entry)
+    hub_codes = sorted(APPROVE_REFUSALS - {"no_answer"})
+    assert set(hub_codes) == {
+        "ha_approval_off",
+        "client_not_approved",
+        "role_forbids",
+        "unknown_node",
+        "not_waiting",
+        "fingerprint_mismatch",
+        "bad_request",
+        "store_failed",
+    }
+    for code in hub_codes:
+        fake_hub.approve_code = code
+        result = await approve_with(hass, await start_fix(hass, "waiting_new-host"), FP_NEW)
+        assert result["type"] is FlowResultType.ABORT and result["reason"] == f"approve_{code}", code
+        assert result["description_placeholders"] == {"node": "new-host"}
+    fake_hub.approve_code = "some_future_code"
+    result = await approve_with(hass, await start_fix(hass, "waiting_new-host"), FP_NEW)
+    assert result["type"] is FlowResultType.ABORT and result["reason"] == "approve_refused"
+    assert result["description_placeholders"] == {"node": "new-host", "code": "some_future_code"}
+    fake_hub.approve_code = None  # no answer
+    result = await approve_with(hass, await start_fix(hass, "waiting_new-host"), FP_NEW)
+    assert result["type"] is FlowResultType.ABORT and result["reason"] == "approve_no_answer"
+    assert len(fake_hub.approve_requests) == len(hub_codes) + 2
+    assert fixable_waiting(hass, "new-host")
+
+
+async def test_the_fix_checks_again_before_it_sends(
+    hass: HomeAssistant, fake_hub: FakeHub, entry: MockConfigEntry
+) -> None:
+    """The dialog may be older than the hub's state: a host decided meanwhile, a hub that no longer lets Home Assistant
+    approve, a connection that ended - each its own reason, and nothing is sent."""
+    fake_hub.features = APPROVES
+    fake_hub.hub["waiting"] = [waiting("new-host", FP_NEW), waiting("other", FP_OTHER)]
+    await setup(hass, entry)
+
+    flow = await start_fix(hass, "waiting_new-host")
+    await fake_hub.push_hub(waiting=[waiting("other", FP_OTHER)])
+    await wait_until(lambda: issue(hass, "waiting_new-host") is None)
+    result = await approve_with(hass, flow, FP_NEW)
+    assert result["type"] is FlowResultType.ABORT and result["reason"] == "no_longer_waiting"
+    assert result["description_placeholders"] == {"node": "new-host"}
+
+    flow = await start_fix(hass, "waiting_other")
+    await fake_hub.set_features(["agent_download"])
+    await wait_until(lambda: not entry.runtime_data.client.offers_host_approval)
+    result = await approve_with(hass, flow, FP_OTHER)
+    assert result["type"] is FlowResultType.ABORT and result["reason"] == "approval_not_offered"
+
+    await fake_hub.set_features(APPROVES)
+    await wait_until(lambda: fixable_waiting(hass, "other"))
+    flow = await start_fix(hass, "waiting_other")
+    await fake_hub.shut_down()
+    await wait_until(lambda: not entry.runtime_data.connected)
+    result = await approve_with(hass, flow, FP_OTHER)
+    assert result["type"] is FlowResultType.ABORT and result["reason"] == "hub_not_connected"
+    assert fake_hub.approve_requests == []
+    # Not connected, the hub names nothing: the repair is not fixable until it does again.
+    assert not issue(hass, "waiting_other").is_fixable
+
+
+async def test_the_fix_of_a_host_that_no_longer_waits_ends_at_once(
+    hass: HomeAssistant, fake_hub: FakeHub, entry: MockConfigEntry
+) -> None:
+    """Opened for a host the hub no longer lists (the repair was older): it says so instead of asking."""
+    fake_hub.features = APPROVES
+    fake_hub.hub["waiting"] = [waiting("new-host", FP_NEW)]
+    await setup(hass, entry)
+    flow = ApproveHostFlow(entry.entry_id, "gone-host")
+    flow.hass = hass
+    result = await flow.async_step_init()
+    assert result["type"] is FlowResultType.ABORT and result["reason"] == "no_longer_waiting"
+    flow = ApproveHostFlow("no-such-entry", "new-host")
+    flow.hass = hass
+    result = await flow.async_step_init()
+    assert result["type"] is FlowResultType.ABORT and result["reason"] == "hub_not_connected"
+    assert fake_hub.approve_requests == []

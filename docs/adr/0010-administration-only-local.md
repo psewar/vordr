@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by ADR-0192
 date: 2026-10-28
 decision-makers: kay; proposed by Claude in design draft v0.1
 ---

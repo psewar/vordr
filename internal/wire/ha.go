@@ -20,6 +20,8 @@ import (
 //	ha  -> hub agent_download  {request_id, os, arch}      only to a hub whose status named FeatureAgentDownload
 //	hub -> ha  agent_download_result {request_id, code, version, manifest, manifest_sig, hub_key, expires_at,
 //	                                  downloads}
+//	ha  -> hub approve_host    {request_id, node, fingerprint}  only to a hub whose status named FeatureApproveHost
+//	hub -> ha  approve_host_result {request_id, code}      ok = the waiting host is approved
 //	both       heartbeat       every HeartbeatInterval; the hub answers the client's
 const (
 	HAPath     = "/v1/ha"
@@ -34,12 +36,19 @@ const (
 	TCommandResult       = "command_result"
 	TAgentDownload       = "agent_download"
 	TAgentDownloadResult = "agent_download_result"
+	TApproveHost         = "approve_host"
+	TApproveHostResult   = "approve_host_result"
 )
 
 // FeatureAgentDownload, in the status the hub sends a Home Assistant client: the hub answers agent_download
 // (ADR-0167). As with the agents (ADR-0067), a client sends the message only to a hub that named it; an older hub
 // drops the connection on a message it does not know.
 const FeatureAgentDownload = "agent_download"
+
+// FeatureApproveHost, in the status the hub sends a Home Assistant client: this client may approve a waiting host
+// (ADR-0192). Named only while hub.yaml sets ha_approves_hosts and the client is approved with role admin; a role
+// change sends the status again. A client sends approve_host only while its last status named it.
+const FeatureApproveHost = "approve_host"
 
 // ReasonProtocolMismatch: the client speaks another protocol version than the hub.
 const ReasonProtocolMismatch StatusReason = "protocol_mismatch"
@@ -143,4 +152,21 @@ type AgentDownloadFile struct {
 	File string `json:"file"`
 	// Path: an HTTPS GET of this path at the hub's address, with its own token, returns the binary.
 	Path string `json:"path"`
+}
+
+// ApproveHost asks the hub to approve a host that waits for approval (ADR-0192). The hub approves it only when the node
+// waits and Fingerprint is the one it holds for the node's key: what `vordr-agent identity` printed on the host, or
+// what "Add host" read over the SSH connection whose host key the person confirmed.
+type ApproveHost struct {
+	T           string `json:"t"`
+	RequestID   string `json:"request_id"`
+	Node        string `json:"node"`
+	Fingerprint string `json:"fingerprint"` // hex SHA-256 of the host's public key, 64 lower-case digits
+}
+
+// ApproveHostResult answers ApproveHost with a code: ok, or why the hub did not approve.
+type ApproveHostResult struct {
+	T         string `json:"t"`
+	RequestID string `json:"request_id"`
+	Code      string `json:"code"`
 }

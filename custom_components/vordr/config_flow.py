@@ -384,7 +384,7 @@ class AddHostFlow(ConfigSubentryFlow):
     """The button "Add host": installs the agent on a new Linux host once over SSH (ADR-0161). Only Home Assistant's
     administrators reach it. It ends with an abort whose text says how it went, the fingerprint on success, and stores
     nothing, not even a subentry: the hub's registry stays the one list of hosts, and the new host waits there for
-    approval (ADR-0185)."""
+    approval (ADR-0185), unless the hub lets this Home Assistant approve it right after the install (ADR-0192)."""
 
     def __init__(self) -> None:
         self._install: AgentInstall | None = None
@@ -500,9 +500,9 @@ class AddHostFlow(ConfigSubentryFlow):
         return self.async_show_progress_done(next_step_id="result")
 
     async def async_step_result(self, user_input: dict[str, Any] | None = None) -> SubentryFlowResult:
-        """The end: on success the fingerprint and that the host waits for approval at the hub; otherwise the code's
-        text with the next step. An abort, not a created subentry, also on success: nothing is stored (ADR-0185). Ends
-        the flow, which drops what it held."""
+        """The end: on success the fingerprint and whether the host was approved (ADR-0192) or waits for approval at
+        the hub; otherwise the code's text with the next step. An abort, not a created subentry, also on success:
+        nothing is stored (ADR-0185). Ends the flow, which drops what it held."""
         assert self._task is not None and self._install is not None
         outcome = self._task.result()
         return self.async_abort(

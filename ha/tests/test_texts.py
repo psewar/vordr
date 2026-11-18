@@ -19,7 +19,15 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from custom_components.vordr import agent_install as ai, ai_explain as ax, ha_updates as hu, ha_updates_installer as hi
 from custom_components.vordr.const import CODES, DOMAIN, REASONS
 from custom_components.vordr.coordinator import reboot_held, refusal, waiting_hosts
-from custom_components.vordr.repairs import InstallAgainFlow, RebootFlow
+from custom_components.vordr.repairs import (
+    APPROVE_REFUSALS,
+    CONF_FINGERPRINT,
+    FORM_DIFFERS,
+    FORM_INVALID,
+    InstallAgainFlow,
+    RebootFlow,
+    approve_refusal,
+)
 from custom_components.vordr.texts import TEXT_KEYS, Texts, placeholders, problem_key
 
 from .conftest import FakeHub, host_view, wait_until
@@ -176,6 +184,37 @@ def test_waiting_host_text(lang: str) -> None:
         assert code in description, code
     assert description.index("vordr-agent identity") < description.index("{command}")
     assert names["command"] in description.format(**names)
+
+
+@pytest.mark.parametrize("lang", sorted(LANGS))
+def test_waiting_host_approve_texts(lang: str) -> None:
+    """ADR-0192: the fixable repair of a waiting host has the same title, and its fix dialog renders with exactly what
+    the integration passes, asks for the host's own `vordr-agent identity` before it names the command, and says how to
+    reject. Each refusal of the form and every way the fix ends has its text, rendered with what the flow fills; the
+    form's errors need no placeholder."""
+    data = LANGS[lang]["issues"]
+    issue = data["waiting_host_approve"]
+    assert issue["title"] == data["waiting_host"]["title"]
+    names = waiting_hosts({"waiting": [{"node": "n1", "fingerprint": "ab" * 32, "os": "TestOS 1"}]})["n1"]
+    step = issue["fix_flow"]["step"]["confirm"]
+    description = step["description"]
+    assert fields_of(description) == set(names) and fields_of(step["title"]) == {"node"}
+    for code in ("`{fingerprint}`", "`{os}`", "`{command}`", "`vordr-agent identity`", "`vordr-hub reject {node}`"):
+        assert code in description, code
+    assert description.index("vordr-agent identity") < description.index("{command}")
+    assert set(step["data"]) == set(step["data_description"]) == {CONF_FINGERPRINT}
+    errors = issue["fix_flow"]["error"]
+    assert set(errors) == {FORM_INVALID, FORM_DIFFERS} and not any(fields_of(t) for t in errors.values())
+    assert "vordr-hub reject" in errors[FORM_DIFFERS]
+    abort = issue["fix_flow"]["abort"]
+    reasons = {"no_longer_waiting", "approval_not_offered"}
+    for code in (*APPROVE_REFUSALS, "some_future_code", "hub_not_connected", "hub_without_approval"):
+        key, shown = approve_refusal("n1", code)
+        reasons.add(key)
+        assert fields_of(abort[key]) <= set(shown), (key, shown)
+    assert set(abort) == reasons
+    assert all(fields_of(abort[k]) <= {"node"} for k in ("no_longer_waiting", "approval_not_offered"))
+    assert fields_of(abort["approve_refused"]) == {"node", "code"}
 
 
 def test_waiting_host_command_is_the_hubs() -> None:

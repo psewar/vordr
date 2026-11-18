@@ -52,6 +52,14 @@ Home Assistant nicht gespeichert ([ha/README.de.md](../ha/README.de.md),
 [ADR-0185](../docs/adr/0185-the-agent-install-starts-from-an-add-host-button-and-stores-no-subentry.md)). Danach
 wartet der Host wie unten auf die Freigabe an der Leitstelle.
 
+Hosts werden an der Leitstelle freigegeben. Soll auch Home Assistant sie freigeben dürfen, `ha_approves_hosts: true` in
+der `hub.yaml` setzen (standardmässig aus; `check-config` nennt es) und dem Client die Rolle `admin` geben: Dann gibt
+*Host hinzufügen* den neuen Host im selben Dialog frei, mit dem Fingerprint, den es über die SSH-Verbindung gelesen hat,
+deren Host-Schlüssel die Person bestätigt hat, und der Reparaturhinweis jedes anderen wartenden Hosts gibt ihn mit dem
+Fingerprint frei, den `vordr-agent identity` auf diesem Host ausgibt. Ablehnen und Vergessen von Hosts bleiben an der
+Leitstelle
+([ADR-0192](../docs/adr/0192-an-admin-home-assistant-may-approve-a-waiting-host-when-the-hub-allows-it.md)).
+
 ## Agent
 
 Der kurze Weg braucht nur die Binary für die Architektur des Hosts. Bevor sie als root läuft, ihren SHA-256 mit dem
@@ -223,5 +231,8 @@ geschlossene Verbmenge, nicht die Sandbox.
 
 Befehle kommen nur über die authentifizierte Verbindung eines freigegebenen HA-Clients. Die Leitstelle prüft sie gegen
 Verben und Richtlinie des Hosts, bevor sie signiert, und der Agent prüft jeden Auftrag noch einmal. Ein Client kann
-keine Hosts freigeben und nichts an ihren Richtlinien ändern; `vordr-hub reject-client` / `forget-client` widerrufen ihn
-und trennen seine Verbindung sofort.
+nichts an den Richtlinien der Hosts ändern, und einen wartenden Host gibt er nur frei, wo `hub.yaml`
+`ha_approves_hosts` setzt und er die Rolle `admin` hat, mit dem Fingerprint, den die Leitstelle führt; einen Host lehnt
+er nie ab und vergisst ihn nie
+([ADR-0192](../docs/adr/0192-an-admin-home-assistant-may-approve-a-waiting-host-when-the-hub-allows-it.md)).
+`vordr-hub reject-client` / `forget-client` widerrufen ihn und trennen seine Verbindung sofort.

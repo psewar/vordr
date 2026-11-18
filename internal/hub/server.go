@@ -54,6 +54,9 @@ type Server struct {
 	// Packages: the hosts' pip/npm inventories and the OSV data they are matched against; nil: the hub does not
 	// announce FeatureInventory, and agents send none.
 	Packages *Packages
+	// HAApprovesHosts: hub.yaml ha_approves_hosts; a Home Assistant client with role admin may approve a waiting host
+	// (ADR-0192, approvehost.go).
+	HAApprovesHosts bool
 
 	mu         sync.Mutex
 	sessions   map[string]*session
