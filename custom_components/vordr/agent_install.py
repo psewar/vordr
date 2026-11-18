@@ -519,6 +519,7 @@ def download_url(ha_url: str, path: str) -> str:
 # case. The download is bounded by the signed size (curl --max-filesize, and ulimit -f for both tools) and in time
 # (curl --max-time, timeout for wget). The binary runs only once its size and SHA-256 match the signed manifest. Its own
 # lines are key=value; after the agent ran, the line "step=agent exit=<n>" and then the agent's last line.
+# The script holds no "${" and no "$$": systemd-run replaces them before sh sees the script (SYSTEMD_RUN).
 INSTALL_SCRIPT: Final = """umask 077
 sha=$1 size=$2 hub=$3 hubkey=$4 node=$5 opkey=$6 backup=$7 capath=$8
 IFS= read -r url || url=
@@ -559,7 +560,8 @@ if command -v curl >/dev/null 2>&1; then
   [ "$rc" = 0 ] || { say "step=download code=download_failed tool=curl exit=$rc"; exit 2; }
   if [ "$http" != 200 ]; then
     reason=$(head -c 32 "$f" 2>/dev/null | tr -cd 'a-z_')
-    say "step=download code=download_refused http=$http reason=${reason:-none}"; exit 2
+    [ -n "$reason" ] || reason=none
+    say "step=download code=download_refused http=$http reason=$reason"; exit 2
   fi
 else
   printf '%s\\n' "$url" > "$d/url" || { say 'step=temp code=temp_failed'; exit 2; }
@@ -575,7 +577,7 @@ else
 fi
 got=$(fsize)
 [ "$got" = "$size" ] || { say "step=verify code=size_mismatch size=$got"; exit 2; }
-sum=$(sha256sum < "$f") && sum=${sum%% *}
+sha256sum < "$f" > "$d/sum" && read -r sum rest < "$d/sum" || sum=
 [ "$sum" = "$sha" ] || { say 'step=verify code=hash_mismatch'; exit 2; }
 chmod 700 "$f"
 caarg= cadir= canew= dirnew=
@@ -584,7 +586,7 @@ if [ -n "$cacert" ]; then
     a=$(sha256sum < "$cacert") && b=$(sha256sum < "$capath") || { say 'step=ca code=ca_failed'; exit 2; }
     [ "$a" = "$b" ] || { say 'step=ca code=ca_differs'; exit 2; }
   else
-    cadir=${capath%/*}
+    cadir=$(dirname -- "$capath")
     if [ ! -d "$cadir" ]; then
       mkdir -m 755 "$cadir" || { say 'step=ca code=ca_failed'; exit 2; }
       dirnew=yes
@@ -615,6 +617,9 @@ exit "$rc"
 # connection, or logind ending the session with KillUserProcesses=yes, does not stop it halfway; the host finishes on
 # its own. --pipe passes stdin and stdout through, --wait returns when it ended, --collect removes the unit even after
 # a failure. systemd-run is part of systemd, which the probe requires (--pipe since systemd 235, --collect since 236).
+# systemd expands the service's command line as in ExecStart=: each ${...} in an argument becomes the service's variable
+# or nothing, "$$" becomes "$". That holds for sh -c's script too (since systemd 254 unless --expand-environment=no,
+# which older versions refuse), so the script and the values use neither; test_agent_install_parts checks it.
 SYSTEMD_RUN: Final = ("systemd-run", "--pipe", "--wait", "--collect", "--quiet", "--description=vordr agent install")
 
 

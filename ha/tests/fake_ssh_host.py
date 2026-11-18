@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+import shlex
 import shutil
+import sys
 import threading
 
 import asyncssh
@@ -32,6 +34,7 @@ TOOLS = (
     "sha256sum",
     "base64",
     "cp",
+    "dirname",
     "rmdir",
     "sleep",
     "timeout",
@@ -74,18 +77,11 @@ SIM_UID=0
 export SIM_UID
 exec "$@"
 """,
-    # systemd-run with exactly the options the install uses: records them and runs the command as it is. A real
-    # systemd-run starts it as a transient service outside the login session, which the sandbox cannot show.
-    "systemd-run": """#!/bin/sh
-: > "$SIM/systemd-run-args"
-while [ $# -gt 0 ]; do
-  case $1 in
-    --pipe|--wait|--collect|--quiet|--description=*) printf '%s\\n' "$1" >> "$SIM/systemd-run-args"; shift ;;
-    --) shift; break ;;
-    *) echo "systemd-run stand-in: unknown option $1" >&2; exit 1 ;;
-  esac
-done
-exec "$@"
+    # systemd-run with exactly the options the install uses: records them, expands the command's arguments as systemd
+    # does (${...} and $$, systemd_run_standin.py) and runs it. A real systemd-run starts it as a transient service
+    # outside the login session, which the sandbox cannot show.
+    "systemd-run": f"""#!/bin/sh
+exec {shlex.quote(sys.executable)} -I {shlex.quote(str(Path(__file__).with_name("systemd_run_standin.py")))} "$@"
 """,
     "apt-get": "#!/bin/sh\nexit 0\n",
 }

@@ -8,6 +8,7 @@ import base64
 import json
 from pathlib import Path
 import re
+import shlex
 import shutil
 import string
 import subprocess
@@ -24,6 +25,7 @@ from custom_components.vordr.agent_install import LOGIN_FORM_ERRORS
 from custom_components.vordr.client import CODE_HUB_WITHOUT_DOWNLOAD
 
 from .conftest import FakeHub, make_release, wait_until
+from .systemd_run_standin import expand
 
 ROOT = Path(__file__).parents[2]
 TRANSLATIONS = ROOT / "custom_components" / "vordr" / "translations"
@@ -320,6 +322,40 @@ def test_scripts_are_posix_shell(script: str) -> None:
     """Both scripts parse in the shell Debian runs them in (dash, as sh)."""
     run = subprocess.run(["sh", "-n", "-c", getattr(ai, script)], capture_output=True, text=True, check=False)
     assert run.returncode == 0, run.stderr
+
+
+def test_the_systemd_run_stand_in_expands_as_systemd_does() -> None:
+    """The fake host's systemd-run replaces what systemd replaces in a service's command line, so that an install that
+    loses part of its script under systemd fails in the tests too."""
+    env = {"PATH": "/usr/bin"}
+    assert expand(["sum=${sum%% *}", "${reason:-none}", "${PATH:+set}", "a$$b", "${PATH}x"], env) == [
+        "sum=",
+        "none",
+        "set",
+        "a$b",
+        "/usr/binx",
+    ]
+    assert expand(["$PATH", "$NOTSET", "x$PATH", "$(id)", "$1", "${", "%s"], env) == [
+        "/usr/bin",
+        "x$PATH",
+        "$(id)",
+        "$1",
+        "${",
+        "%s",
+    ]
+
+
+@pytest.mark.parametrize("with_ca", [True, False])
+@pytest.mark.parametrize("sudo", [ai.Sudo.NONE, ai.Sudo.NOPASSWD, ai.Sudo.PASSWORD])
+def test_the_install_reaches_the_host_as_it_is_written(with_ca: bool, sudo: str) -> None:
+    """systemd-run hands the script and every value on as written: neither holds anything systemd replaces. A script
+    with ${sum%% *} lost it, and every install ended in hash_mismatch."""
+    release = ai.Release("1.4.0", FILE, "ab" * 32, 4096, path(), base64.b64encode(b"k" * 32).decode())
+    keys = ai.OperatorKeys(base64.b64encode(b"o" * 32).decode(), base64.b64encode(b"b" * 32).decode())
+    argv = shlex.split(ai.install_command(release, "wss://hub.example:8443/v1/tunnel", "web-01", keys, with_ca, sudo))
+    started = argv[argv.index("--", argv.index("systemd-run")) + 1 :]
+    assert started[:3] == ["sh", "-c", ai.INSTALL_SCRIPT]
+    assert expand(started, {"PATH": "/usr/bin"}) == started
 
 
 @pytest.mark.skipif(shutil.which("sh") is None, reason="no POSIX shell")
