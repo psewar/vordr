@@ -19,9 +19,19 @@ type Vet struct {
 	Ecosystem string       `json:"ecosystem"`
 	Packages  []VetPackage `json:"packages"`
 	IssuedAt  time.Time    `json:"issued_at"`
-	// Unavailable: the hub cannot vouch (its OSV data for the ecosystem is missing or stale); Packages is then empty.
+	// Unavailable: the hub cannot vouch, and why - its OSV data for the ecosystem is missing or stale, no update of the
+	// host runs, or the request is out of bounds (VetOutOfBounds); Packages is then empty. The agent stops the update
+	// whatever the reason (precheck_vetting_unavailable).
 	Unavailable string `json:"unavailable,omitempty"`
 }
+
+// VetOutOfBounds: the hub refused the request whole, as a field of it is out of its bound (ADR-0196). It vouches for a
+// plan only as the agent sent it, never for a part.
+const VetOutOfBounds = "vet_out_of_bounds"
+
+// MaxVetEntryLen bounds the name and the version of an entry of a vet request, in bytes: the hub refuses a longer one,
+// and the agent plans none (ADR-0196).
+const MaxVetEntryLen = 1024
 
 // VetPackage is one entry of the plan with the OSV entries that apply to it (none: clean).
 type VetPackage struct {

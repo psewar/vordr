@@ -256,13 +256,23 @@ func (s *Server) features() []string {
 
 // vet answers an agent's plan of a pip/npm update (design 11.4) with a statement signed like a job. Only for a run
 // of that host that is an update of packages or a refresh of dependencies (ADR-0104: there it also names which
-// installed dependencies have findings); anything else gets "no_running_update" - the agent then refuses.
+// installed dependencies have findings); anything else gets "no_running_update" - the agent then refuses. A request out
+// of bounds is refused whole before anything else (refuseVet, ADR-0196). A host that is not approved has no run: it
+// gets "no_running_update" and logs nothing, as none of its messages does.
 func (s *Server) vet(node string, req wire.Vet) wire.VetResult {
+	e, known := s.Reg.Get(node)
+	approved := known && e.State == wire.StateApproved
+	if bounds := boundVet(&req); !bounds.taken() {
+		if approved {
+			s.logBounds(node, e.Fingerprint, "vet", bounds)
+		}
+		return s.refuseVet(node, req, bounds)
+	}
 	v := protocol.Vet{JobID: req.JobID, Node: node, Ecosystem: req.Ecosystem, IssuedAt: s.Now().UTC(),
 		Packages: []protocol.VetPackage{}}
 	run, ok := s.currentRun(node, req.JobID)
 	switch {
-	case !ok || run.Verb != protocol.VerbInstall || run.Code != "" ||
+	case !approved || !ok || run.Verb != protocol.VerbInstall || run.Code != "" ||
 		!strings.HasPrefix(run.Scope, "pkg:") && !strings.HasPrefix(run.Scope, "deps:"):
 		v.Unavailable = "no_running_update"
 	default:
@@ -274,13 +284,32 @@ func (s *Server) vet(node string, req wire.Vet) wire.VetResult {
 			flagged++
 		}
 	}
-	s.Events.Log(node, "vet", map[string]any{"job_id": req.JobID, "ecosystem": req.Ecosystem,
-		"packages": len(req.Packages), "flagged": flagged, "unavailable": v.Unavailable})
+	if approved {
+		s.Events.Log(node, "vet", map[string]any{"job_id": req.JobID, "ecosystem": req.Ecosystem,
+			"packages": len(req.Packages), "flagged": flagged, "unavailable": v.Unavailable})
+	}
 	sv, err := protocol.SignVet(v, s.Key.Sign)
 	if err != nil {
 		s.Log.Printf("vet: %v", err)
 	}
 	return wire.VetResult{T: wire.TVetResult, JobID: req.JobID, Vet: sv}
+}
+
+// refuseVet answers a vet request out of bounds with a signed statement that vouches for nothing
+// (protocol.VetOutOfBounds): the agent stops its update. Nothing of the request is echoed but a job id in bounds, so
+// that the agent's waiting run gets the answer at once.
+func (s *Server) refuseVet(node string, req wire.Vet, bounds *outOfBounds) wire.VetResult {
+	jobID := req.JobID
+	if _, bad := bounds.refused["job_id"]; bad {
+		jobID = "" // the agent waiting for it, if any, runs into its timeout: fail-closed as well
+	}
+	v := protocol.Vet{JobID: jobID, Node: node, IssuedAt: s.Now().UTC(), Packages: []protocol.VetPackage{},
+		Unavailable: protocol.VetOutOfBounds}
+	sv, err := protocol.SignVet(v, s.Key.Sign)
+	if err != nil {
+		s.Log.Printf("vet: %v", err)
+	}
+	return wire.VetResult{T: wire.TVetResult, JobID: jobID, Vet: sv}
 }
 
 // inventoryFields: what the event log keeps of an inventory - counts, never the package list.
@@ -400,6 +429,7 @@ func (s *Server) loop(sess *session) {
 				s.Events.Log(sess.node, "protocol_violation", map[string]any{"type": t})
 				return // without OSV data the hub never announced FeatureVet
 			}
+			// Out of bounds otherwise, it is answered as refused (ADR-0196) and the connection stays.
 			if sess.conn.Send(s.vet(sess.node, req)) != nil {
 				return
 			}

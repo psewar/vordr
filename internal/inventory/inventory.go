@@ -314,9 +314,11 @@ var (
 )
 
 // validEntry: names and versions become arguments of pip and npm later (updates) and travel to the hub; anything
-// else stays on the host.
+// else stays on the host. A version with a control character would make the hub refuse a vet request that names it
+// (ADR-0196), so the agent never asks.
 func validEntry(eco versions.Ecosystem, name, version string) bool {
-	if len(version) == 0 || len(version) > 64 || strings.ContainsAny(version, " \t\r\n\"'`$\\") {
+	if len(version) == 0 || len(version) > 64 || strings.ContainsAny(version, " \t\r\n\"'`$\\") ||
+		!protocol.PlainText(version) {
 		return false
 	}
 	if eco == versions.Npm {

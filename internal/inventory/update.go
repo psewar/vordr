@@ -279,6 +279,15 @@ func changes(targets []target) []string {
 	return out
 }
 
+// plannedEntry: an entry a package manager planned that the agent may pass to it and ask the hub about - a package
+// name, and a version of the ecosystem exactly as written: no white space around it, which the reading of versions
+// would trim, no control character and no more than the hub takes, for which it would refuse the whole vet request
+// (ADR-0196).
+func plannedEntry(eco versions.Ecosystem, e protocol.VetPackage) bool {
+	return protocol.PackageNamePattern.MatchString(e.Name) && len(e.Version) <= protocol.MaxVetEntryLen &&
+		e.Version == strings.TrimSpace(e.Version) && protocol.PlainText(e.Version) && versions.Valid(eco, e.Version)
+}
+
 // vet has the hub vouch for the plan, entry by entry.
 func (u *Updater) vet(ctx context.Context, eco versions.Ecosystem, plan []protocol.VetPackage) UpdateResult {
 	v, res := u.vetAnswer(ctx, eco, plan)
@@ -302,7 +311,9 @@ func (u *Updater) vetAnswer(ctx context.Context, eco versions.Ecosystem, entries
 	case !ok:
 		return v, refused(protocol.CodePrecheckVettingUnavailable, "the hub gave no valid answer about the plan")
 	case v.Unavailable != "":
-		return v, refused(protocol.CodePrecheckVettingUnavailable, "the hub's OSV data for %s: %s", eco, v.Unavailable)
+		// Why, as the hub's fixed code: its OSV data missing or stale, no update running, the request out of bounds.
+		return v, refused(protocol.CodePrecheckVettingUnavailable, "the hub cannot vouch for the %s plan: %s", eco,
+			v.Unavailable)
 	case !v.Covers(entries):
 		return v, refused(protocol.CodePrecheckVettingUnavailable, "the hub's answer does not cover the plan")
 	}
@@ -425,7 +436,7 @@ func (p *pipPlanner) plan(ctx context.Context, targets []target) ([]protocol.Vet
 		plan = append(plan, protocol.VetPackage{Name: i.Metadata.Name, Version: i.Metadata.Version})
 	}
 	for _, e := range plan {
-		if !protocol.PackageNamePattern.MatchString(e.Name) || !versions.Valid(versions.PyPI, e.Version) {
+		if !plannedEntry(versions.PyPI, e) {
 			return nil, refused(protocol.CodeFailedPackageManager, "pip planned an entry that is no package: %q %q", e.Name, e.Version)
 		}
 	}
@@ -759,7 +770,7 @@ func newEntries(before, after map[string]protocol.VetPackage) ([]protocol.VetPac
 		if installed[[2]string{e.Name, e.Version}] {
 			continue // already there before the update
 		}
-		if !protocol.PackageNamePattern.MatchString(e.Name) || !versions.Valid(versions.Npm, e.Version) {
+		if !plannedEntry(versions.Npm, e) {
 			return nil, refused(protocol.CodeFailedPackageManager, "npm planned an entry that is no package: %q %q", e.Name, e.Version)
 		}
 		if k := [2]string{e.Name, e.Version}; !seen[k] {

@@ -550,10 +550,10 @@ func nestingOf(t *testing.T, typ reflect.Type, seen []reflect.Type) int {
 	return 0
 }
 
-// Every field of a report, an inventory, a job status and a Home Assistant client's hello is bounded - also one added
-// later, which this test finds by itself: far beyond any bound, a field the hub does not bound by its type (a switch,
-// a time) or by the dispatch (the type t) is not taken as sent. A new field fails here until it has its bound. Their
-// nesting is bounded by the types: no message nests deeper than an inventory's 8 levels.
+// Every field of a report, an inventory, a job status, a vet request and a Home Assistant client's hello is bounded -
+// also one added later, which this test finds by itself: far beyond any bound, a field the hub does not bound by its
+// type (a switch, a time) or by the dispatch (the type t) is not taken as sent. A new field fails here until it has its
+// bound. Their nesting is bounded by the types: no message nests deeper than an inventory's 8 levels.
 func TestEveryFieldOfTheMessagesIsBounded(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	nonce := make([]byte, wire.NonceSize)
@@ -586,6 +586,12 @@ func TestEveryFieldOfTheMessagesIsBounded(t *testing.T) {
 			st := jobStatusAtTheBounds()
 			oversize(reflect.ValueOf(&st).Elem(), "", target)
 			return boundJobStatus(&st).whole()
+		}},
+		// No field is bounded by its type alone: a switch the hub fills in (malicious) is refused when set (ADR-0196).
+		"vet request": {reflect.TypeFor[wire.Vet](), []string{"t"}, func(target string) bool {
+			v := vetAtTheBounds()
+			oversize(reflect.ValueOf(&v).Elem(), "", target)
+			return boundVet(&v).whole()
 		}},
 		// Its identity holds or the hello is refused with bad_hello, its protocol is the hub's or it is refused with
 		// protocol_mismatch, and every other field is boundHAHello's.

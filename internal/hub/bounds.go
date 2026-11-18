@@ -14,13 +14,15 @@ import (
 	"github.com/psewar/vordr/internal/policy"
 	"github.com/psewar/vordr/internal/protocol"
 	"github.com/psewar/vordr/internal/source"
+	"github.com/psewar/vordr/internal/versions"
 	"github.com/psewar/vordr/internal/wire"
 )
 
-// The bounds of what an agent sends after its hello (ADR-0195): reports, inventories and job status messages. As for
-// the hello (ADR-0191, hello.go), each message type is bounded in one place, here, before anything of it is stored,
-// computed with, logged or shown in Home Assistant: boundReport, boundInventory, boundJobStatus. What an earlier hub
-// stored is bounded the same way when the hub loads it (OpenRegistry, NewPackages).
+// The bounds of what an agent sends after its hello (ADR-0195): reports, inventories and job status messages, and its
+// vet requests (ADR-0196). As for the hello (ADR-0191, hello.go), each message type is bounded in one place, here,
+// before anything of it is stored, computed with, logged or shown in Home Assistant: boundReport, boundInventory,
+// boundJobStatus, boundVet. What an earlier hub stored is bounded the same way when the hub loads it (OpenRegistry,
+// NewPackages).
 //
 // A value out of its bound costs the narrowest thing that keeps the rest meaningful: the field, the list or map it
 // belongs to (taken whole or not at all, as ADR-0191 takes lists), or the list entry, each set to what an agent sends
@@ -363,6 +365,61 @@ func boundJobStatus(st *wire.JobStatus) *outOfBounds {
 	return o
 }
 
+// boundVet bounds a vet request (wire.Vet, design 11.4) before the hub vouches for anything of it or logs it. It is
+// taken whole or refused whole, never trimmed (ADR-0196): with an entry left out the hub would sign a statement about
+// less than the agent installs. The hub then answers that it cannot vouch (protocol.VetOutOfBounds), and the agent
+// stops the update.
+func boundVet(req *wire.Vet) *outOfBounds {
+	o := newOutOfBounds()
+	switch {
+	// The job the statement is bound to: always one, as the agent's job carries it.
+	case o.refuse("job_id", jobIDBound(req.JobID)),
+		// What the hub can match: an ecosystem it orders (pip, npm). A newer one is no plan this hub can vouch for.
+		o.refuse("ecosystem", ecosystemBound(req.Ecosystem)),
+		// The server ends the connection beyond it, as before; here for every caller of boundVet.
+		o.refuse("packages", entriesBound(len(req.Packages), wire.MaxVetPackages)):
+		return o
+	}
+	for _, p := range req.Packages {
+		switch {
+		// The bound the agent plans within too (protocol.MaxVetEntryLen), as long as ADR-0195's names.
+		case o.refuse("packages[].name", textBound(p.Name, protocol.MaxVetEntryLen)),
+			o.refuse("packages[].version", textBound(p.Version, protocol.MaxVetEntryLen)),
+			// What the hub fills in: a request that brings its own is no plan the agent made.
+			o.refuse("packages[].flagged", setByTheHub(len(p.Flagged) > 0)),
+			o.refuse("packages[].malicious", setByTheHub(p.Malicious)):
+			return o
+		}
+	}
+	return o
+}
+
+// ecosystemBound: why e is no ecosystem the hub can vet, "" when it is - one whose versions it orders and matches with
+// OSV (versions.Ecosystem.Known): dropValue for another, dropTooLong for one longer than a key.
+func ecosystemBound(e string) string {
+	switch {
+	case len(e) > maxKeyLen:
+		return dropTooLong
+	case !versions.Ecosystem(e).Known():
+		return dropValue
+	}
+	return ""
+}
+
+// setByTheHub: dropValue for a field of a vet request the hub fills in itself, when the request sets it.
+func setByTheHub(set bool) string {
+	if set {
+		return dropValue
+	}
+	return ""
+}
+
+// VetNotTaken is what the hub would refuse a vet request for - the field, to why; nil when it takes the request. For
+// the tests of the agent's plans: what it asks reaches the hub whole (ADR-0196).
+func VetNotTaken(req wire.Vet) map[string]string {
+	return boundVet(&req).notTaken()
+}
+
 func keyBound(k string) string { return nameBound(k, maxKeyLen, keyPattern.MatchString) }
 func nameText(s string) string { return textBound(s, maxNameLen) }
 func countBound(n int) string  { return rangeBound(n, maxCount) }
@@ -433,8 +490,8 @@ type boundsLog struct {
 	unlogged int
 }
 
-// logBounds logs what the bounds did not take of an approved host's message of kind (report, inventory, job_status),
-// with the key's fingerprint: <kind>_refused names the field that refused it, <kind>_fields_dropped each field it
+// logBounds logs what the bounds did not take of an approved host's message of kind (report, inventory, job_status,
+// vet), with the key's fingerprint: <kind>_refused names the field that refused it, <kind>_fields_dropped each field it
 // dropped (fields) and each excerpt it cleaned (cleaned). Nothing for a message taken whole; at most one event per host
 // and event in boundsEventEvery.
 func (s *Server) logBounds(node, fingerprint, kind string, o *outOfBounds) {

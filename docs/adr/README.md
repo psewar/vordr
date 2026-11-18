@@ -229,4 +229,5 @@ Generated from the files by `python3 docs/adr/check_index.py --write`. `build.sh
 | [0193](0193-the-cancel-verb-is-not-built-until-a-run-needs-stopping.md) | The cancel verb is not built until a run needs stopping | accepted | 2026-11-18 |
 | [0194](0194-the-public-checks-run-govulncheck-at-a-pinned-version.md) | The public checks run govulncheck at a pinned version | accepted | 2026-11-18 |
 | [0195](0195-the-hub-bounds-reports-inventories-and-the-home-assistant-hello.md) | The hub bounds reports, inventories and the Home Assistant hello | accepted | 2026-11-18 |
+| [0196](0196-the-hub-refuses-a-vet-request-out-of-bounds-whole.md) | The hub refuses a vet request out of bounds whole | accepted | 2026-11-18 |
 <!-- adr-index:end -->

@@ -85,9 +85,7 @@ func TestTheRealAgentsMessagesFitTheHubsBounds(t *testing.T) {
 			Detail:           strings.Repeat("Setting up libreoffice-l10n (4:7.4.7-1+deb12u8) ...\n", 15),
 			Log:              []byte("Get:1 http://deb.example/debian bookworm/main amd64 libreoffice-l10n\n"),
 			OutdatedServices: []string{"systemd-logind.service", "cron.service"}, Replaced: []string{"libssl3 -> libssl3t64"}}}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go agent.Run(ctx)
+	ctx := runAgent(t, agent)
 	waitFor(t, "pending", func() bool { return state(h.reg, "dev-box") == wire.StatePendingApproval })
 	h.srv.Admin(hub.AdminRequest{Cmd: "approve", Node: "dev-box", Fingerprint: agent.ID.Fingerprint()})
 	waitFor(t, "inventory at the hub", func() bool { return pk.View("dev-box") != nil })

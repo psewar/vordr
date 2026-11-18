@@ -138,7 +138,7 @@ func TestPackageRunGates(t *testing.T) {
 
 func TestPackageUpdateThroughTheHub(t *testing.T) {
 	inventory.NpmCommand = func() (string, []string, bool) { return "npm", nil, true }
-	defer func() { inventory.NpmCommand = inventory.DefaultNpmCommand }()
+	t.Cleanup(func() { inventory.NpmCommand = inventory.DefaultNpmCommand }) // after the agent has stopped (runAgent)
 	h := startHub(t, 5)
 	osv := osvServer(t)
 	pk, err := hub.NewPackages(t.TempDir(), &hub.OSVConfig{URL: osv.URL, Ecosystems: []string{"npm"}, RefreshHours: 24,
@@ -158,7 +158,7 @@ func TestPackageUpdateThroughTheHub(t *testing.T) {
 			"time":     map[string]string{"1.4.0": old, "2.0.1": old},
 			"versions": map[string]any{"1.4.0": map[string]any{}, "2.0.1": map[string]any{}}})
 	}))
-	defer reg.Close()
+	t.Cleanup(reg.Close)
 	nm := filepath.Join(t.TempDir(), "lib", "node_modules")
 	writeFile(t, filepath.Join(nm, "@example", "nodes", "package.json"), `{"name":"@example/nodes","version":"1.4.0"}`)
 	npm := &fakeNpm{nm: nm, plan: map[string]string{"@example/nodes": "2.0.1", "debug": "4.4.2"}}
@@ -175,9 +175,7 @@ func TestPackageUpdateThroughTheHub(t *testing.T) {
 		locs[0].Packages[0].Latest, locs[0].Packages[0].Candidate = "2.0.1", "2.0.1"
 		return wire.Inventory{T: wire.TInventory, CheckedAt: time.Now().UTC(), Locations: locs}
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go c.Run(ctx)
+	ctx := runAgent(t, c)
 	waitFor(t, "pending", func() bool { return state(h.reg, "echo") == wire.StatePendingApproval })
 	h.srv.Admin(hub.AdminRequest{Cmd: "approve", Node: "echo", Fingerprint: c.ID.Fingerprint()})
 	waitFor(t, "inventory", func() bool { return pk.View("echo") != nil })
@@ -217,5 +215,9 @@ func TestPackageUpdateThroughTheHub(t *testing.T) {
 	if code != hub.AdminOK || st.Code != protocol.CodeOK || st.Summary == nil ||
 		st.Summary.Packages[0] != "@example/nodes 1.4.0 -> 2.0.1" {
 		t.Fatalf("clean plan: %s %+v", code, st)
+	}
+	// Both plans reached the hub within its bounds (ADR-0196).
+	if refused := vetEvents(t, h, "vet_refused"); len(refused) != 0 {
+		t.Fatalf("the agent's npm plan refused: %v", refused)
 	}
 }

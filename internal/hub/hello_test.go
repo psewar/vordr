@@ -262,6 +262,8 @@ func oversize(v reflect.Value, path, target string) {
 				fv.SetString(strings.Repeat("x", 1<<20))
 			case reflect.Int:
 				fv.SetInt(1 << 40)
+			case reflect.Bool: // a switch the sender must not set, as malicious in a vet request
+				fv.SetBool(true)
 			case reflect.Slice:
 				n := 100000
 				if fv.Type().Elem().Kind() == reflect.Uint8 {
