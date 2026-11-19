@@ -109,7 +109,7 @@ class HostReboot(VordrHostEntity, BinarySensorEntity):
             "packages": reboot.get("packages") or [],
             "checked": reboot.get("checked") or [],
         }
-        for k in ("since", "kernel_running", "kernel_newest"):
+        for k in ("since", "kernel_running", "kernel_newest", "services"):  # services: ADR-0201
             if reboot.get(k):
                 attrs[k] = reboot[k]
         return attrs

@@ -41,7 +41,8 @@ func withFirst[T any](n int, v, first T) []T {
 func reportAtTheBounds() wire.Report {
 	r := wire.Report{T: wire.TReport, CheckedAt: boundsAt, Reboot: &source.Reboot{Required: true,
 		Reason: protocol.RebootReason(keyOf(64)), Packages: withFirst(1024, "linux-image", textOf(1024)),
-		Running: textOf(255), Newest: textOf(255), Checked: manyOf(32, keyOf(64))}}
+		Running: textOf(255), Newest: textOf(255), Checked: manyOf(32, keyOf(64)),
+		Services: withFirst(source.MaxRebootServices, "cron.service", textOf(1024))}}
 	for i := range 64 {
 		r.Sources = append(r.Sources, source.Report{Source: fmt.Sprintf("src-%d", i), State: protocol.SourceUpToDate,
 			CheckedAt: boundsAt})
@@ -213,6 +214,11 @@ func TestTheHubBoundsEveryFieldOfAReport(t *testing.T) {
 			func(r *wire.Report) { r.Reboot.Running += "x" }, func(r *wire.Report) { r.Reboot.Running = "" }},
 		"a kernel with a line break": {"reboot.kernel_newest", dropCharacters,
 			func(r *wire.Report) { r.Reboot.Newest = "6.1\n6.2" }, func(r *wire.Report) { r.Reboot.Newest = "" }},
+		"33 services to restart": {"reboot.services", dropTooMany,
+			func(r *wire.Report) { r.Reboot.Services = append(r.Reboot.Services, "x") },
+			func(r *wire.Report) { r.Reboot.Services = nil }},
+		"a service with an escape": {"reboot.services", dropCharacters,
+			func(r *wire.Report) { r.Reboot.Services[2] = "cron\x1b[2J" }, func(r *wire.Report) { r.Reboot.Services = nil }},
 	})
 }
 

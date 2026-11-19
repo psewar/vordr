@@ -108,6 +108,55 @@ async def test_capability_decides_whether_it_can_be_fixed(
     await wait_until(lambda: issue(hass, "reboot_h").is_fixable)
 
 
+LIBRARIES = {
+    "required": True,
+    "reason": "libraries",
+    "checked": ["libraries"],
+    "services": ["cron.service", "systemd"],
+    "since": "2023-11-14T22:13:20Z",
+}
+KERNEL = {**NEEDED, "kernel_running": "6.1.0-35-amd64", "kernel_newest": "6.1.0-37-amd64"}
+
+
+async def test_repair_names_its_reason(hass: HomeAssistant, fake_hub: FakeHub, entry: MockConfigEntry) -> None:
+    """ADR-0201: the reboot repair says why where the host's view has what that text names - the services still on
+    replaced libraries, the two kernels, Windows Update - fixable or by hand; otherwise the general text. Its dialog
+    names the same; a change of the services or the reason makes the repair again with them."""
+    windows = {**NEEDED, "reason": "windows_update", "packages": [], "checked": ["windows_update"]}
+    fake_hub.hosts["l"] = host_view("l", capabilities=CAN, reboot=LIBRARIES)
+    fake_hub.hosts["lm"] = host_view("lm", capabilities=CANNOT, reboot=LIBRARIES)
+    fake_hub.hosts["k"] = host_view("k", capabilities=CAN, reboot=KERNEL)
+    fake_hub.hosts["km"] = host_view("km", capabilities=CANNOT, reboot=KERNEL)
+    fake_hub.hosts["w"] = host_view("w", capabilities=CANNOT, reboot=windows)
+    fake_hub.hosts["old"] = host_view("old", capabilities=CAN, reboot={**LIBRARIES, "services": []})  # an older agent
+    await setup(hass, entry)
+    for node, key in (
+        ("l", "reboot_required_libraries"),
+        ("lm", "reboot_required_manual_libraries"),
+        ("k", "reboot_required_kernel"),
+        ("km", "reboot_required_manual_kernel"),
+        ("w", "reboot_required_manual_windows_update"),
+        ("old", "reboot_required"),
+    ):
+        assert issue(hass, f"reboot_{node}").translation_key == key, node
+    names = issue(hass, "reboot_lm").translation_placeholders
+    assert names["services"] == "cron.service, systemd" and names["since"] not in ("", "?")
+    names = issue(hass, "reboot_km").translation_placeholders
+    assert names["kernel_running"] == "6.1.0-35-amd64" and names["kernel_newest"] == "6.1.0-37-amd64"
+
+    await fake_hub.push_host(host_view("l", capabilities=CAN, reboot={**LIBRARIES, "services": ["dbus.service"]}))
+    await wait_until(lambda: issue(hass, "reboot_l").translation_placeholders["services"] == "dbus.service")
+    flow = await start_fix(hass, "reboot_l")
+    assert flow["description_placeholders"] == {
+        "node": "l",
+        "services": "dbus.service",
+        "kernel_running": "-",
+        "kernel_newest": "-",
+    }
+    await fake_hub.push_host(host_view("l", capabilities=CAN, reboot=KERNEL))
+    await wait_until(lambda: issue(hass, "reboot_l").translation_key == "reboot_required_kernel")
+
+
 async def test_long_pending_reboot_is_one_repair(
     hass: HomeAssistant, fake_hub: FakeHub, entry: MockConfigEntry
 ) -> None:

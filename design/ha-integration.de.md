@@ -297,6 +297,12 @@ Aus, solange `hub.yaml` nicht `ha_approves_hosts: true` setzt; `check-config` ne
   - mit „Beheben“, wo die Leitstelle den Neustart anbietet (Fähigkeit `reboot`): Bestätigen, dann derselbe Befehl wie
     der Neustart-Knopf; beim Bestätigen erneut geprüft (Verbindung, Host, Bedarf, Fähigkeit), jede Absage mit eigenem
     Grund; sonst „von Hand neu starten“ (`reboot_required_manual`);
+  - der Text sagt den Grund, wo die Host-Sicht hat, was er nennt
+    ([ADR-0201](../docs/adr/0201-the-reboot-repair-names-its-reason-and-the-services-to-restart.md)): `_libraries`
+    nennt die Dienste, die noch ersetzte Bibliotheken ausführen (`reboot.services`), und dass deren Neustart genügen
+    würde, `_kernel` den laufenden und den neuesten Kernel, wo sie sich unterscheiden, `_windows_update` (nur von Hand),
+    dass Windows Update wartet; jeder andere Fall behält den allgemeinen Text. Der Dialog nennt dasselbe, wie es der
+    Host zuletzt gemeldet hat; ändern sich Grund oder Dienste, entsteht der Hinweis neu;
   - Warnung, ab `reboot_pending` der Leitstelle Fehler; besteht das Problem nur aus `reboot_pending`, entfällt dafür
     `problem_<node>` (Problem-Sensor und `vordr_problem` bleiben);
   - nach einem angenommenen „Beheben“ bleibt er weg, bis der Neustart-Lauf endet, höchstens 30 Minuten;

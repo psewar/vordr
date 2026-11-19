@@ -49,6 +49,35 @@ def can_install(host: dict[str, Any]) -> bool:
     return bool(caps.get("install") or caps.get("install_security"))
 
 
+def reboot_names(host: dict[str, Any] | None) -> dict[str, str]:
+    """What the reboot texts name besides the host (ADR-0201): the services still on replaced libraries and the
+    kernels. "-" where the host's view does not say: a placeholder must not be missing."""
+    reboot = (host or {}).get("reboot") or {}
+    return {
+        "services": ", ".join(str(s) for s in reboot.get("services") or []) or "-",
+        "kernel_running": str(reboot.get("kernel_running") or "-"),
+        "kernel_newest": str(reboot.get("kernel_newest") or "-"),
+    }
+
+
+def reboot_key(host: dict[str, Any] | None) -> str:
+    """The text key of the reboot repair (ADR-0132, ADR-0201): "reboot_required" where the hub offers the reboot,
+    "reboot_required_manual" where it does not; with the reason where the host's view has what that text names - the
+    services for libraries, two different kernels for kernel - and for Windows Update (always by hand: the Windows
+    agent does not reboot). Any other reason, and an older hub or agent, get the general text."""
+    reboot = (host or {}).get("reboot") or {}
+    key = "reboot_required" if can_reboot(host or {}) else "reboot_required_manual"
+    reason = reboot.get("reason")
+    running, newest = reboot.get("kernel_running"), reboot.get("kernel_newest")
+    if reason == "libraries" and reboot.get("services"):
+        return f"{key}_libraries"
+    if reason == "kernel" and running and newest and running != newest:
+        return f"{key}_kernel"
+    if reason == "windows_update" and key == "reboot_required_manual":
+        return f"{key}_windows_update"
+    return key
+
+
 def stale_key(host: dict[str, Any]) -> str:
     """The text key of updates pending too long on this host (ADR-0197). "stale" while the install button takes some of
     them (the hub's installable above zero), and when the hub does not say (an older hub, no count); otherwise how they

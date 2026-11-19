@@ -5,7 +5,10 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+
+	"github.com/psewar/vordr/internal/source"
 )
 
 // librarySignal is the reboot signal of ADR-0200 in Reboot.Checked.
@@ -21,25 +24,26 @@ var replacedPrefixes = []string{
 // locales update, and a process reading the old one runs no old code.
 var replacedIgnored = []string{"/usr/lib/locale/"}
 
-// replacedLibraries tells whether a process still runs code from a library or program that a package update has
-// replaced since the process started (ADR-0200). The kernel marks such a mapping "(deleted)" in /proc/<pid>/maps, the
-// same evidence needrestart and checkrestart read, so the agent needs neither of them.
+// replacedLibraries names what still runs code from a library or program that a package update has replaced since it
+// started (ADR-0200): the kernel marks such a mapping "(deleted)" in /proc/<pid>/maps, the same evidence needrestart
+// and checkrestart read, so the agent needs neither of them. Each such process is named by its systemd service, or
+// by its name where it belongs to none (ADR-0201); sorted, each once, at most source.MaxRebootServices. Empty: none.
 //
 // Only processes of the agent's own PID namespace with the same root count: the processes of a container on this
 // host are the container's business, and a path under another root names another file. answered is false where the
 // agent cannot see every process - not root, /proc unreadable, or a running process whose links or map it cannot
 // read - so that "no" is only said when it was checked.
-func (a *Apt) replacedLibraries() (found, answered bool) {
+func (a *Apt) replacedLibraries() (services []string, answered bool) {
 	if !a.IsRoot {
-		return false, false
+		return nil, false
 	}
 	own, err := os.Readlink(filepath.Join(a.Paths.Proc, "self", "ns", "pid"))
 	if err != nil {
-		return false, false
+		return nil, false
 	}
 	entries, err := os.ReadDir(a.Paths.Proc)
 	if err != nil {
-		return false, false
+		return nil, false
 	}
 	for _, e := range entries {
 		if !isPID(e.Name()) {
@@ -49,12 +53,51 @@ func (a *Apt) replacedLibraries() (found, answered bool) {
 		hit, seen := processReplaced(dir, own)
 		switch {
 		case hit:
-			return true, true
+			// "": the process ended right after its map was read, so it no longer runs the old code.
+			if name := processService(dir); name != "" && !slices.Contains(services, name) {
+				services = append(services, name)
+			}
 		case !seen && !ended(dir):
-			return false, false
+			return nil, false
 		}
 	}
-	return false, true
+	slices.Sort(services)
+	return services[:min(len(services), source.MaxRebootServices)], true
+}
+
+// processService: what to restart for the process in dir - its systemd service, or its name (comm) where it belongs
+// to none, such as a process of a login session or systemd itself. "" when neither can be read: both exist for every
+// process, so the process has ended (a race with the process no check beforehand can close).
+func processService(dir string) string {
+	if raw, err := os.ReadFile(filepath.Join(dir, "cgroup")); err == nil {
+		if unit := serviceOf(string(raw)); unit != "" {
+			return unit
+		}
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "comm"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(raw))
+}
+
+// serviceOf: the systemd service in the text of /proc/<pid>/cgroup - from the unified hierarchy
+// ("0::/system.slice/cron.service") or from systemd's own in cgroup v1 ("1:name=systemd:/system.slice/cron.service").
+// The innermost ".service" counts: a unit of a user's manager sits below user@<uid>.service.
+func serviceOf(cgroup string) string {
+	for _, line := range strings.Split(cgroup, "\n") {
+		parts := strings.SplitN(strings.TrimSpace(line), ":", 3)
+		if len(parts) != 3 || !(parts[0] == "0" && parts[1] == "" || parts[1] == "name=systemd") {
+			continue
+		}
+		elems := strings.Split(parts[2], "/")
+		for i := len(elems) - 1; i >= 0; i-- {
+			if strings.HasSuffix(elems[i], ".service") {
+				return elems[i]
+			}
+		}
+	}
+	return ""
 }
 
 // processReplaced: whether the process in dir maps a replaced package file. seen is false when its links or its map

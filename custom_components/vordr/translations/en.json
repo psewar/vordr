@@ -393,7 +393,8 @@
         "name": "Reboot required",
         "state_attributes": {
           "kernel_running": { "name": "Running kernel" },
-          "kernel_newest": { "name": "Newest kernel" }
+          "kernel_newest": { "name": "Newest kernel" },
+          "services": { "name": "Services on replaced libraries" }
         }
       },
       "hub_online": { "name": "Hub" }
@@ -696,6 +697,60 @@
     "reboot_required_manual": {
       "title": "Vördr: {node} needs a reboot",
       "description": "{node} has needed a reboot since {since}. This host does not allow reboots through Vördr: reboot it by hand. This notice goes away by itself once the host no longer needs a reboot."
+    },
+    "reboot_required_kernel": {
+      "title": "Vördr: {node} needs a reboot",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Reboot {node} now?",
+            "description": "{node} still runs kernel {kernel_running}; kernel {kernel_newest} is installed and starts with the reboot. Vördr asks the hub for the same reboot as the host's reboot button: the agent reboots only if it is still needed, and the host reports back once it is up again."
+          }
+        },
+        "abort": {
+          "hub_not_connected": "Home Assistant is not connected to the Vördr hub right now. Try again once it is.",
+          "host_gone": "The hub no longer knows {node}.",
+          "no_longer_needed": "{node} no longer needs a reboot.",
+          "reboot_not_offered": "{node} no longer allows reboots through Vördr. Reboot it by hand.",
+          "command_refused": "The hub refused the reboot of {node} (code {code}).",
+          "command_refused_role_forbids": "The hub refused the reboot of {node}: this Home Assistant may not start it - its role at the hub does not allow it (vordr-hub client-role).",
+          "reboot_window_closed": "{node} can be rebooted only from {next}: its reboot window (reboot.window) is closed until then. Try again then, or reboot now with the action “Run outside the window” and a reason.",
+          "reboot_window_only": "{node} can be rebooted only from {next}: its reboot window (reboot.window) is closed and does not open even with a reason (reboot.window_only). Try again then."
+        }
+      }
+    },
+    "reboot_required_libraries": {
+      "title": "Vördr: {node} needs a reboot",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Reboot {node} now?",
+            "description": "On {node}, these services or programs still run libraries that updates have replaced: {services}. Restarting them would be enough; a reboot restarts all of them. Vördr asks the hub for the same reboot as the host's reboot button: the agent reboots only if it is still needed, and the host reports back once it is up again."
+          }
+        },
+        "abort": {
+          "hub_not_connected": "Home Assistant is not connected to the Vördr hub right now. Try again once it is.",
+          "host_gone": "The hub no longer knows {node}.",
+          "no_longer_needed": "{node} no longer needs a reboot.",
+          "reboot_not_offered": "{node} no longer allows reboots through Vördr. Reboot it by hand.",
+          "command_refused": "The hub refused the reboot of {node} (code {code}).",
+          "command_refused_role_forbids": "The hub refused the reboot of {node}: this Home Assistant may not start it - its role at the hub does not allow it (vordr-hub client-role).",
+          "reboot_window_closed": "{node} can be rebooted only from {next}: its reboot window (reboot.window) is closed until then. Try again then, or reboot now with the action “Run outside the window” and a reason.",
+          "reboot_window_only": "{node} can be rebooted only from {next}: its reboot window (reboot.window) is closed and does not open even with a reason (reboot.window_only). Try again then."
+        }
+      }
+    },
+    "reboot_required_manual_kernel": {
+      "title": "Vördr: {node} needs a reboot",
+      "description": "{node} has needed a reboot since {since}: it still runs kernel {kernel_running}, and kernel {kernel_newest} is installed. This host does not allow reboots through Vördr: reboot it by hand. This notice goes away by itself once the host no longer needs a reboot."
+    },
+    "reboot_required_manual_libraries": {
+      "title": "Vördr: {node} needs a reboot",
+      "description": "Since {since}, these services or programs on {node} still run libraries that updates have replaced: {services}. Restart them, or reboot the host by hand - it does not allow reboots through Vördr. This notice goes away by itself once nothing runs a replaced library any more."
+    },
+    "reboot_required_manual_windows_update": {
+      "title": "Vördr: {node} needs a reboot",
+      "description": "Windows Update on {node} has been waiting for a reboot since {since} to finish installing updates. This host does not allow reboots through Vördr: restart it by hand. This notice goes away by itself once the host no longer needs a reboot."
     },
     "install_again": {
       "title": "Vördr: install again on {node}",

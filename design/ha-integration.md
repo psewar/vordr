@@ -286,6 +286,12 @@ Off unless `hub.yaml` sets `ha_approves_hosts: true`; `check-config` names it ei
   - with "Fix" where the hub offers the reboot (capability `reboot`): confirm, then the same command as the reboot
     button; on confirming it is checked again (connection, host, need, capability), each refusal with its own reason;
     otherwise "restart by hand" (`reboot_required_manual`);
+  - the text says why where the host's view has what it names
+    ([ADR-0201](../docs/adr/0201-the-reboot-repair-names-its-reason-and-the-services-to-restart.md)): `_libraries`
+    names the services still on replaced libraries (`reboot.services`) and that restarting them would be enough,
+    `_kernel` the running and the newest kernel where they differ, `_windows_update` (by hand only) that Windows Update
+    waits; every other case keeps the general text. The dialog names the same, as the host last reported it; a change
+    of the reason or the services makes the repair again;
   - warning, from the hub's `reboot_pending` an error; if the problem consists only of `reboot_pending`, `problem_<node>`
     is omitted for it (problem sensor and `vordr_problem` stay);
   - after an accepted "Fix" it stays away until the reboot run ends, at most 30 minutes;

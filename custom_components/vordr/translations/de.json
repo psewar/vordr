@@ -393,7 +393,8 @@
         "name": "Neustart nötig",
         "state_attributes": {
           "kernel_running": { "name": "Laufender Kernel" },
-          "kernel_newest": { "name": "Neuester Kernel" }
+          "kernel_newest": { "name": "Neuester Kernel" },
+          "services": { "name": "Dienste auf ersetzten Bibliotheken" }
         }
       },
       "hub_online": { "name": "Leitstelle" }
@@ -696,6 +697,60 @@
     "reboot_required_manual": {
       "title": "Vördr: {node} braucht einen Neustart",
       "description": "{node} braucht seit {since} einen Neustart. Dieser Host erlaubt keinen Neustart über Vördr: bitte von Hand neu starten. Der Hinweis verschwindet von selbst, sobald der Host keinen Neustart mehr braucht."
+    },
+    "reboot_required_kernel": {
+      "title": "Vördr: {node} braucht einen Neustart",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "{node} jetzt neu starten?",
+            "description": "{node} läuft noch mit Kernel {kernel_running}; installiert ist Kernel {kernel_newest}, der mit dem Neustart startet. Vördr bittet die Leitstelle um denselben Neustart wie der Neustart-Knopf des Hosts: Der Agent startet nur neu, wenn es dann noch nötig ist, und der Host meldet sich zurück, sobald er wieder läuft."
+          }
+        },
+        "abort": {
+          "hub_not_connected": "Home Assistant ist gerade nicht mit der Vördr-Leitstelle verbunden. Bitte später noch einmal versuchen.",
+          "host_gone": "Die Leitstelle kennt {node} nicht mehr.",
+          "no_longer_needed": "{node} braucht keinen Neustart mehr.",
+          "reboot_not_offered": "{node} erlaubt keinen Neustart über Vördr mehr. Bitte von Hand neu starten.",
+          "command_refused": "Die Leitstelle hat den Neustart von {node} abgelehnt (Code {code}).",
+          "command_refused_role_forbids": "Die Leitstelle hat den Neustart von {node} abgelehnt: Dieses Home Assistant darf ihn nicht auslösen - seine Rolle an der Leitstelle erlaubt es nicht (vordr-hub client-role).",
+          "reboot_window_closed": "{node} lässt sich erst ab {next} neu starten: Sein Neustart-Fenster (reboot.window) ist bis dahin zu. Dann noch einmal versuchen oder jetzt mit der Aktion „Ausserhalb des Fensters ausführen“ und einem Grund neu starten.",
+          "reboot_window_only": "{node} lässt sich erst ab {next} neu starten: Sein Neustart-Fenster (reboot.window) ist zu und lässt sich auch mit Grund nicht öffnen (reboot.window_only). Dann noch einmal versuchen."
+        }
+      }
+    },
+    "reboot_required_libraries": {
+      "title": "Vördr: {node} braucht einen Neustart",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "{node} jetzt neu starten?",
+            "description": "Auf {node} laufen diese Dienste oder Programme noch mit Bibliotheken, die Updates ersetzt haben: {services}. Sie neu zu starten würde genügen; ein Neustart des Hosts startet sie alle neu. Vördr bittet die Leitstelle um denselben Neustart wie der Neustart-Knopf des Hosts: Der Agent startet nur neu, wenn es dann noch nötig ist, und der Host meldet sich zurück, sobald er wieder läuft."
+          }
+        },
+        "abort": {
+          "hub_not_connected": "Home Assistant ist gerade nicht mit der Vördr-Leitstelle verbunden. Bitte später noch einmal versuchen.",
+          "host_gone": "Die Leitstelle kennt {node} nicht mehr.",
+          "no_longer_needed": "{node} braucht keinen Neustart mehr.",
+          "reboot_not_offered": "{node} erlaubt keinen Neustart über Vördr mehr. Bitte von Hand neu starten.",
+          "command_refused": "Die Leitstelle hat den Neustart von {node} abgelehnt (Code {code}).",
+          "command_refused_role_forbids": "Die Leitstelle hat den Neustart von {node} abgelehnt: Dieses Home Assistant darf ihn nicht auslösen - seine Rolle an der Leitstelle erlaubt es nicht (vordr-hub client-role).",
+          "reboot_window_closed": "{node} lässt sich erst ab {next} neu starten: Sein Neustart-Fenster (reboot.window) ist bis dahin zu. Dann noch einmal versuchen oder jetzt mit der Aktion „Ausserhalb des Fensters ausführen“ und einem Grund neu starten.",
+          "reboot_window_only": "{node} lässt sich erst ab {next} neu starten: Sein Neustart-Fenster (reboot.window) ist zu und lässt sich auch mit Grund nicht öffnen (reboot.window_only). Dann noch einmal versuchen."
+        }
+      }
+    },
+    "reboot_required_manual_kernel": {
+      "title": "Vördr: {node} braucht einen Neustart",
+      "description": "{node} braucht seit {since} einen Neustart: Er läuft noch mit Kernel {kernel_running}, installiert ist Kernel {kernel_newest}. Dieser Host erlaubt keinen Neustart über Vördr: bitte von Hand neu starten. Der Hinweis verschwindet von selbst, sobald der Host keinen Neustart mehr braucht."
+    },
+    "reboot_required_manual_libraries": {
+      "title": "Vördr: {node} braucht einen Neustart",
+      "description": "Seit {since} laufen auf {node} diese Dienste oder Programme noch mit Bibliotheken, die Updates ersetzt haben: {services}. Bitte sie neu starten oder den Host von Hand neu starten – er erlaubt keinen Neustart über Vördr. Der Hinweis verschwindet von selbst, sobald nichts mehr eine ersetzte Bibliothek ausführt."
+    },
+    "reboot_required_manual_windows_update": {
+      "title": "Vördr: {node} braucht einen Neustart",
+      "description": "Windows Update wartet auf {node} seit {since} auf einen Neustart, um Updates fertig zu installieren. Dieser Host erlaubt keinen Neustart über Vördr: bitte von Hand neu starten. Der Hinweis verschwindet von selbst, sobald der Host keinen Neustart mehr braucht."
     },
     "install_again": {
       "title": "Vördr: erneut installieren auf {node}",

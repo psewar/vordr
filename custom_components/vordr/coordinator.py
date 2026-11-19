@@ -33,7 +33,7 @@ from .const import (
 )
 from .ha_updates_installer import HaUpdatesInstaller
 from .ha_updates_tracker import HaUpdatesTracker
-from .texts import TEXT_KEYS, Texts, can_reboot, placeholders, problem_key
+from .texts import TEXT_KEYS, Texts, can_reboot, placeholders, problem_key, reboot_key, reboot_names
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -547,10 +547,12 @@ class VordrCoordinator(DataUpdateCoordinator[VordrData]):
             issue_id,
             is_fixable=fixable,
             severity=ir.IssueSeverity.ERROR if overdue else ir.IssueSeverity.WARNING,
-            translation_key="reboot_required" if fixable else "reboot_required_manual",
+            # The reason and what it names (ADR-0201); a change of either makes the repair again, like any change.
+            translation_key=reboot_key(host),
             translation_placeholders={
                 "node": node,
                 "since": local_time(dt_util.parse_datetime(since) if since else None),
+                **reboot_names(host),
             },
             data={"entry_id": self.config_entry.entry_id, "node": node},
         )

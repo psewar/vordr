@@ -77,7 +77,7 @@ func (s *Server) HostView(e Entry, now time.Time) wire.HostView {
 		if r := rep.Reboot; r != nil && len(r.Checked) > 0 {
 			required := r.Required
 			v.Reboot = wire.RebootView{Required: &required, Reason: r.Reason, Packages: r.Packages, Checked: r.Checked,
-				KernelRunning: r.Running, KernelNewest: r.Newest}
+				KernelRunning: r.Running, KernelNewest: r.Newest, Services: r.Services}
 			if required {
 				v.Reboot.Since = e.RebootSince
 			}

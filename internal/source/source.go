@@ -85,6 +85,9 @@ type Report struct {
 	Detail string `json:"detail,omitempty"`
 }
 
+// MaxRebootServices bounds Reboot.Services: enough to say what to restart, short enough for a repair text.
+const MaxRebootServices = 32
+
 // Reboot says whether the host needs a reboot and why.
 type Reboot struct {
 	Required bool                  `json:"required"`
@@ -92,6 +95,9 @@ type Reboot struct {
 	Packages []string              `json:"packages,omitempty"`
 	Running  string                `json:"kernel_running,omitempty"`
 	Newest   string                `json:"kernel_newest,omitempty"`
+	// Services still run replaced libraries or programs (ADR-0201): their systemd service, or the process name where a
+	// process belongs to none; sorted, at most MaxRebootServices. Restarting them would be enough for them.
+	Services []string `json:"services,omitempty"`
 	// Checked lists the signals that gave an answer (kernel, reboot_required_file, libraries, windows_update). Empty
 	// means the need for a reboot is unknown on this host - Required=false is then no statement.
 	Checked []string `json:"checked"`

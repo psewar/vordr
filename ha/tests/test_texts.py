@@ -28,7 +28,7 @@ from custom_components.vordr.repairs import (
     RebootFlow,
     approve_refusal,
 )
-from custom_components.vordr.texts import TEXT_KEYS, Texts, placeholders, problem_key
+from custom_components.vordr.texts import TEXT_KEYS, Texts, placeholders, problem_key, reboot_key, reboot_names
 
 from .conftest import FakeHub, host_view, wait_until
 
@@ -181,6 +181,77 @@ def test_reboot_window_texts(lang: str) -> None:
             assert ("reboot.window_only" in text) is only
     assert seen == {"reboot_window_only", "reboot_window_closed"}
     assert reboot_held("n", {}) is None and reboot_held("n", None) is None
+
+
+REBOOT_FIXABLE = ("reboot_required", "reboot_required_kernel", "reboot_required_libraries")
+REBOOT_MANUAL = (
+    "reboot_required_manual",
+    "reboot_required_manual_kernel",
+    "reboot_required_manual_libraries",
+    "reboot_required_manual_windows_update",
+)
+
+
+def fields(text: str) -> set[str]:
+    return {f for _, f, _, _ in string.Formatter().parse(text) if f}
+
+
+@pytest.mark.parametrize("lang", sorted(LANGS))
+def test_reboot_texts_per_reason(lang: str) -> None:
+    """ADR-0201: each reboot text has the general one's title; a fixable one has the general one's refusals in its
+    dialog and names only what the dialog fills (the host and reboot_names), a manual one also since. Each names what
+    its reason is about. These are all the reboot texts there are."""
+    issues = LANGS[lang]["issues"]
+    shown = {"node", *reboot_names(None)}
+    for key in REBOOT_FIXABLE:
+        flow = issues[key]["fix_flow"]
+        assert issues[key]["title"] == issues["reboot_required"]["title"], key
+        assert flow["abort"] == issues["reboot_required"]["fix_flow"]["abort"], key
+        assert fields(flow["step"]["confirm"]["description"]) <= shown, key
+    for key in REBOOT_MANUAL:
+        assert issues[key]["title"] == issues["reboot_required_manual"]["title"], key
+        assert fields(issues[key]["description"]) <= shown | {"since"}, key
+    for key in (*REBOOT_FIXABLE, *REBOOT_MANUAL):
+        text = issues[key].get("description") or issues[key]["fix_flow"]["step"]["confirm"]["description"]
+        assert "node" in fields(text), key
+        assert ("services" in fields(text)) is key.endswith("_libraries"), key
+        assert ({"kernel_running", "kernel_newest"} <= fields(text)) is key.endswith("_kernel"), key
+        assert ("Windows Update" in text) is key.endswith("_windows_update"), key
+    assert {k for k in issues if k.startswith("reboot_required")} == {*REBOOT_FIXABLE, *REBOOT_MANUAL}
+
+
+def test_reboot_key_follows_the_reason() -> None:
+    """ADR-0201: the reason's own text only where the view has what it names; the general one otherwise, also for a
+    hub or agent before ADR-0201. Fixable follows the capability; Windows Update has only a text by hand."""
+    can, cannot = {"reboot": True}, {"reboot": False}
+    lib = {"required": True, "reason": "libraries", "services": ["cron.service", "systemd"]}
+    kernel = {
+        "required": True,
+        "reason": "kernel",
+        "kernel_running": "6.1.0-35-amd64",
+        "kernel_newest": "6.1.0-37-amd64",
+    }
+    for caps, reboot, key in (
+        (can, lib, "reboot_required_libraries"),
+        (cannot, lib, "reboot_required_manual_libraries"),
+        (can, {**lib, "services": []}, "reboot_required"),
+        (can, kernel, "reboot_required_kernel"),
+        (cannot, kernel, "reboot_required_manual_kernel"),
+        (can, {**kernel, "kernel_newest": "6.1.0-35-amd64"}, "reboot_required"),  # the file says kernel, kernels agree
+        (can, {"required": True, "reason": "kernel"}, "reboot_required"),  # a container: no kernels
+        (cannot, {"required": True, "reason": "windows_update"}, "reboot_required_manual_windows_update"),
+        (can, {"required": True, "reason": "windows_update"}, "reboot_required"),
+        (cannot, {"required": True, "reason": "other"}, "reboot_required_manual"),
+        (cannot, {"required": True}, "reboot_required_manual"),
+    ):
+        assert reboot_key({"capabilities": caps, "reboot": reboot}) == key, (caps, reboot)
+    assert reboot_key(None) == "reboot_required_manual"
+    assert reboot_names({"reboot": lib}) == {
+        "services": "cron.service, systemd",
+        "kernel_running": "-",
+        "kernel_newest": "-",
+    }
+    assert reboot_names({"reboot": kernel})["kernel_newest"] == "6.1.0-37-amd64"
 
 
 @pytest.mark.parametrize("lang", sorted(LANGS))

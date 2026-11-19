@@ -25,7 +25,7 @@ from .coordinator import (
     waiting_hosts,
 )
 from .ha_updates_installer import FIX_KIND, STARTED, HaUpdatesInstaller, failure_names
-from .texts import can_reboot
+from .texts import can_reboot, reboot_names
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
@@ -122,6 +122,10 @@ class RebootFlow(_HostFlow):
     def _held(self, host: dict[str, Any]) -> tuple[str, dict[str, str]] | None:
         # The fix sends the button's reboot, without a reason: a closed reboot window holds it (ADR-0187).
         return reboot_held(self._node, host)
+
+    def _shown(self, host: dict[str, Any] | None) -> dict[str, str]:
+        # The dialog of a repair with a reason names what that reason names, as the host last reported it (ADR-0201).
+        return reboot_names(host)
 
     def _asked(self, coordinator: VordrCoordinator) -> None:
         coordinator.reboot_asked(self._node)

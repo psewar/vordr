@@ -183,6 +183,8 @@ func boundReport(r *wire.Report) *outOfBounds {
 		o.drop("reboot.packages", listBound(rb.Packages, maxNames, nameText), func() { rb.Packages = nil })
 		o.drop("reboot.kernel_running", textBound(rb.Running, maxKernelLen), func() { rb.Running = "" })
 		o.drop("reboot.kernel_newest", textBound(rb.Newest, maxKernelLen), func() { rb.Newest = "" })
+		o.drop("reboot.services", listBound(rb.Services, source.MaxRebootServices, nameText),
+			func() { rb.Services = nil })
 	}
 	return o
 }

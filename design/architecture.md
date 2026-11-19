@@ -437,7 +437,9 @@ triggering packages as a list. Detection:
   `/usr/sbin`, `/lib*`, `/bin` or `/sbin` (not `/usr/local`, not the locale archive). Only processes in the agent's
   own PID namespace with the same root count, so a host does not answer for its containers. The signal answers in
   containers too, as root and only when every running process could be read; ended processes and zombies are passed
-  over,
+  over. Each such process is named in `services` by its systemd service (the innermost `.service` of its cgroup), or
+  by its name where it belongs to none; sorted, each once, at most 32, also when another reason wins
+  ([ADR-0201](../docs/adr/0201-the-reboot-repair-names-its-reason-and-the-services-to-restart.md)),
 - on Windows the registry keys of Windows Update and Component Based Servicing (`windows_update`, 11.1).
 
 The reason is the weightiest that applies: `kernel` before `libraries` before `other`.
@@ -498,7 +500,7 @@ Name "Vördr <node>", identifier `("vordr", "host:<node>")`, manufacturer "Vörd
 | `sensor.vordr_<id>_pending_updates` | sensor | Pending updates | count; unknown if the check failed | the last report names a package source |
 | `sensor.vordr_<id>_security_updates` | sensor | Security updates | count | as above |
 | `sensor.vordr_<id>_last_report` | sensor (timestamp) | Last report | time of the last `report` | always |
-| `binary_sensor.vordr_<id>_reboot_required` | binary_sensor | Reboot required | on/off; **unknown** if no signal answered (`checked` empty, e.g. an agent that cannot read every process, 7.4); attributes `reason`, `packages`, `checked` | always |
+| `binary_sensor.vordr_<id>_reboot_required` | binary_sensor | Reboot required | on/off; **unknown** if no signal answered (`checked` empty, e.g. an agent that cannot read every process, 7.4); attributes `reason`, `packages`, `checked`, `services` | always |
 | `binary_sensor.vordr_<id>_problem` | binary_sensor (problem) | Update problem | on for `offline` (after `offline_after_min`, default 10; not while the host has announced that it sleeps or shuts down, see 11.1), codes with `problem` (7.3), `check_failed`, `stale`; attributes `reason`, `reasons`, `next_step`, `check_failed_code` – codes that HA translates (design/ha-integration.md, 6b) –, plus `failed_install` (job, scope, code, times, excerpt, run log) as long as a failed install of the system packages is remembered (ADR-0124), not in the recorder | always |
 | `binary_sensor.vordr_<id>_online` | binary_sensor (connectivity) | Connected | tunnel is up (immediately, without grace period) | always |
 | `sensor.vordr_<id>_malicious_packages` | sensor | Malicious packages | installed pip/npm packages that OSV lists as malware; attribute `findings` (11.2) | the agent sends a package inventory |

@@ -262,6 +262,7 @@ async def test_install_progress(hass: HomeAssistant, fake_hub: FakeHub, entry: M
         "checked": ["kernel"],
         "kernel_running": "6.8.0-136-generic",
         "kernel_newest": "6.8.0-147-generic",
+        "services": ["dbus.service"],  # ADR-0201: still named under the kernel
     }
     await fake_hub.push_host(host_view("h", capabilities=caps, pending=0, security=0, last_run=done, reboot=reboot))
     await wait_until(lambda: not hass.states.get("update.vordr_h_system").attributes["in_progress"])
@@ -274,6 +275,7 @@ async def test_install_progress(hass: HomeAssistant, fake_hub: FakeHub, entry: M
     assert last["outdated_services"] == ["dbus.service"]
     rr = hass.states.get("binary_sensor.vordr_h_reboot_required").attributes
     assert rr["kernel_running"] == "6.8.0-136-generic" and rr["kernel_newest"] == "6.8.0-147-generic"
+    assert rr["services"] == ["dbus.service"]
     await wait_until(lambda: len(runs) == 1)
     assert runs[0].data["summary"] == summary
     # Who started it, on the sensor and in the event.

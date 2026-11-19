@@ -11,20 +11,33 @@ import (
 
 	"github.com/psewar/vordr/internal/protocol"
 	"github.com/psewar/vordr/internal/runner"
+	"github.com/psewar/vordr/internal/source"
 )
 
 const ownNS = "pid:[4026531836]"
 
-// proc is one process in a fake /proc: its PID namespace and root (links), the files it maps ("" is anonymous memory)
-// and its state in stat. Empty ns, root or state leave that link or file out; noMaps leaves out the map, which a
-// kernel thread has (empty) and a gone process has not.
+// proc is one process in a fake /proc: its PID namespace and root (links), the files it maps ("" is anonymous memory),
+// its state in stat, its cgroup and its name. Empty ns, root, state, cgroup or comm leave that link or file out;
+// noMaps leaves out the map, which a kernel thread has (empty) and a gone process has not.
 type proc struct {
 	ns, root, state string
+	cgroup, comm    string
 	maps            []string
 	noMaps          bool
 }
 
-func running(maps ...string) proc { return proc{ns: ownNS, root: "/", state: "S", maps: maps} }
+// running: a process of a login session, named "proc".
+func running(maps ...string) proc {
+	return proc{ns: ownNS, root: "/", state: "S", cgroup: "0::/user.slice/user-0.slice/session-1.scope\n", comm: "proc\n",
+		maps: maps}
+}
+
+// service: a process of a systemd service.
+func service(unit string, maps ...string) proc {
+	p := running(maps...)
+	p.cgroup, p.comm = "0::/system.slice/"+unit+"\n", strings.TrimSuffix(unit, ".service")+"\n"
+	return p
+}
 
 func link(t *testing.T, path, target string) {
 	t.Helper()
@@ -54,6 +67,12 @@ func fakeProc(t *testing.T, a *Apt, procs map[string]proc) {
 		}
 		if p.state != "" {
 			write(t, filepath.Join(dir, "stat"), pid+" (an (odd) name) "+p.state+" 1 1 1 0\n")
+		}
+		if p.cgroup != "" {
+			write(t, filepath.Join(dir, "cgroup"), p.cgroup)
+		}
+		if p.comm != "" {
+			write(t, filepath.Join(dir, "comm"), p.comm)
 		}
 		if !p.noMaps {
 			var b strings.Builder
@@ -89,11 +108,84 @@ func TestRebootLibrariesReplaced(t *testing.T) {
 		a, _ := newApt(t, nil, true)
 		fakeProc(t, a, map[string]proc{
 			"1":   running("/usr/lib/systemd/systemd", libc),
-			"163": running("/usr/lib/systemd/systemd-logind (deleted)", libcReplaced),
+			"163": service("systemd-logind.service", "/usr/lib/systemd/systemd-logind (deleted)", libcReplaced),
 		})
 		r := a.Reboot(context.Background(), inContainer)
-		if !r.Required || r.Reason != protocol.RebootLibraries || !slices.Contains(r.Checked, librarySignal) {
+		if !r.Required || r.Reason != protocol.RebootLibraries || !slices.Contains(r.Checked, librarySignal) ||
+			!slices.Equal(r.Services, []string{"systemd-logind.service"}) {
 			t.Fatalf("container %v, replaced libc: %+v", inContainer, r)
+		}
+	}
+}
+
+// ADR-0201: each process on a replaced library is named by its service - the innermost one, a user's unit too - or by
+// its name where it belongs to none; each name once, sorted. A process on current files is not named.
+func TestRebootLibrariesNamesTheServices(t *testing.T) {
+	a, _ := newApt(t, nil, true)
+	pid1 := running(libcReplaced)
+	pid1.cgroup, pid1.comm = "0::/init.scope\n", "systemd\n"
+	getty := running(libcReplaced)
+	getty.cgroup = "0::/system.slice/system-getty.slice/getty@tty1.service\n"
+	syncthing := running(libcReplaced)
+	syncthing.cgroup = "0::/user.slice/user-1000.slice/user@1000.service/app.slice/syncthing.service\n"
+	shell := running(libcReplaced)
+	shell.comm = "bash\n"
+	fakeProc(t, a, map[string]proc{
+		"1":   pid1,
+		"156": service("cron.service", "/usr/sbin/cron", libcReplaced),
+		"157": service("cron.service", "/usr/sbin/cron", libcReplaced), // a second process of the same service
+		"166": getty,
+		"200": service("nginx.service", "/usr/sbin/nginx", libc), // current files: nothing to restart
+		"900": shell,
+		"901": syncthing,
+	})
+	r := a.Reboot(context.Background(), true)
+	want := []string{"bash", "cron.service", "getty@tty1.service", "syncthing.service", "systemd"}
+	if !r.Required || r.Reason != protocol.RebootLibraries || !slices.Equal(r.Services, want) {
+		t.Fatalf("services: %+v, want %v", r, want)
+	}
+}
+
+// A process whose map showed a replaced library but which ended before it could be named runs no old code any more.
+func TestRebootLibrariesAProcessEndedBeforeItsName(t *testing.T) {
+	a, _ := newApt(t, nil, true)
+	gone := running(libcReplaced)
+	gone.cgroup, gone.comm = "", ""
+	fakeProc(t, a, map[string]proc{"1": running(libc), "700": gone})
+	r := a.Reboot(context.Background(), true)
+	if r.Required || r.Services != nil || !slices.Equal(r.Checked, []string{librarySignal}) {
+		t.Fatalf("named a process that ended: %+v", r)
+	}
+}
+
+func TestRebootLibrariesNamesAtMostTheBound(t *testing.T) {
+	a, _ := newApt(t, nil, true)
+	procs := map[string]proc{}
+	for i := range source.MaxRebootServices + 8 {
+		procs[fmt.Sprint(1000+i)] = service(fmt.Sprintf("s%02d.service", i), libcReplaced)
+	}
+	fakeProc(t, a, procs)
+	r := a.Reboot(context.Background(), true)
+	if len(r.Services) != source.MaxRebootServices || r.Services[0] != "s00.service" || !r.Required {
+		t.Fatalf("bound: %d services, first %q", len(r.Services), r.Services[0])
+	}
+}
+
+func TestServiceOf(t *testing.T) {
+	for cgroup, want := range map[string]string{
+		"0::/system.slice/cron.service\n":                                          "cron.service",
+		"0::/system.slice/system-getty.slice/getty@tty1.service\n":                 "getty@tty1.service",
+		"0::/user.slice/user-1000.slice/user@1000.service/app.slice/foo.service\n": "foo.service",
+		"0::/user.slice/user-1000.slice/user@1000.service/init.scope\n":            "user@1000.service",
+		"0::/user.slice/user-0.slice/session-3.scope\n":                            "",
+		"0::/init.scope\n": "",
+		"12:pids:/system.slice/cron.service\n1:name=systemd:/system.slice/cron.service\n": "cron.service", // cgroup v1
+		"1:name=systemd:/\n0::/system.slice/cron.service\n":                               "cron.service", // hybrid
+		"12:pids:/system.slice/cron.service\n":                                            "",             // not systemd's
+		"":                                                                                "",
+	} {
+		if got := serviceOf(cgroup); got != want {
+			t.Errorf("serviceOf(%q) = %q, want %q", cgroup, got, want)
 		}
 	}
 }
@@ -208,7 +300,8 @@ func TestRebootLibrariesReason(t *testing.T) {
 	write(t, filepath.Join(a.Paths.BootDir, "vmlinuz-6.8.12-4-pve"), "")
 	write(t, filepath.Join(a.Paths.BootDir, "vmlinuz-6.8.12-10-pve"), "")
 	r = a.Reboot(context.Background(), false)
-	if !r.Required || r.Reason != protocol.RebootKernel || !slices.Equal(r.Checked, []string{librarySignal, "kernel"}) {
+	if !r.Required || r.Reason != protocol.RebootKernel || !slices.Equal(r.Checked, []string{librarySignal, "kernel"}) ||
+		!slices.Equal(r.Services, []string{"proc"}) { // named under the kernel too: restarting them is still due
 		t.Fatalf("newer kernel, libraries replaced: %+v", r)
 	}
 }

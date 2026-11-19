@@ -15,7 +15,8 @@ var kernelPackagePrefixes = []string{"linux-image-", "pve-kernel-", "proxmox-ker
 
 // Reboot finds out whether the host needs a reboot. Three signals, each used only where it means something:
 //   - the reboot-required file, where update-notifier maintains it (Ubuntu) or wherever it exists;
-//   - processes that still run replaced libraries or programs (ADR-0200), in containers too;
+//   - processes that still run replaced libraries or programs (ADR-0200), in containers too, named by their services
+//     (ADR-0201);
 //   - the running kernel against the newest installed one of its flavor, not in containers (they run the host's kernel).
 //
 // The reason is the weightiest that applies: kernel before libraries before other.
@@ -35,9 +36,10 @@ func (a *Apt) Reboot(ctx context.Context, inContainer bool) source.Reboot {
 			}
 		}
 	}
-	if found, answered := a.replacedLibraries(); answered {
+	if services, answered := a.replacedLibraries(); answered {
 		r.Checked = append(r.Checked, librarySignal)
-		if found && (!r.Required || r.Reason == protocol.RebootOther) {
+		r.Services = services // also under another reason: restarting them is still due
+		if len(services) > 0 && (!r.Required || r.Reason == protocol.RebootOther) {
 			r.Required, r.Reason = true, protocol.RebootLibraries
 		}
 	}

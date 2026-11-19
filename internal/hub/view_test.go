@@ -162,6 +162,15 @@ func TestUnknownStaysUnknown(t *testing.T) {
 	if v.Reboot.KernelRunning != "6.1.0-10-generic" || v.Reboot.KernelNewest != "6.1.0-10-generic" {
 		t.Fatalf("kernels: %+v", v.Reboot)
 	}
+
+	// ADR-0201: the services still on replaced libraries travel with the reboot need.
+	f.srv.Reg.SetReport("h", aptReport(f.now, 0, 0, &source.Reboot{Required: true, Reason: protocol.RebootLibraries,
+		Checked: []string{"libraries"}, Services: []string{"cron.service", "systemd"}}))
+	v = f.view(t, "h", f.now)
+	if v.Reboot.Required == nil || !*v.Reboot.Required || v.Reboot.Reason != protocol.RebootLibraries ||
+		!slices.Equal(v.Reboot.Services, []string{"cron.service", "systemd"}) {
+		t.Fatalf("services: %+v", v.Reboot)
+	}
 }
 
 // The views carry codes and numbers, never text: every problem reason is a reason constant or a result code, and the

@@ -365,6 +365,8 @@ type RebootView struct {
 	// The kernel the host runs and the newest one installed, where the kernel signal answered (not in containers).
 	KernelRunning string `json:"kernel_running,omitempty"`
 	KernelNewest  string `json:"kernel_newest,omitempty"`
+	// Services that still run replaced libraries (ADR-0201): restarting them would be enough for them.
+	Services []string `json:"services,omitempty"`
 }
 
 // RebootWindowView is reboot.window of the host's agent.yaml: days mon..sun, start and end HH:MM (end before start:
