@@ -33,7 +33,9 @@ Integration zeigt die Sichten der Leitstelle und fragt Befehle an.
 | „Vördr <node>“ je Host | `binary_sensor.vordr_<id>_online`, `_problem`, `_reboot_required`; `sensor.vordr_<id>_last_report`, `_last_run`; mit Paketquelle `update.vordr_<id>_system`, `sensor.vordr_<id>_pending_updates`, `_security_updates`; Knöpfe je nach Fähigkeit (`_check`, `_install_security`, `_reboot`, `_agent_update`, `_install_app_<app>`); mit `packages.containers` `update.vordr_<id>_containers` „Container-Images“, gemeldet; installiert nur, wenn agent.yaml Compose-Dienste erlaubt (`image:<projekt>/<dienst>` in `install.allowed_scopes`), und dann nur den Neubau ihres Tags (einen Dienst allein per Aktion `vordr.update_image`); „an“ nur, solange dieser Installieren-Knopf etwas nähme, ein neuerer Tag oder ein nicht erlaubter Dienst lässt sie also aus; `sensor.vordr_<id>_outdated_images` „Veraltete Images“ zählt jedes veraltete Image, auch die, die Handarbeit bleiben (Attribute `ready`, `installable`, `updates`); mit `Debian` oder `Alpine` in `osv.ecosystems` der Leitstelle auch bekannte Schwachstellen in den Images (Attribut `vulnerable`; „an“ nur, wenn ein neueres Image zum Installieren da ist, Schwachstellen allein schalten nicht an; die Zusammenfassung sagt je Image, ob ein neueres Image bereit ist; Meldungen zum Kernel des Images zählen nicht und stehen je Image als `kernel`) |
 
 Unbekanntes bleibt unbekannt: eine gescheiterte Prüfung macht `update.*_system` und die Zähler „unbekannt“, nie
-„aktuell“; ein Host ohne Neustart-Signal (Container) hat `reboot_required` „unbekannt“, nie „aus“.
+„aktuell“; ein Host, auf dem kein Neustart-Signal antwortete, hat `reboot_required` „unbekannt“, nie „aus“. Ein
+Container antwortet über seine Prozesse: „an“, solange einer noch eine ersetzte Bibliothek ausführt (Attribut `reason`
+`libraries`).
 
 **Ist alles aktuell?** Das Leitstellen-Gerät zählt über alle Hosts: `sensor.vordr_hub_hosts_with_updates` (Updates des
 Systems, veraltete Images oder pip/npm-Pakete), `_hosts_with_security_updates` und `_hosts_needing_reboot`, je mit dem

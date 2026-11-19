@@ -353,7 +353,8 @@ type PackageView struct {
 	Major    bool   `json:"major,omitempty"` // the upgrade changes the major version (source.MajorJump)
 }
 
-// RebootView: Required is nil when no signal answered on this host (e.g. a container) - unknown, not "no".
+// RebootView: Required is nil when no signal answered on this host (e.g. an agent that cannot see every process) -
+// unknown, not "no".
 type RebootView struct {
 	Required *bool                 `json:"required"`
 	Reason   protocol.RebootReason `json:"reason,omitempty"`

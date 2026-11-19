@@ -73,6 +73,7 @@ func newApt(t *testing.T, answers map[string]runner.Result, root bool) (*Apt, *f
 			RebootNotifier: filepath.Join(dir, "notify-reboot-required"),
 			BootDir:        filepath.Join(dir, "boot"),
 			OSRelease:      filepath.Join(dir, "osrelease"),
+			Proc:           filepath.Join(dir, "proc"), // absent: the library signal does not answer
 		},
 	}
 	return a, f

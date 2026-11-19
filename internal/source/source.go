@@ -92,8 +92,8 @@ type Reboot struct {
 	Packages []string              `json:"packages,omitempty"`
 	Running  string                `json:"kernel_running,omitempty"`
 	Newest   string                `json:"kernel_newest,omitempty"`
-	// Checked lists the signals that gave an answer (kernel, reboot_required_file). Empty means the need for a
-	// reboot is unknown on this host - Required=false is then no statement.
+	// Checked lists the signals that gave an answer (kernel, reboot_required_file, libraries, windows_update). Empty
+	// means the need for a reboot is unknown on this host - Required=false is then no statement.
 	Checked []string `json:"checked"`
 }
 

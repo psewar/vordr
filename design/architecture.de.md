@@ -453,8 +453,16 @@ auslösenden Pakete als Liste. Erkennung:
   und Pi 4 (`v8`) nebeneinander, und dpkg hält `v8` für neuer. Ohne den Vergleich je Variante verlangte ein Pi 5
   dauernd einen Neustart, und jeder Neustart endete mit `failed_verification`,
 - `/var/run/reboot-required` und `.pkgs`, wo vorhanden (Ubuntu),
-- `needrestart -b`, wo installiert (maschinenlesbare Ausgabe, `libraries`),
+- Prozesse, die noch eine ersetzte Bibliothek oder ein ersetztes Programm ausführen (`libraries`,
+  [ADR-0200](../docs/adr/0200-the-agent-itself-finds-processes-running-replaced-libraries.md)): eine Zeile in
+  `/proc/<pid>/maps`, die der Kernel als `(deleted)` markiert, für eine Datei unter `/usr/lib`, `/usr/libexec`,
+  `/usr/bin`, `/usr/sbin`, `/lib*`, `/bin` oder `/sbin` (nicht `/usr/local`, nicht das Locale-Archiv). Es zählen nur
+  Prozesse im eigenen PID-Namensraum des Agenten mit derselben Wurzel; ein Host steht also nicht für seine Container
+  ein. Das Signal antwortet auch in Containern, als root und nur, wenn jeder laufende Prozess lesbar war; beendete
+  Prozesse und Zombies übergeht es,
 - unter Windows die Registry-Schlüssel von Windows Update und Component Based Servicing (`windows_update`, 11.1).
+
+Der Grund ist der gewichtigste, der zutrifft: `kernel` vor `libraries` vor `other`.
 
 ### 7.5 Hängt
 
@@ -512,7 +520,7 @@ Name „Vördr <node>“, Kennung `("vordr", "host:<node>")`, Hersteller „Vör
 | `sensor.vordr_<id>_pending_updates` | sensor | Ausstehende Updates | Anzahl; unbekannt, wenn die Prüfung scheiterte | der letzte Bericht eine Paketquelle nennt |
 | `sensor.vordr_<id>_security_updates` | sensor | Sicherheitsupdates | Anzahl | wie oben |
 | `sensor.vordr_<id>_last_report` | sensor (timestamp) | Letzte Meldung | Zeitpunkt des letzten `report` | immer |
-| `binary_sensor.vordr_<id>_reboot_required` | binary_sensor | Neustart nötig | an/aus; **unbekannt**, wenn kein Signal antwortete (`checked` leer, z. B. Container); Attribute `reason`, `packages`, `checked` | immer |
+| `binary_sensor.vordr_<id>_reboot_required` | binary_sensor | Neustart nötig | an/aus; **unbekannt**, wenn kein Signal antwortete (`checked` leer, z. B. ein Agent, der nicht jeden Prozess lesen kann, 7.4); Attribute `reason`, `packages`, `checked` | immer |
 | `binary_sensor.vordr_<id>_problem` | binary_sensor (problem) | Update-Problem | an bei `offline` (nach `offline_after_min`, Standard 10; nicht, solange der Host angekündigt hat, dass er schläft oder herunterfährt, siehe 11.1), Codes mit `problem` (7.3), `check_failed`, `stale`; Attribute `reason`, `reasons`, `next_step`, `check_failed_code` – Codes, die HA übersetzt (design/ha-integration.de.md, 6b) –, dazu `failed_install` (Auftrag, Umfang, Code, Zeiten, Auszug, Laufprotokoll), solange ein gescheiterter Install der Systempakete gemerkt ist (ADR-0124), nicht im Recorder | immer |
 | `binary_sensor.vordr_<id>_online` | binary_sensor (connectivity) | Verbunden | Tunnel steht (sofort, ohne Karenz) | immer |
 | `sensor.vordr_<id>_malicious_packages` | sensor | Schädliche Pakete | installierte pip/npm-Pakete, die OSV als Schadsoftware führt; Attribut `findings` (11.2) | der Agent schickt einen Paketbestand |
@@ -924,8 +932,8 @@ Active Backup for Business wurde dafür geprüft und verworfen
       Uhrzeit; bei einem Host mit `window_only` sagt der Text, dass auch ein Grund das Fenster nicht öffnet.
       `vordr.press_outside_window` hält einen Neustart nur mit `window_only` zurück. Ältere Teile schicken oder
       lesen keines der Felder und verhalten sich wie bisher.
-  - Containern (LXC) bringt ein Neustart nichts. Sie teilen den Kernel des Hosts, und der Agent sieht dort meist
-    keinen Bedarf.
+  - In Containern (LXC) antwortet nur das Bibliotheks-Signal (7.4). Sie teilen den Kernel des Hosts, ein Neustart
+    bringt ihnen also keinen neuen Kernel; er startet die Prozesse neu, die noch ersetzte Bibliotheken ausführen.
 - **Neustart-Hinweise** folgen der Fähigkeit des Hosts: Erlaubt er keinen Neustart über Vördr, heisst der nächste
   Schritt bei `ok_reboot_required` und `reboot_pending` „von Hand neu starten“. HA zeigt laufenden und neuesten Kernel
   am Sensor „Neustart nötig“.

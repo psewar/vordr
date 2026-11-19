@@ -28,6 +28,7 @@ type Paths struct {
 	RebootNotifier string // /usr/share/update-notifier/notify-reboot-required: the file above is maintained
 	BootDir        string // /boot
 	OSRelease      string // /proc/sys/kernel/osrelease
+	Proc           string // /proc: the processes, for libraries replaced under them (ADR-0200)
 }
 
 type Apt struct {
@@ -62,6 +63,7 @@ func New() *Apt {
 			RebootNotifier: "/usr/share/update-notifier/notify-reboot-required",
 			BootDir:        "/boot",
 			OSRelease:      "/proc/sys/kernel/osrelease",
+			Proc:           "/proc",
 		},
 	}
 }
