@@ -13,6 +13,16 @@ import (
 
 const listed = "192.0.2.40"
 
+// pkgVersion answers like pkg version -vR, with every status: "<" the catalog has a newer version (also one with an
+// epoch after a comma, and a name with dashes), ">" the installed one is newer, "?" not in the catalog, "=" the same.
+const pkgVersion = `pkg-a-1.0                          <   needs updating (remote has 1.1)
+pkg-tool-b-2.0_1                   >   succeeds remote (remote has 1.9)
+web-c-1.24.0_12,3                  <   needs updating (remote has 1.26.0,3)
+orphan-d-0.1                       ?   orphaned: misc/orphan-d
+same-e-3.0                         =   up-to-date with remote
+vendor-pkg-f-1.2.0                 <   needs updating (remote has 1.3.0_1)
+`
+
 // box is one installation of both scripts in a temp dir, with pfctl, pkg, logger and chown stubbed.
 type box struct {
 	t                                      *testing.T
@@ -40,9 +50,11 @@ delete) grep -vxF "$arg" "`+b.table+`" > "`+b.table+`.new"; mv "`+b.table+`.new"
 show) sed 's/^/   /' "`+b.table+`" ;;
 esac
 `, 0o755)
+	// pkg itself lists only "<" for -l'<'; the stand-in answers every status, so the tests show that the root job keeps
+	// only "<" by itself.
 	write(t, filepath.Join(stubs, "pkg"), `#!/bin/sh
 case "$*" in
-"version -U -qRL=") cat "`+d+`/outdated" ;;
+"version -U -vRl<") cat "`+d+`/outdated" ;;
 "query %v pfSense-base") echo 1.2.3 ;;
 "rquery -U %v pfSense-base") echo 1.2.3 ;;
 *) echo "unexpected pkg $*" >&2; exit 1 ;;
@@ -50,7 +62,7 @@ esac
 `, 0o755)
 	write(t, filepath.Join(stubs, "logger"), "#!/bin/sh\necho \"$*\" >> \""+d+"/log\"\n", 0o755)
 	write(t, filepath.Join(stubs, "chown"), "#!/bin/sh\nexit 0\n", 0o755)
-	write(t, filepath.Join(d, "outdated"), "pkg-a-1.0 <\npkg-b-2.0_1 <\n", 0o644)
+	write(t, filepath.Join(d, "outdated"), pkgVersion, 0o644)
 	write(t, filepath.Join(d, "allow"), "# comment\n\n"+listed+"  # device\n198.51.100.9#no-space-is-not-an-entry\n", 0o644)
 	write(t, filepath.Join(d, "config.xml"), "<?xml version=\"1.0\"?>\n<pfsense><version>1.0</version></pfsense>\n", 0o644)
 	write(t, filepath.Join(d, "version"), "1.2.3-RELEASE\n", 0o644)
@@ -341,27 +353,82 @@ func TestRootJobRepairsItsDirectories(t *testing.T) {
 	}
 }
 
+// versionFacts: the forced command's version answer, with the time of the last reading replaced by N.
+func (b *box) versionFacts() string {
+	b.t.Helper()
+	out, code := b.call("version")
+	lines := strings.Split(out, "\n")
+	if code != 0 || len(lines) < 3 || !strings.HasPrefix(lines[2], "updates_checked_at=") {
+		b.t.Fatalf("version: exit %d %q", code, out)
+	}
+	if _, err := strconv.ParseInt(strings.TrimPrefix(lines[2], "updates_checked_at="), 10, 64); err != nil {
+		b.t.Fatalf("updates_checked_at is no time: %q", lines[2])
+	}
+	lines[2] = "updates_checked_at=N"
+	return strings.Join(lines, "\n")
+}
+
+// Only "<" is an update: the catalog has a newer version. Each one is counted, listed in the earlier form, and named
+// with its installed and offered version (ADR-0198).
 func TestRootJobUpdateFacts(t *testing.T) {
 	b := newBox(t)
 	b.runRoot()
-	out, _ := b.call("version")
-	for _, want := range []string{"base_installed=1.2.3\n", "base_offered=1.2.3\n", "packages_outdated_count=2\n",
-		"packages_outdated=pkg-a-1.0,pkg-b-2.0_1\n", "updates_checked_at="} {
-		if !strings.Contains(out, want) {
-			t.Errorf("version lacks %q: %q", want, out)
-		}
+	want := "product=pfSense\nversion=1.2.3-RELEASE\nupdates_checked_at=N\nupdates_format=2\n" +
+		"base_installed=1.2.3\nbase_offered=1.2.3\npackages_outdated_count=3\n" +
+		"packages_outdated=pkg-a-1.0,web-c-1.24.0_12,3,vendor-pkg-f-1.2.0\n" +
+		"package_offer=pkg-a 1.0 1.1\npackage_offer=web-c 1.24.0_12,3 1.26.0,3\n" +
+		"package_offer=vendor-pkg-f 1.2.0 1.3.0_1\n"
+	if got := b.versionFacts(); got != want {
+		t.Errorf("version:\n%s\nwant:\n%s", got, want)
 	}
+
 	// Within the hour the facts stay; after it they are read again.
 	write(t, filepath.Join(b.dir, "outdated"), "", 0o644)
 	b.runRoot()
-	if out, _ = b.call("version"); !strings.Contains(out, "packages_outdated_count=2\n") {
-		t.Errorf("facts refreshed within the hour: %q", out)
+	if got := b.versionFacts(); got != want {
+		t.Errorf("facts refreshed within the hour:\n%s", got)
 	}
 	old := time.Now().Add(-2 * time.Hour)
 	must(t, os.Chtimes(filepath.Join(b.state, "updates"), old, old))
 	b.runRoot()
-	if out, _ = b.call("version"); !strings.Contains(out, "packages_outdated_count=0\npackages_outdated=\n") {
-		t.Errorf("facts not refreshed after two hours: %q", out)
+	if got := b.versionFacts(); !strings.HasSuffix(got, "updates_format=2\nbase_installed=1.2.3\nbase_offered=1.2.3\n"+
+		"packages_outdated_count=0\npackages_outdated=\n") {
+		t.Errorf("facts not refreshed after two hours:\n%s", got)
+	}
+}
+
+// Facts an earlier root job wrote (no updates_format) are read again at once, not only after the hour: the new form is
+// there within a minute of the install.
+func TestRootJobReplacesAnEarlierForm(t *testing.T) {
+	b := newBox(t)
+	b.runRoot()
+	write(t, filepath.Join(b.state, "updates"), "updates_checked_at=1\nbase_installed=1.2.3\nbase_offered=1.2.3\n"+
+		"packages_outdated_count=4\n"+
+		"packages_outdated=pkg-a-1.0,pkg-tool-b-2.0_1,web-c-1.24.0_12,3,orphan-d-0.1\n", 0o644)
+	b.runRoot()
+	if got := b.versionFacts(); !strings.Contains(got, "updates_format=2\n") ||
+		!strings.Contains(got, "packages_outdated_count=3\n") ||
+		!strings.Contains(got, "package_offer=pkg-a 1.0 1.1\n") {
+		t.Errorf("earlier form kept:\n%s", got)
+	}
+}
+
+// A "<" line whose versions the root job cannot read is still counted and listed, but gets no package_offer line:
+// the agent then refuses the facts instead of leaving the package out (ADR-0198).
+func TestRootJobCountsALineItCannotRead(t *testing.T) {
+	b := newBox(t)
+	write(t, filepath.Join(b.dir, "outdated"), pkgVersion+
+		"odd-g-1.0                          <\n"+
+		"nodash                             <   needs updating (remote has 2)\n"+
+		"other-h-1.0                        <   needs updating (catalog says 1.1)\n", 0o644)
+	b.runRoot()
+	got := b.versionFacts()
+	if !strings.Contains(got, "packages_outdated_count=6\n"+
+		"packages_outdated=pkg-a-1.0,web-c-1.24.0_12,3,vendor-pkg-f-1.2.0,odd-g-1.0,nodash,other-h-1.0\n") {
+		t.Errorf("not every \"<\" counted and listed:\n%s", got)
+	}
+	if n := strings.Count(got, "package_offer="); n != 3 {
+		t.Errorf("%d package_offer lines, want 3 (only those read):\n%s", n, got)
 	}
 }
 

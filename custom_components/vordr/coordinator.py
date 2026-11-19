@@ -237,6 +237,9 @@ class VordrCoordinator(DataUpdateCoordinator[VordrData]):
         self._reboot_asked: dict[str, datetime] = {}  # node -> when a reboot was asked for through the repair
         # node -> whether the install-again repair carries the whole problem (its own repair is gone then)
         self._carried: dict[str, bool] = {}
+        # node -> the text key of its problem's repair: the same problem gets another text when what the host lets
+        # Vördr do changes (reboot, install; ADR-0197)
+        self._text_keys: dict[str, str | None] = {}
         self._waiting: set[str] = set()  # nodes with a repair "waits for approval" (ADR-0157)
         self._waiting_fixable = False  # whether those repairs were made fixable (ADR-0192)
         self.hub_device_id = ""  # set at setup; host devices hang below it
@@ -361,13 +364,16 @@ class VordrCoordinator(DataUpdateCoordinator[VordrData]):
             # A new or changed problem, or one that ended; after a restart only the problems still there.
             self.hass.bus.async_fire(EVENT_PROBLEM, self._problem_event(node, problem, limits, reboot, host))
         carried = only_failed_install(problem, host) and install_again_offered(host)
-        if changed or snapshot or carried != self._carried.get(node, False):
+        text_key = problem_key(problem, reboot, host) if problem else None
+        if changed or snapshot or carried != self._carried.get(node, False) or text_key != self._text_keys.get(node):
             # After a reconnect too: the hub's limits, which the repair names, may have changed. And when the
-            # install-again repair starts or stops carrying the problem (capability or failed install changed).
+            # install-again repair starts or stops carrying the problem (capability or failed install changed), or the
+            # same problem needs another text (the host's reboot or install offer changed; no event for that).
             self._problem_issue(node, problem, limits, reboot, host)
         self._problems[node] = problem
         self._packages[node] = packages
         self._carried[node] = carried
+        self._text_keys[node] = text_key
         self._install_again_issue(node, host)
 
         run = host.get("last_run") or {}
@@ -428,7 +434,9 @@ class VordrCoordinator(DataUpdateCoordinator[VordrData]):
             "reason": problem.get("reason"),
             "reasons": problem.get("reasons") or [],
             "check_failed_code": problem.get("check_failed_code"),
-            "message": self.texts.messages(problem_key(problem, reboot), placeholders(node, problem, limits, host)),
+            "message": self.texts.messages(
+                problem_key(problem, reboot, host), placeholders(node, problem, limits, host)
+            ),
         }
 
     def _forget(self, node: str) -> None:
@@ -436,6 +444,7 @@ class VordrCoordinator(DataUpdateCoordinator[VordrData]):
             self.hass.bus.async_fire(EVENT_PROBLEM, self._problem_event(node, None, None))
         self._problems.pop(node, None)
         self._packages.pop(node, None)
+        self._text_keys.pop(node, None)
         self._runs.pop(node, None)
         self._reboot_asked.pop(node, None)
         self._carried.pop(node, None)
@@ -481,7 +490,7 @@ class VordrCoordinator(DataUpdateCoordinator[VordrData]):
             issue_id,
             is_fixable=False,
             severity=ir.IssueSeverity.WARNING,
-            translation_key=f"problem_{problem_key(problem, reboot)}",
+            translation_key=f"problem_{problem_key(problem, reboot, host)}",
             translation_placeholders=placeholders(node, problem, limits, host),
         )
 

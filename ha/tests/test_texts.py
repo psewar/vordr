@@ -346,6 +346,25 @@ def test_problem_key() -> None:
     assert problem_key({"reason": "ok"}) == "unknown"
 
 
+def test_stale_key_follows_what_vordr_installs() -> None:
+    """ADR-0197: "with the button" only where the button takes some of the pending updates, or where the hub does not
+    say; otherwise the policy or the host's lack of installs through Vördr."""
+    stale = {"reason": "stale", "reasons": ["stale"]}
+    none = {"install": False, "install_security": False}
+    assert problem_key(stale) == "stale"  # no host: as before
+    assert problem_key(stale, True, {"capabilities": none}) == "stale"  # a hub without installable
+    assert problem_key(stale, True, {"capabilities": none, "installable": None}) == "stale"
+    assert problem_key(stale, True, {"capabilities": {"install": True}, "installable": 2}) == "stale"
+    assert problem_key(stale, True, {"capabilities": {"install": True}, "installable": 0}) == "stale_policy"
+    assert problem_key(stale, True, {"capabilities": {"install_security": True}, "installable": 0}) == "stale_policy"
+    assert problem_key(stale, True, {"capabilities": none, "installable": 0}) == "stale_manual"
+    assert problem_key(stale, False, {"installable": 0}) == "stale_manual"  # no reboot through Vördr changes nothing
+    assert problem_key(stale, True, {"capabilities": none, "installable": False}) == "stale"  # not a count
+    # Only the reason "stale" itself; another first reason keeps its text.
+    both = {"reason": "offline", "reasons": ["offline", "stale"]}
+    assert problem_key(both, True, {"capabilities": none, "installable": 0}) == "offline"
+
+
 async def test_release_summary_fits(hass: HomeAssistant) -> None:
     texts = Texts(hass)
     await texts.async_load()

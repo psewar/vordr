@@ -360,7 +360,13 @@ Since H5, the hub sends only codes and numbers, and the integration writes every
   Assistant keeps for texts of the integration's own
   ([ADR-0145](../docs/adr/0145-the-integrations-own-texts-live-in-the-common-section.md)).
 - **Problem key:** the first reason; for `check_failed` and failed runs the result code, because the next step depends
-  on it; an unknown code becomes `unknown`.
+  on it; an unknown code becomes `unknown`. The key names only a way that exists on the host:
+  - `reboot_pending` and `ok_reboot_required` become `…_manual` where the hub offers no reboot (capability `reboot`);
+  - `stale` stays where the install button takes some of the pending updates (`installable` above zero, or no count
+    from the hub); otherwise it becomes `stale_policy` where the host takes installs through Vördr but its policy none
+    of these, and `stale_manual` where it takes none
+    ([ADR-0197](../docs/adr/0197-the-stale-repair-names-only-a-way-that-exists.md));
+  - the repair follows a changed key even while the problem stays the same; `vordr_problem` does not fire for it.
 - **Events** carry `message` in every supplied language, so that an automation chooses the language of its recipient,
   independent of the system language.
 - `tests/test_texts.py` keeps the files together: every language has every text, every issue text contains the next

@@ -334,6 +334,41 @@ async def test_reboot_hint_follows_the_capability(
     await wait_until(
         lambda: hass.states.get("binary_sensor.vordr_h_problem").attributes["next_step"] == "reboot_pending"
     )
+    # The repair follows too, although the problem itself did not change.
+    assert ir.async_get(hass).async_get_issue(DOMAIN, "problem_h").translation_key == "problem_reboot_pending"
+
+
+async def test_stale_hint_names_a_way_that_exists(
+    hass: HomeAssistant, fake_hub: FakeHub, entry: MockConfigEntry
+) -> None:
+    """ADR-0197: updates pending too long that the install button would not take get "install by hand" - with the
+    reason - instead of "by hand or with the button". The repair and the problem sensor follow what the host lets Vördr
+    install, without a new problem event: the problem itself stays the same."""
+    none = {"check": True, "install": False, "install_security": False, "reboot": False, "agent_update": False}
+    stale = {"reason": "stale", "reasons": ["stale"]}
+    problems = async_capture_events(hass, EVENT_PROBLEM)
+    fake_hub.hosts["h"] = host_view("h", capabilities=none, problem=stale, installable=0)
+    await setup(hass, entry)
+    reg = ir.async_get(hass)
+    assert reg.async_get_issue(DOMAIN, "problem_h").translation_key == "problem_stale_manual"
+    assert hass.states.get("binary_sensor.vordr_h_problem").attributes["next_step"] == "stale_manual"
+    assert len(problems) == 1
+
+    # Only security updates through Vördr, and none of the pending ones is one: the policy holds them.
+    security = {**none, "install": True, "default_scope": "security"}
+    await fake_hub.push_host(host_view("h", capabilities=security, problem=stale, installable=0, security=0))
+    await wait_until(lambda: reg.async_get_issue(DOMAIN, "problem_h").translation_key == "problem_stale_policy")
+    assert hass.states.get("binary_sensor.vordr_h_problem").attributes["next_step"] == "stale_policy"
+    only_button = {**none, "install_security": True}
+    await fake_hub.push_host(host_view("h", capabilities=only_button, problem=stale, installable=0, security=0))
+    await hass.async_block_till_done()
+    assert reg.async_get_issue(DOMAIN, "problem_h").translation_key == "problem_stale_policy"
+
+    # The button takes some of them: the text names it again.
+    await fake_hub.push_host(host_view("h", capabilities=security, problem=stale, installable=1))
+    await wait_until(lambda: reg.async_get_issue(DOMAIN, "problem_h").translation_key == "problem_stale")
+    assert hass.states.get("binary_sensor.vordr_h_problem").attributes["next_step"] == "stale"
+    assert len(problems) == 1
 
 
 async def test_install_waits_for_a_backup(hass: HomeAssistant, fake_hub: FakeHub, entry: MockConfigEntry) -> None:

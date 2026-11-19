@@ -55,7 +55,12 @@ func (c targetChecker) Check(ctx context.Context) wire.Report {
 			if o.Security {
 				fw.Security++
 			}
-			fw.Packages = append(fw.Packages, source.Package{Name: o.Name, From: st.Installed, To: o.Version,
+			// An offer for something else than the firmware (a package on the device) names what it replaces.
+			from := o.From
+			if from == "" {
+				from = st.Installed
+			}
+			fw.Packages = append(fw.Packages, source.Package{Name: o.Name, From: from, To: o.Version,
 				Security: o.Security})
 		}
 	}

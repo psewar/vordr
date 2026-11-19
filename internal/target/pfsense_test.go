@@ -86,8 +86,7 @@ esac
 	}()
 	f.host, f.port, _ = net.SplitHostPort(ln.Addr().String())
 	version := filepath.Join(d, "version")
-	write(t, version, "product=pfSense\nversion=1.2.3-RELEASE\nupdates_checked_at=1700000000\nbase_installed=1.2.3\n"+
-		"base_offered=1.3.0\npackages_outdated_count=2\npackages_outdated=pkg-a-1.0,pkg-b-2.0_1\n", 0o644)
+	write(t, version, versionAnswer, 0o644)
 	t.Setenv("FAKE_VERSION", version)
 	backup := filepath.Join(d, "config.xml")
 	write(t, backup, "<?xml version=\"1.0\"?>\n<pfsense>\n"+strings.Repeat("  <rule/>\n", 200)+"</pfsense>\n", 0o644)
@@ -121,17 +120,11 @@ func TestPfsenseCheck(t *testing.T) {
 	if st.Product != "pfSense" || st.Installed != "1.2.3-RELEASE" || st.SelfUpdate != "off" {
 		t.Errorf("status: %+v", st)
 	}
-	want := []Offer{{"pfSense", "1.3.0", false}, {"package pkg-a-1.0", UnknownVersion, false},
-		{"package pkg-b-2.0_1", UnknownVersion, false}}
-	if len(st.Offers) != len(want) {
-		t.Fatalf("offers: %+v", st.Offers)
-	}
-	for i := range want {
-		if st.Offers[i] != want[i] {
-			t.Errorf("offer %d: %+v, want %+v", i, st.Offers[i], want[i])
-		}
-	}
-	if st.Facts["packages_outdated_count"] != "2" || st.Facts["base_offered"] != "1.3.0" || st.Facts["updates_checked_at"] == "" {
+	sameOffers(t, st.Offers, []Offer{{Name: "pfSense", Version: "1.3.0"},
+		{Name: "package pkg-a", From: "1.0", Version: "1.1"},
+		{Name: "package web-c", From: "1.24.0_12,3", Version: "1.26.0,3"}})
+	if st.Facts["packages_outdated_count"] != "2" || st.Facts["base_offered"] != "1.3.0" ||
+		st.Facts["updates_checked_at"] == "" || st.Facts["updates_format"] != "2" {
 		t.Errorf("facts: %v", st.Facts)
 	}
 	log := f.logged()
@@ -154,13 +147,91 @@ func TestPfsenseCheck(t *testing.T) {
 	}
 }
 
+// versionAnswer: the forced command's version answer with the update facts of a root job in form 2, which names each
+// outdated package with its installed and offered version (ADR-0198); one has an epoch after a comma.
+const versionAnswer = "product=pfSense\nversion=1.2.3-RELEASE\nupdates_checked_at=1700000000\nupdates_format=2\n" +
+	"base_installed=1.2.3\nbase_offered=1.3.0\npackages_outdated_count=2\n" +
+	"packages_outdated=pkg-a-1.0,web-c-1.24.0_12,3\n" +
+	"package_offer=pkg-a 1.0 1.1\npackage_offer=web-c 1.24.0_12,3 1.26.0,3\n"
+
+func sameOffers(t *testing.T, got, want []Offer) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("offers: %+v, want %+v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("offer %d: %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
+// A root job before form 2 writes no updates_format and names the packages only: they are offered as before, without
+// a version and without what they replace, so that a new agent works against it until the root job is replaced.
+func TestPfsenseEarlierRootJob(t *testing.T) {
+	f := newSSHFake(t)
+	write(t, os.Getenv("FAKE_VERSION"), "product=pfSense\nversion=1.2.3-RELEASE\nupdates_checked_at=1700000000\n"+
+		"base_installed=1.2.3\nbase_offered=1.2.3\npackages_outdated_count=2\n"+
+		"packages_outdated=pkg-a-1.0,pkg-b-2.0_1\n", 0o644)
+	st, res := f.driver().Check(context.Background())
+	if !res.OK() {
+		t.Fatalf("check: %+v", res)
+	}
+	sameOffers(t, st.Offers, []Offer{{Name: "package pkg-a-1.0", Version: UnknownVersion},
+		{Name: "package pkg-b-2.0_1", Version: UnknownVersion}})
+	if _, ok := st.Facts["updates_format"]; ok {
+		t.Errorf("facts name a form the root job did not: %v", st.Facts)
+	}
+}
+
+// Update facts not in the form the root job writes are refused whole, not read in part: a package left out would
+// look like no update (ADR-0198).
+func TestPfsenseRefusesFactsItDoesNotRead(t *testing.T) {
+	for name, edit := range map[string][2]string{
+		"more counted than named":  {"packages_outdated_count=2\n", "packages_outdated_count=3\n"},
+		"fewer counted than named": {"packages_outdated_count=2\n", "packages_outdated_count=1\n"},
+		"no count":                 {"packages_outdated_count=2\n", ""},
+		"a line without the offer": {"package_offer=pkg-a 1.0 1.1\n", "package_offer=pkg-a 1.0\n"},
+		"a line with more words":   {"package_offer=pkg-a 1.0 1.1\n", "package_offer=pkg-a 1.0 1.1 extra\n"},
+		"an empty line":            {"package_offer=pkg-a 1.0 1.1\n", "package_offer=\n"},
+		"an earlier form number":   {"updates_format=2\n", "updates_format=1\n"},
+		"a form that is no number": {"updates_format=2\n", "updates_format=two\n"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newSSHFake(t)
+			if !strings.Contains(versionAnswer, edit[0]) {
+				t.Fatalf("%q is not in the answer; update the test", edit[0])
+			}
+			write(t, os.Getenv("FAKE_VERSION"), strings.Replace(versionAnswer, edit[0], edit[1], 1), 0o644)
+			st, res := f.driver().Check(context.Background())
+			if res.Code != protocol.CodeRejectedUnsupported || res.Detail == "" || len(st.Offers) != 0 {
+				t.Fatalf("%s: %+v, offers %+v", name, res, st.Offers)
+			}
+		})
+	}
+	// A later form keeps these lines: it is read like form 2.
+	f := newSSHFake(t)
+	later := strings.Replace(versionAnswer, "updates_format=2\n", "updates_format=3\n", 1)
+	write(t, os.Getenv("FAKE_VERSION"), later, 0o644)
+	if st, res := f.driver().Check(context.Background()); !res.OK() || len(st.Offers) != 3 {
+		t.Fatalf("later form: %+v, offers %+v", res, st.Offers)
+	}
+}
+
 func TestPfsenseUpToDate(t *testing.T) {
 	f := newSSHFake(t)
-	write(t, os.Getenv("FAKE_VERSION"), "product=pfSense\nversion=1.2.3-RELEASE\nbase_installed=1.2.3\n"+
-		"base_offered=1.2.3\npackages_outdated_count=0\npackages_outdated=\n", 0o644)
+	write(t, os.Getenv("FAKE_VERSION"), "product=pfSense\nversion=1.2.3-RELEASE\nupdates_format=2\n"+
+		"base_installed=1.2.3\nbase_offered=1.2.3\npackages_outdated_count=0\npackages_outdated=\n", 0o644)
 	st, res := f.driver().Check(context.Background())
 	if !res.OK() || len(st.Offers) != 0 {
 		t.Fatalf("up to date: %+v %+v", st.Offers, res)
+	}
+	// The same from a root job before form 2.
+	write(t, os.Getenv("FAKE_VERSION"), "product=pfSense\nversion=1.2.3-RELEASE\nbase_installed=1.2.3\n"+
+		"base_offered=1.2.3\npackages_outdated_count=0\npackages_outdated=\n", 0o644)
+	st, res = f.driver().Check(context.Background())
+	if !res.OK() || len(st.Offers) != 0 {
+		t.Fatalf("up to date, earlier form: %+v %+v", st.Offers, res)
 	}
 }
 

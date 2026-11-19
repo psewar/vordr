@@ -230,4 +230,6 @@ Generated from the files by `python3 docs/adr/check_index.py --write`. `build.sh
 | [0194](0194-the-public-checks-run-govulncheck-at-a-pinned-version.md) | The public checks run govulncheck at a pinned version | accepted | 2026-11-18 |
 | [0195](0195-the-hub-bounds-reports-inventories-and-the-home-assistant-hello.md) | The hub bounds reports, inventories and the Home Assistant hello | accepted | 2026-11-18 |
 | [0196](0196-the-hub-refuses-a-vet-request-out-of-bounds-whole.md) | The hub refuses a vet request out of bounds whole | accepted | 2026-11-18 |
+| [0197](0197-the-stale-repair-names-only-a-way-that-exists.md) | The stale repair names only a way that exists | accepted | 2026-11-19 |
+| [0198](0198-the-firewall-root-job-names-only-real-package-updates-with-their-versions.md) | The firewall's root job names only real package updates, with their versions | accepted | 2026-11-19 |
 <!-- adr-index:end -->

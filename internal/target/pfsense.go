@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -55,9 +56,13 @@ func newPfsense(t *policy.Target, creds map[string]string) (*pfsense, Result) {
 
 func (p *pfsense) Name() string { return "pfsense" }
 
+// updatesFormat is the first form of the root job's update facts that names each outdated package with its installed
+// and its offered version (ADR-0198). A root job before it writes no updates_format.
+const updatesFormat = 2
+
 // Check reads the firmware and the outdated packages from the root job's update facts (written hourly from the local
 // package catalog). The base system counts as offered when the catalog has a newer pfSense-base; every outdated
-// package is one offer whose version the firewall does not name.
+// package is one offer, from the version installed to the one in the catalog (packageOffers).
 func (p *pfsense) Check(ctx context.Context) (Status, Result) {
 	out, res := p.call(ctx, "version")
 	if !res.OK() {
@@ -68,7 +73,8 @@ func (p *pfsense) Check(ctx context.Context) (Status, Result) {
 		return Status{}, Result{protocol.CodeRejectedUnsupported, "the version answer names no pfSense version"}
 	}
 	st := Status{Product: "pfSense", Installed: kv["version"], SelfUpdate: "off", Facts: map[string]string{}}
-	for _, k := range []string{"updates_checked_at", "base_installed", "base_offered", "packages_outdated_count"} {
+	for _, k := range []string{"updates_checked_at", "updates_format", "base_installed", "base_offered",
+		"packages_outdated_count"} {
 		if v := kv[k]; v != "" {
 			st.Facts[k] = v
 		}
@@ -76,12 +82,51 @@ func (p *pfsense) Check(ctx context.Context) (Status, Result) {
 	if offered := kv["base_offered"]; offered != "" && offered != kv["base_installed"] {
 		st.Offers = append(st.Offers, Offer{Name: "pfSense", Version: offered})
 	}
-	for _, pkg := range strings.Split(kv["packages_outdated"], ",") {
-		if pkg = strings.TrimSpace(pkg); pkg != "" {
-			st.Offers = append(st.Offers, Offer{Name: "package " + pkg, Version: UnknownVersion})
-		}
+	packages, res := packageOffers(out, kv)
+	if !res.OK() {
+		return Status{}, res
 	}
+	st.Offers = append(st.Offers, packages...)
 	return st, Result{}
+}
+
+// packageOffers reads the outdated packages of the update facts. From form 2 on (updates_format) one package_offer line
+// per package names it with its installed and its offered version, and there are as many lines as
+// packages_outdated_count says. An answer that is not so is not what the root job writes, and it is refused: the
+// root job counts every package the catalog has a newer version of, and writes a line only for those whose versions
+// it could read from pkg. A root job before form 2 writes no updates_format and names the packages only
+// (packages_outdated, with their versions in the name): they are offered without a version, as before.
+func packageOffers(out []byte, kv map[string]string) ([]Offer, Result) {
+	var offers []Offer
+	format := kv["updates_format"]
+	if format == "" {
+		for _, pkg := range strings.Split(kv["packages_outdated"], ",") {
+			if pkg = strings.TrimSpace(pkg); pkg != "" {
+				offers = append(offers, Offer{Name: "package " + pkg, Version: UnknownVersion})
+			}
+		}
+		return offers, Result{}
+	}
+	if n, err := strconv.Atoi(format); err != nil || n < updatesFormat {
+		return nil, Result{protocol.CodeRejectedUnsupported, fmt.Sprintf(
+			"the update facts have updates_format %q; this agent reads form %d and later, or none",
+			format, updatesFormat)}
+	}
+	lines := keyLines(out, "package_offer")
+	for i, line := range lines {
+		f := strings.Fields(line)
+		if len(f) != 3 {
+			return nil, Result{protocol.CodeRejectedUnsupported, fmt.Sprintf(
+				"package_offer line %d is not <name> <installed> <offered>", i+1)}
+		}
+		offers = append(offers, Offer{Name: "package " + f[0], From: f[1], Version: f[2]})
+	}
+	if count := kv["packages_outdated_count"]; count != strconv.Itoa(len(lines)) {
+		return nil, Result{protocol.CodeRejectedUnsupported, fmt.Sprintf(
+			"the root job counts %q outdated packages but names the versions of %d: pkg version answered in a form "+
+				"it does not read", count, len(lines))}
+	}
+	return offers, Result{}
 }
 
 // Backup reads config.xml and checks that it is one: an XML declaration, the root element <pfsense>, at least 1 KB.
@@ -162,6 +207,17 @@ func offersHostKey(scanned []byte, pinned string) bool {
 		}
 	}
 	return false
+}
+
+// keyLines reads every value of a key that the answer repeats, one per line, in order.
+func keyLines(b []byte, key string) []string {
+	var out []string
+	for _, line := range strings.Split(string(b), "\n") {
+		if k, v, ok := strings.Cut(strings.TrimSpace(line), "="); ok && k == key {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // keyValues reads the forced command's key=value lines; the first value of a key counts.

@@ -118,8 +118,13 @@ health:
   (`failed_target_auth`); any other return value is the fixed command's refusal with its `reason`. `ssh` runs with
   `-F /dev/null`, `BatchMode`, `IdentitiesOnly`, without an agent, with its own `known_hosts` containing only the pinned
   key; the private key exists only during the call, in a 0600 file. Report: firmware from `version` (form
-  `<version>-RELEASE`), an offer "pfSense" if the catalog has a newer `pfSense-base`, and for each outdated package an
-  offer without a version; `self_update: off`. Backup: `config.xml` (XML header, root `<pfsense>`, at least 1 KB).
+  `<version>-RELEASE`), an offer "pfSense" if the catalog has a newer `pfSense-base`, and for each package the catalog
+  has a newer version of an offer `package <name>` from the installed to the offered version
+  ([ADR-0198](../docs/adr/0198-the-firewall-root-job-names-only-real-package-updates-with-their-versions.md)); a
+  package whose installed version is newer, or that is not in the catalog, is no offer. Update facts in another form
+  than the root job writes are refused (`rejected_unsupported`); those of an earlier root job without `updates_format`
+  give the packages without a version. `self_update: off`. Backup: `config.xml` (XML header, root `<pfsense>`, at
+  least 1 KB).
 - **Facts** come from the driver: product and firmware as `os`, the driver as `os_id`, model, update channel, whether
   the device updates itself, time and checksum of the last configuration backup.
 
@@ -211,7 +216,7 @@ devices). For their update there are two ways, in this order of preference:
 | fixed command `vordr-gna` | `/usr/local/sbin/vordr-gna` (0755) | `vordr-gna`, only through the proxy agent's key (`command=` in the key line) | `version`, `backup`, `window status`, `window open <address> <minutes>`, `window close <address>`; puts jobs only into the queue |
 | root job `vordr-gna-root` | `/usr/local/sbin/vordr-gna-root` (0700), cron every minute under `lockf` | root | checks every job again, enters into the pf table `vordr_update_window`, closes what has expired, reconciles table and state, writes the update facts hourly |
 | device list | `/usr/local/etc/vordr-gna-allow` (0644) | – | addresses of the devices that may get a window, one per line, e.g. `192.0.2.40`; the list belongs to the site, the repo ships it empty |
-| queue, state | `/var/db/vordr-gna-queue` (vordr-gna, 0700), `/var/db/vordr-gna/` (root) | – | `window`: `entry=<address> <end>`; `updates`: `base_installed`, `base_offered`, `packages_outdated(_count)` |
+| queue, state | `/var/db/vordr-gna-queue` (vordr-gna, 0700), `/var/db/vordr-gna/` (root) | – | `window`: `entry=<address> <end>`; `updates`: `updates_format=2`, `base_installed`, `base_offered`, `packages_outdated(_count)` (only status `<`), one `package_offer=<name> <installed> <offered>` per such package (ADR-0198) |
 
 - Answers are `key=value` lines; a refusal says `state=refused` and `reason=<code>` (`unknown_call`, `bad_arguments`,
   `bad_address`, `bad_minutes`, `not_listed`, `not_ready`), the return value the kind (2, 3, 4).

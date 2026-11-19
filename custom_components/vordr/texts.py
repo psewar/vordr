@@ -22,11 +22,16 @@ from .const import CODES, DOMAIN, REASONS
 # A host that does not allow reboots through Vördr gets "reboot by hand" instead of "reboot in the window or with the
 # button" - there is no button for it.
 MANUAL_REBOOT = {"reboot_pending": "reboot_pending_manual", "ok_reboot_required": "ok_reboot_required_manual"}
+# Updates pending too long that the install button would not take get "install by hand" instead of "by hand or with
+# the button" (ADR-0197): "stale_manual" where the host allows no install through Vördr, "stale_policy" where it does
+# but its policy takes none of the pending updates.
+STALE_WAYS = ("stale_manual", "stale_policy")
 TEXT_KEYS: tuple[str, ...] = (
     *(r for r in REASONS if r != "check_failed"),
     *(c for c in CODES if c != "ok"),
     "unknown",
     *MANUAL_REBOOT.values(),
+    *STALE_WAYS,
 )
 
 SUMMARY_MAX = 250  # HA cuts the release summary at 255 characters
@@ -37,13 +42,34 @@ def can_reboot(host: dict[str, Any]) -> bool:
     return bool((host.get("capabilities") or {}).get("reboot"))
 
 
-def problem_key(problem: dict[str, Any], reboot: bool = True) -> str:
+def can_install(host: dict[str, Any]) -> bool:
+    """Whether the hub offers an install of the system packages for this host: the install button or the button for
+    security updates (agent can, local policy allows)."""
+    caps = host.get("capabilities") or {}
+    return bool(caps.get("install") or caps.get("install_security"))
+
+
+def stale_key(host: dict[str, Any]) -> str:
+    """The text key of updates pending too long on this host (ADR-0197). "stale" while the install button takes some of
+    them (the hub's installable above zero), and when the hub does not say (an older hub, no count); otherwise how they
+    can be installed: "stale_policy" where the host takes installs through Vördr but its policy none of these (only
+    security updates and none is one, or held back by install.mode), "stale_manual" where it takes none."""
+    installable = host.get("installable")
+    if type(installable) is not int or installable > 0:
+        return "stale"
+    return "stale_policy" if can_install(host) else "stale_manual"
+
+
+def problem_key(problem: dict[str, Any], reboot: bool = True, host: dict[str, Any] | None = None) -> str:
     """The text key of a problem: its first reason, or the result code behind it; reboot: the host can be rebooted
-    through Vördr."""
+    through Vördr; host: the host's view, which decides how long-pending updates can be installed (none: as if with
+    the button)."""
     key = str(problem.get("reason", ""))
     if key == "check_failed":
         key = str(problem.get("check_failed_code", ""))
     key = key if key in TEXT_KEYS else "unknown"
+    if key == "stale" and host is not None:
+        return stale_key(host)
     return key if reboot else MANUAL_REBOOT.get(key, key)
 
 

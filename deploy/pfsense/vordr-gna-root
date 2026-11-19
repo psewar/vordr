@@ -6,10 +6,13 @@
 # It works the queue that the forced command vordr-gna fills, and checks every request again: a listed address,
 # 1..30 minutes. Whatever is in the queue counts as untrusted input, because the unprivileged user writes it.
 # Then it closes what has expired, drops table entries it does not know, and refreshes the update facts once an hour
-# from the local package catalog (no network; the catalog is refreshed by pfSense's own nightly job).
+# from the local package catalog (no network; the catalog is refreshed by pfSense's own nightly job), and at once when
+# an earlier root job wrote them.
 # State, readable by the forced command:
 #   /var/db/vordr-gna/window    window_checked_at=<epoch> and one "entry=<address> <closes_at_epoch>" per open entry
-#   /var/db/vordr-gna/updates   updates_checked_at, base_installed, base_offered, packages_outdated(_count)
+#   /var/db/vordr-gna/updates   updates_checked_at, updates_format, base_installed, base_offered,
+#                               packages_outdated(_count), one "package_offer=<name> <installed> <offered>" per
+#                               outdated package (ADR-0198)
 set -u
 PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin
 export PATH
@@ -20,6 +23,8 @@ OWNER=vordr-gna
 TABLE=vordr_update_window
 MAX_MINUTES=30
 BASE_PACKAGE=pfSense-base
+# The form of the update facts: 2 names each outdated package with its versions (ADR-0198); before it there was none.
+UPDATES_FORMAT=2
 now=$(date +%s)
 
 log() {
@@ -149,16 +154,34 @@ tmp=$(mktemp "$STATE/.window.XXXXXX")
 chmod 0644 "$tmp"
 mv "$tmp" "$STATE/window"
 
-# Update facts, at most once an hour, from the local catalog only (-U: no repository update).
-if [ -z "$(find "$STATE/updates" -mmin -60 2>/dev/null)" ]; then
+# Update facts, at most once an hour, from the local catalog only (-U: no repository update); at once when the file is
+# from an earlier root job, so that a new one is read within a minute of its install.
+# Only "<" is an update: the catalog has a newer version. ">" (the installed one is newer) and "?" (not in the catalog)
+# are none, and would keep the firewall pending for good (ADR-0198). pkg compares; its line is
+#   <name>-<version>   <   needs updating (remote has <offered>)
+# and becomes "<name>-<version>", followed by "<name> <version> <offered>" where the line has that form. Every "<"
+# counts and stays in packages_outdated, which keeps its earlier form for agents that read only that; package_offer
+# lines are written for those whose versions were read, and an agent refuses facts where the two differ.
+if [ -z "$(find "$STATE/updates" -mmin -60 2>/dev/null)" ] ||
+	! grep -qx "updates_format=$UPDATES_FORMAT" "$STATE/updates" 2>/dev/null; then
 	tmp=$(mktemp "$STATE/.updates.XXXXXX")
-	outdated=$(pkg version -U -qRL= 2>/dev/null | awk '{ print $1 }')
+	outdated=$(pkg version -U -vRl'<' 2>/dev/null | awk '
+		$2 != "<" { next }
+		{
+			out = $1
+			# The version follows the last "-": pkg allows none in a version.
+			if (match($1, /-[^-]+$/) && $(NF - 1) == "has" && $NF ~ /^[^()]+\)$/)
+				out = out " " substr($1, 1, RSTART - 1) " " substr($1, RSTART + 1) " " substr($NF, 1, length($NF) - 1)
+			print out
+		}')
 	{
 		echo "updates_checked_at=$now"
+		echo "updates_format=$UPDATES_FORMAT"
 		echo "base_installed=$(pkg query %v "$BASE_PACKAGE" 2>/dev/null | head -n 1)"
 		echo "base_offered=$(pkg rquery -U %v "$BASE_PACKAGE" 2>/dev/null | head -n 1)"
 		echo "packages_outdated_count=$(printf '%s\n' "$outdated" | awk 'NF' | wc -l | tr -d ' ')"
-		echo "packages_outdated=$(printf '%s\n' "$outdated" | awk 'NF' | paste -s -d , -)"
+		echo "packages_outdated=$(printf '%s\n' "$outdated" | awk 'NF { print $1 }' | paste -s -d , -)"
+		printf '%s\n' "$outdated" | awk 'NF == 4 { print "package_offer=" $2 " " $3 " " $4 }'
 	} >"$tmp"
 	chmod 0644 "$tmp"
 	mv "$tmp" "$STATE/updates"

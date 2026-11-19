@@ -74,7 +74,7 @@ class HostProblem(VordrHostEntity, BinarySensorEntity):
         attrs = {
             "reason": problem.get("reason"),
             "reasons": problem.get("reasons") or [],
-            "next_step": problem_key(problem, can_reboot(self.host)),
+            "next_step": problem_key(problem, can_reboot(self.host), self.host),
         }
         if problem.get("check_failed_code"):
             attrs["check_failed_code"] = problem["check_failed_code"]

@@ -122,8 +122,13 @@ health:
   `ssh` läuft mit `-F /dev/null`, `BatchMode`, `IdentitiesOnly`, ohne Agent, mit einer eigenen `known_hosts` nur mit
   dem festgenagelten Schlüssel; der private Schlüssel liegt nur während des Aufrufs in einer 0600-Datei. Bericht:
   Firmware aus `version` (Form `<version>-RELEASE`), ein Angebot „pfSense“, wenn der Katalog ein neueres
-  `pfSense-base` hat, und je veraltetem Paket ein Angebot ohne Version; `self_update: off`. Sicherung: `config.xml` (XML-Kopf, Wurzel
-  `<pfsense>`, mindestens 1 KB).
+  `pfSense-base` hat, und je Paket, von dem der Katalog eine neuere Version hat, ein Angebot `package <name>` von der
+  installierten zur angebotenen Version
+  ([ADR-0198](../docs/adr/0198-the-firewall-root-job-names-only-real-package-updates-with-their-versions.md)); ein
+  Paket, dessen installierte Version neuer ist oder das nicht im Katalog steht, ist kein Angebot. Update-Fakten in einer
+  anderen Form, als der Wurzel-Job sie schreibt, werden abgelehnt (`rejected_unsupported`); die eines früheren
+  Wurzel-Jobs ohne `updates_format` ergeben die Pakete ohne Version. `self_update: off`. Sicherung: `config.xml`
+  (XML-Kopf, Wurzel `<pfsense>`, mindestens 1 KB).
 - **Fakten** kommen vom Treiber: Produkt und Firmware als `os`, der Treiber als `os_id`, Modell, Update-Kanal, ob das
   Gerät sich selbst aktualisiert, Zeit und Prüfsumme der letzten Konfigurationssicherung.
 
@@ -216,7 +221,7 @@ ihr Update gibt es zwei Wege, in dieser Rangfolge:
 | fester Befehl `vordr-gna` | `/usr/local/sbin/vordr-gna` (0755) | `vordr-gna`, nur über den Schlüssel des Stellvertreters (`command=` in der Schlüsselzeile) | `version`, `backup`, `window status`, `window open <adresse> <minuten>`, `window close <adresse>`; legt Aufträge nur in die Warteschlange |
 | Wurzel-Job `vordr-gna-root` | `/usr/local/sbin/vordr-gna-root` (0700), Cron jede Minute unter `lockf` | root | prüft jeden Auftrag erneut, trägt in die pf-Tabelle `vordr_update_window` ein, schliesst Abgelaufenes, gleicht Tabelle und Zustand ab, schreibt stündlich die Update-Fakten |
 | Geräteliste | `/usr/local/etc/vordr-gna-allow` (0644) | – | Adressen der Geräte, die ein Fenster bekommen dürfen, eine je Zeile, z. B. `192.0.2.40`; die Liste gehört dem Standort, das Repo liefert sie leer |
-| Warteschlange, Zustand | `/var/db/vordr-gna-queue` (vordr-gna, 0700), `/var/db/vordr-gna/` (root) | – | `window`: `entry=<adresse> <ende>`; `updates`: `base_installed`, `base_offered`, `packages_outdated(_count)` |
+| Warteschlange, Zustand | `/var/db/vordr-gna-queue` (vordr-gna, 0700), `/var/db/vordr-gna/` (root) | – | `window`: `entry=<adresse> <ende>`; `updates`: `updates_format=2`, `base_installed`, `base_offered`, `packages_outdated(_count)` (nur Status `<`), je solchem Paket eine Zeile `package_offer=<name> <installiert> <angeboten>` (ADR-0198) |
 
 - Antworten sind `key=value`-Zeilen; eine Ablehnung sagt `state=refused` und `reason=<code>` (`unknown_call`,
   `bad_arguments`, `bad_address`, `bad_minutes`, `not_listed`, `not_ready`), der Rückgabewert die Art (2, 3, 4).

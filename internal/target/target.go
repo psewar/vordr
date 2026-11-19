@@ -36,9 +36,12 @@ type Status struct {
 
 // Offer is one update the device offers.
 type Offer struct {
-	Name     string // "DSM", "DSM (new major version)"
-	Version  string // as the device names it; UnknownVersion when it does not say
-	Security bool   // the vendor marks it as a security update
+	Name    string // "DSM", "DSM (new major version)", "package php83"
+	Version string // as the device names it; UnknownVersion when it does not say
+	// From: the installed version this offer replaces, for an offer that is not the firmware (a package on the device,
+	// ADR-0198). Empty for the firmware, whose installed version is Status.Installed.
+	From     string
+	Security bool // the vendor marks it as a security update
 }
 
 // UnknownVersion stands for an offered update whose version the device does not name.

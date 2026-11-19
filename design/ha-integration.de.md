@@ -377,7 +377,16 @@ aus ihren Übersetzungsdateien ([ADR-0027](../docs/adr/0027-protocol-2-codes-and
   den Home Assistant für eigene Texte der Integration vorsieht
   ([ADR-0145](../docs/adr/0145-the-integrations-own-texts-live-in-the-common-section.md)).
 - **Problemschlüssel:** der erste Grund; bei `check_failed` und gescheiterten Läufen der Ergebniscode, weil der
-  nächste Schritt an ihm hängt; ein unbekannter Code wird `unknown`.
+  nächste Schritt an ihm hängt; ein unbekannter Code wird `unknown`. Der Schlüssel nennt nur einen Weg, den es auf dem
+  Host gibt:
+  - `reboot_pending` und `ok_reboot_required` werden zu `…_manual`, wo die Leitstelle keinen Neustart anbietet
+    (Fähigkeit `reboot`);
+  - `stale` bleibt, wo der Installieren-Knopf einen Teil der ausstehenden Updates nimmt (`installable` über null, oder
+    keine Zahl von der Leitstelle); sonst wird es `stale_policy`, wo der Host Installationen über Vördr annimmt, seine
+    Richtlinie aber keines dieser Updates, und `stale_manual`, wo er keine annimmt
+    ([ADR-0197](../docs/adr/0197-the-stale-repair-names-only-a-way-that-exists.md));
+  - die Reparatur folgt einem geänderten Schlüssel auch, wenn das Problem dasselbe bleibt; `vordr_problem` feuert
+    dafür nicht.
 - **Ereignisse** tragen `message` in jeder mitgelieferten Sprache, damit eine Automation die Sprache ihres
   Empfängers wählt, unabhängig von der Systemsprache.
 - `tests/test_texts.py` hält die Dateien zusammen: jede Sprache hat jeden Text, jeder Hinweistext enthält den

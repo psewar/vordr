@@ -346,7 +346,9 @@
               "interrupted": "Paketdatenbank prüfen",
               "unknown": "Agent und Leitstelle auf denselben Stand bringen",
               "reboot_pending_manual": "Von Hand neu starten – dieser Host erlaubt keinen Neustart über Vördr",
-              "ok_reboot_required_manual": "Von Hand neu starten – dieser Host erlaubt keinen Neustart über Vördr"
+              "ok_reboot_required_manual": "Von Hand neu starten – dieser Host erlaubt keinen Neustart über Vördr",
+              "stale_manual": "Updates von Hand installieren – dieser Host erlaubt keine Installation über Vördr",
+              "stale_policy": "Von Hand installieren oder den Abschnitt install in der agent.yaml des Hosts erweitern"
             }
           },
           "check_failed_code": {
@@ -868,6 +870,14 @@
     "problem_ok_reboot_required_manual": {
       "title": "Vördr: Update-Problem auf {node}",
       "description": "OK, Neustart nötig.\n\nNächster Schritt: Von Hand neu starten – dieser Host erlaubt keinen Neustart über Vördr."
+    },
+    "problem_stale_manual": {
+      "title": "Vördr: Update-Problem auf {node}",
+      "description": "Updates liegen seit über {stale_days} Tagen.\n\nNächster Schritt: Updates von Hand installieren – dieser Host erlaubt keine Installation über Vördr."
+    },
+    "problem_stale_policy": {
+      "title": "Vördr: Update-Problem auf {node}",
+      "description": "Updates liegen seit über {stale_days} Tagen. Die Richtlinie des Hosts lässt Vördr keines davon installieren: Sie erlaubt nur Sicherheitsupdates, und keines davon ist eines, oder ihr Installationsmodus hält sie zurück.\n\nNächster Schritt: Von Hand installieren oder den Abschnitt install in der agent.yaml des Hosts erweitern."
     },
     "protocol_mismatch": {
       "title": "Vördr: Leitstelle zu alt oder zu neu",

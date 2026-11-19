@@ -138,7 +138,8 @@ func TestSynologyCheck(t *testing.T) {
 		`"type":"hotfix-security"},"promotion":{"available":true}}`
 	f.answers["SYNO.Core.Upgrade.Setting.get"] = `{"autoupdate_enable":false,"upgrade_type":"hotfix"}`
 	st, res = d.Check(context.Background())
-	want := []Offer{{"DSM", "DSM 7.9.9-99999 Update 2", true}, {"DSM (new major version)", UnknownVersion, false}}
+	want := []Offer{{Name: "DSM", Version: "DSM 7.9.9-99999 Update 2", Security: true},
+		{Name: "DSM (new major version)", Version: UnknownVersion}}
 	if !res.OK() || len(st.Offers) != 2 || st.Offers[0] != want[0] || st.Offers[1] != want[1] || st.SelfUpdate != "off" {
 		t.Fatalf("offers: %+v %v", st, res)
 	}

@@ -106,6 +106,26 @@ func TestTargetChecker(t *testing.T) {
 	}
 }
 
+// An offer for a package on the device names the version it replaces; the firmware's offer replaces the installed
+// firmware (ADR-0198).
+func TestTargetCheckerPackageOffers(t *testing.T) {
+	d := &stubDriver{exportLen: 2048, status: target.Status{Product: "pfSense", Installed: "1.2.3-RELEASE",
+		Offers: []target.Offer{{Name: "pfSense", Version: "1.3.0-RELEASE"},
+			{Name: "package pkg-a", From: "1.0", Version: "1.1"}}}}
+	c := TargetChecker(d, target.Store{Dir: t.TempDir(), Keep: 5}, 26*time.Hour, time.Now)
+	fw, _ := reportOf(t, c.Check(context.Background()))
+	want := []source.Package{{Name: "pfSense", From: "1.2.3-RELEASE", To: "1.3.0-RELEASE"},
+		{Name: "package pkg-a", From: "1.0", To: "1.1"}}
+	if fw.State != protocol.SourceUpdatesAvailable || fw.Pending != 2 || len(fw.Packages) != 2 {
+		t.Fatalf("offers: %+v", fw)
+	}
+	for i := range want {
+		if p := fw.Packages[i]; p.Name != want[i].Name || p.From != want[i].From || p.To != want[i].To {
+			t.Errorf("package %d: %+v, want %+v", i, p, want[i])
+		}
+	}
+}
+
 func TestTargetCheckerWithoutAnyBackup(t *testing.T) {
 	d := &stubDriver{check: target.Result{Code: protocol.CodePrecheckRepoUnreachable, Detail: "connection refused"}}
 	c := TargetChecker(d, target.Store{Dir: t.TempDir(), Keep: 5}, 26*time.Hour, time.Now)

@@ -346,7 +346,9 @@
               "interrupted": "Check the package database",
               "unknown": "Bring agent and hub to the same version",
               "reboot_pending_manual": "Reboot by hand - this host does not allow reboots through Vördr",
-              "ok_reboot_required_manual": "Reboot by hand - this host does not allow reboots through Vördr"
+              "ok_reboot_required_manual": "Reboot by hand - this host does not allow reboots through Vördr",
+              "stale_manual": "Install the updates by hand - this host does not allow installs through Vördr",
+              "stale_policy": "Install them by hand, or widen the install section of the host's agent.yaml"
             }
           },
           "check_failed_code": {
@@ -868,6 +870,14 @@
     "problem_ok_reboot_required_manual": {
       "title": "Vördr: update problem on {node}",
       "description": "OK, reboot required.\n\nNext step: Reboot by hand - this host does not allow reboots through Vördr."
+    },
+    "problem_stale_manual": {
+      "title": "Vördr: update problem on {node}",
+      "description": "Updates have been pending for more than {stale_days} days.\n\nNext step: Install the updates by hand - this host does not allow installs through Vördr."
+    },
+    "problem_stale_policy": {
+      "title": "Vördr: update problem on {node}",
+      "description": "Updates have been pending for more than {stale_days} days. The host's policy lets Vördr install none of them: it allows only security updates and none of these is one, or its install mode holds them back.\n\nNext step: Install them by hand, or widen the install section of the host's agent.yaml."
     },
     "protocol_mismatch": {
       "title": "Vördr: hub too old or too new",
