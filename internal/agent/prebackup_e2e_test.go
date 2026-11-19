@@ -385,7 +385,7 @@ func TestNoFreshBackupNoInstall(t *testing.T) {
 func TestHypervisorAway(t *testing.T) {
 	f := newBackupFixture(t, map[string]time.Time{"ct/302": time.Now().Add(-time.Hour)}, false)
 	gate, st := f.install(t)
-	if gate.Code != hub.AdminBackupHostUnavailable {
+	if gate.Code != hub.AdminBackupHostUnknown {
 		t.Fatalf("check: %+v", gate)
 	}
 	if st.Code != protocol.CodeFailedBackup || !strings.Contains(st.Detail, "hv: unknown_node") || f.inst.calls.Load() != 0 {

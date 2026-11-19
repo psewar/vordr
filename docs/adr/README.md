@@ -232,4 +232,5 @@ Generated from the files by `python3 docs/adr/check_index.py --write`. `build.sh
 | [0196](0196-the-hub-refuses-a-vet-request-out-of-bounds-whole.md) | The hub refuses a vet request out of bounds whole | accepted | 2026-11-18 |
 | [0197](0197-the-stale-repair-names-only-a-way-that-exists.md) | The stale repair names only a way that exists | accepted | 2026-11-19 |
 | [0198](0198-the-firewall-root-job-names-only-real-package-updates-with-their-versions.md) | The firewall's root job names only real package updates, with their versions | accepted | 2026-11-19 |
+| [0199](0199-the-backup-gate-names-the-hypervisors-state-and-waits-for-its-restart.md) | The backup gate names the hypervisor's state and waits for its restart | accepted | 2026-11-19 |
 <!-- adr-index:end -->

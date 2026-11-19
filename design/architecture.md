@@ -721,8 +721,12 @@ every install; groups `host/` and `without` stay with the age check
 ([ADR-0096](../docs/adr/0096-fresh-backup-right-before-the-install.md)).
 
 - **Before the run:** The age of the latest backup no longer holds such a guest back. But the hub refuses if PBS does not
-  answer (`backup_unreachable`) or the hypervisor's agent is absent, not approved or does not offer `backup`
-  (`backup_host_unavailable`).
+  answer (`backup_unreachable`) or the hypervisor's agent cannot make the backup, with one code per state
+  ([ADR-0199](../docs/adr/0199-the-backup-gate-names-the-hypervisors-state-and-waits-for-its-restart.md)): unknown to
+  the hub (`backup_host_unknown`), not approved (`backup_host_not_approved`), without the verb `backup`
+  (`backup_host_no_guest_backup`) or not connected (`backup_host_offline`). A hypervisor that is away only because a
+  run of the hub's restarts it (agent update, reboot: its agent reported phase `rebooting`) counts as there: the
+  install's run waits for that run and for the agent's first report before it asks for the backup.
 - **Run:** The install run begins in the phase `backing_up`, with its final `job_id`. The hub sends the hypervisor the
   signed job `backup` with the guest and waits for the result. Then it asks PBS with the read token whether the group has
   a backup that is not older than the moment of the job (1 min clock skew). Only then does the install go out with the

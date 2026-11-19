@@ -51,12 +51,17 @@ REBOOT_ASKED_HOLD = timedelta(minutes=30)
 DETAIL_MAX = 300
 
 # The hub's refusals by its backup check (internal/hub/registry.go, prebackup.go): an install waits for a fresh
-# backup; backup_host_unavailable: the hypervisor's agent, which makes it right before the install, is not there.
+# backup. backup_host_*: the hypervisor's agent, which makes it right before the install, cannot - one code per state
+# (ADR-0199); backup_host_unavailable is the one code of an older hub for all of them.
 BACKUP_REFUSALS = (
     "backup_stale",
     "backup_missing",
     "backup_unreachable",
     "backup_unmapped",
+    "backup_host_unknown",
+    "backup_host_not_approved",
+    "backup_host_no_guest_backup",
+    "backup_host_offline",
     "backup_host_unavailable",
 )
 

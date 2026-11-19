@@ -750,8 +750,14 @@ Install ein frisches Backup; Gruppen `host/` und `without` bleiben bei der Alter
 ([ADR-0096](../docs/adr/0096-fresh-backup-right-before-the-install.md)).
 
 - **Vor dem Lauf:** Das Alter des letzten Backups hält einen solchen Gast nicht mehr auf. Die Leitstelle lehnt aber ab,
-  wenn PBS nicht antwortet (`backup_unreachable`) oder der Agent des Hypervisors nicht da ist, nicht freigegeben ist
-  oder `backup` nicht anbietet (`backup_host_unavailable`).
+  wenn PBS nicht antwortet (`backup_unreachable`) oder der Agent des Hypervisors das Backup nicht machen kann, mit
+  einem Code je Zustand
+  ([ADR-0199](../docs/adr/0199-the-backup-gate-names-the-hypervisors-state-and-waits-for-its-restart.md)): der
+  Leitstelle unbekannt (`backup_host_unknown`), nicht freigegeben (`backup_host_not_approved`), ohne das Verb `backup`
+  (`backup_host_no_guest_backup`) oder nicht verbunden (`backup_host_offline`). Ein Hypervisor, der nur weg ist, weil
+  ein Lauf der Leitstelle ihn neu startet (Agent-Update, Neustart: sein Agent hat die Phase `rebooting` gemeldet), gilt
+  als da: Der Lauf des Installs wartet auf diesen Lauf und auf den ersten Bericht des Agents, bevor er das Backup
+  anfordert.
 - **Lauf:** Der Install-Lauf beginnt in der Phase `backing_up`, mit seiner endgültigen `job_id`. Die Leitstelle
   schickt dem Hypervisor den signierten Auftrag `backup` mit dem Gast und wartet auf das Ergebnis. Danach fragt sie
   PBS mit dem Lese-Token, ob die Gruppe ein Backup hat, das nicht älter ist als der Moment des Auftrags (1 min

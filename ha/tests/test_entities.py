@@ -405,6 +405,32 @@ async def test_install_waits_for_a_backup(hass: HomeAssistant, fake_hub: FakeHub
     assert err.value.translation_key == "command_refused_backup_unreachable"
 
 
+async def test_backup_host_refusal_names_its_state(
+    hass: HomeAssistant, fake_hub: FakeHub, entry: MockConfigEntry
+) -> None:
+    """A guest backed up by its hypervisor right before the install: the refusal names the hypervisor and the state
+    that keeps its agent from the backup (ADR-0199); an older hub's single code keeps its text."""
+    caps = {"check": True, "install": True, "install_security": False, "reboot": False, "agent_update": False}
+    fresh = {"group": "ct/302", "max_age_hours": 26, "state": "ok", "before_install": "hotel"}
+    fake_hub.hosts["golf"] = host_view("golf", capabilities={**caps, "default_scope": "all"}, backup=fresh)
+    await setup(hass, entry)
+    for code in (
+        "backup_host_offline",
+        "backup_host_unknown",
+        "backup_host_not_approved",
+        "backup_host_no_guest_backup",
+        "backup_host_unavailable",
+    ):
+        fake_hub.command_code = code
+        with pytest.raises(HomeAssistantError) as err:
+            await hass.services.async_call(
+                "update", "install", {"entity_id": "update.vordr_golf_system"}, blocking=True
+            )
+        assert err.value.translation_key == f"command_refused_{code}"
+        assert err.value.translation_placeholders["hypervisor"] == "hotel"
+        assert err.value.translation_placeholders["node"] == "golf"
+
+
 async def test_package_entities_wait_for_a_report(
     hass: HomeAssistant, fake_hub: FakeHub, entry: MockConfigEntry
 ) -> None:

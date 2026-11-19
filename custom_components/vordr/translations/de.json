@@ -637,6 +637,18 @@
     "command_refused_backup_unmapped": {
       "message": "{node}: Nicht installiert – in hub.yaml ist für diesen Host keine PBS-Gruppe eingetragen (backup.guests)."
     },
+    "command_refused_backup_host_unknown": {
+      "message": "{node}: Nicht installiert – das Backup vor der Installation macht {hypervisor}, und diesen Host kennt die Leitstelle nicht. before_install in hub.yaml prüfen."
+    },
+    "command_refused_backup_host_not_approved": {
+      "message": "{node}: Nicht installiert – das Backup vor der Installation macht {hypervisor}, und dessen Agent ist an der Leitstelle nicht freigegeben."
+    },
+    "command_refused_backup_host_no_guest_backup": {
+      "message": "{node}: Nicht installiert – das Backup vor der Installation macht {hypervisor}, und dessen Agent macht keine Backups: In seiner agent.yaml fehlt guest_backup, oder der Agent ist zu alt."
+    },
+    "command_refused_backup_host_offline": {
+      "message": "{node}: Nicht installiert – das Backup vor der Installation macht {hypervisor}, und dessen Agent ist offline. Erneut installieren, sobald er wieder da ist."
+    },
     "command_refused_backup_host_unavailable": {
       "message": "{node}: Nicht installiert – das Backup vor der Installation macht {hypervisor}, und dessen Agent ist nicht da (offline, nicht freigegeben oder ohne guest_backup)."
     },
@@ -707,6 +719,10 @@
           "command_refused_backup_missing": "Die Leitstelle hat den Install auf {node} abgelehnt: PBS hat kein Backup in {group}.",
           "command_refused_backup_unreachable": "Die Leitstelle hat den Install auf {node} abgelehnt: Proxmox Backup Server antwortet nicht, das Backup ist nicht prüfbar.",
           "command_refused_backup_unmapped": "Die Leitstelle hat den Install auf {node} abgelehnt: In hub.yaml ist für diesen Host keine PBS-Gruppe eingetragen (backup.guests).",
+          "command_refused_backup_host_unknown": "Die Leitstelle hat den Install auf {node} abgelehnt: Das Backup vor der Installation macht {hypervisor}, und diesen Host kennt die Leitstelle nicht. before_install in hub.yaml prüfen.",
+          "command_refused_backup_host_not_approved": "Die Leitstelle hat den Install auf {node} abgelehnt: Das Backup vor der Installation macht {hypervisor}, und dessen Agent ist an der Leitstelle nicht freigegeben.",
+          "command_refused_backup_host_no_guest_backup": "Die Leitstelle hat den Install auf {node} abgelehnt: Das Backup vor der Installation macht {hypervisor}, und dessen Agent macht keine Backups: In seiner agent.yaml fehlt guest_backup, oder der Agent ist zu alt.",
+          "command_refused_backup_host_offline": "Die Leitstelle hat den Install auf {node} abgelehnt: Das Backup vor der Installation macht {hypervisor}, und dessen Agent ist offline. Erneut installieren, sobald er wieder da ist.",
           "command_refused_backup_host_unavailable": "Die Leitstelle hat den Install auf {node} abgelehnt: Das Backup vor der Installation macht {hypervisor}, und dessen Agent ist nicht da (offline, nicht freigegeben oder ohne guest_backup)."
         }
       }

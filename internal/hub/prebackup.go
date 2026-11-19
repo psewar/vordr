@@ -25,10 +25,26 @@ const (
 	backupReuse = 15 * time.Minute
 	// busyPauseMax: the longest pause between two backup jobs a busy hypervisor refuses, in Server.IdlePoll.
 	busyPauseMax = 6
-	// AdminBackupHostUnavailable: the hypervisor's agent, which makes the backup, is not there (unknown, not
-	// approved, not connected, or without guest_backup in its agent.yaml).
-	AdminBackupHostUnavailable AdminCode = "backup_host_unavailable"
+	// The hypervisor's agent, which makes the backup, cannot take it: one code for each state, so that the refusal
+	// says which one (ADR-0199).
+	// AdminBackupHostUnknown: before_install names a host the hub does not know.
+	AdminBackupHostUnknown AdminCode = "backup_host_unknown"
+	// AdminBackupHostNotApproved: the hypervisor's agent is not approved.
+	AdminBackupHostNotApproved AdminCode = "backup_host_not_approved"
+	// AdminBackupHostNoGuestBackup: the hypervisor's agent does not offer the verb backup - no guest_backup in its
+	// agent.yaml, or an agent from before ADR-0096.
+	AdminBackupHostNoGuestBackup AdminCode = "backup_host_no_guest_backup"
+	// AdminBackupHostOffline: the hypervisor's agent is not connected, and no run of the hub's restarts it.
+	AdminBackupHostOffline AdminCode = "backup_host_offline"
 )
+
+// backupHostCodes: what sendable says of the hypervisor, as the code of the install's refusal.
+var backupHostCodes = map[AdminCode]AdminCode{
+	AdminUnknownNode:     AdminBackupHostUnknown,
+	AdminNotApproved:     AdminBackupHostNotApproved,
+	AdminVerbUnsupported: AdminBackupHostNoGuestBackup,
+	AdminNotConnected:    AdminBackupHostOffline,
+}
 
 // pendingInstall: an install whose run waits in phase backing_up; WaitJob sends job once group is backed up.
 type pendingInstall struct {
@@ -48,11 +64,31 @@ func (s *Server) backupGate(ctx context.Context, node string) (AdminCode, *wire.
 	}
 	code, v := s.Backups.Gate(ctx, node, configAt)
 	if code == AdminOK && v.BeforeInstall != "" {
-		if _, c := s.sendable(v.BeforeInstall, protocol.VerbBackup); c != AdminOK {
-			code = AdminBackupHostUnavailable
-		}
+		code = s.backupHostGate(v.BeforeInstall)
 	}
 	return code, v
+}
+
+// backupHostGate: whether the hypervisor hv can make the backup before an install, or the code of the state that keeps
+// it from it (ADR-0199). A hypervisor that is away only because a run of the hub's restarts it - an agent update, a
+// reboot - counts as there: the install's run waits for that run and the agent's start before it asks for the
+// backup (waitIdle), and fails without installing if the agent does not come back.
+func (s *Server) backupHostGate(hv string) AdminCode {
+	_, code := s.sendable(hv, protocol.VerbBackup)
+	if code == AdminNotConnected && s.returning(hv) {
+		return AdminOK
+	}
+	if c, ok := backupHostCodes[code]; ok {
+		return c
+	}
+	return code
+}
+
+// returning: node is away only because a run of the hub's restarts it - the run has no result yet, and its agent's
+// last word on it was that it restarts itself; the agent that starts next reports the run (awaitSuccessor).
+func (s *Server) returning(node string) bool {
+	run, ok := s.runningRun(node)
+	return ok && run.Phase == protocol.PhaseRebooting
 }
 
 // awaitBackup starts the run of an install that waits for its guest's backup: phase backing_up, nothing sent yet.

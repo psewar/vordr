@@ -18,7 +18,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.vordr import agent_install as ai, ai_explain as ax, ha_updates as hu, ha_updates_installer as hi
 from custom_components.vordr.const import CODES, DOMAIN, REASONS
-from custom_components.vordr.coordinator import reboot_held, refusal, waiting_hosts
+from custom_components.vordr.coordinator import BACKUP_REFUSALS, reboot_held, refusal, waiting_hosts
 from custom_components.vordr.repairs import (
     APPROVE_REFUSALS,
     CONF_FINGERPRINT,
@@ -145,6 +145,19 @@ def test_repair_refusals_have_their_texts(lang: str) -> None:
             assert "node" in fields and fields <= set(names), (issue, code, fields)
             used.add(key)
         assert used == {k for k in abort if k.startswith("command_refused")}, issue
+
+
+@pytest.mark.parametrize("lang", sorted(LANGS))
+def test_backup_refusals_have_their_texts(lang: str) -> None:
+    """Each refusal of the hub's backup check has its error text for the buttons, with no placeholder the refusal does
+    not fill; the hypervisor's states each have their own (ADR-0199)."""
+    exceptions = LANGS[lang]["exceptions"]
+    for code in BACKUP_REFUSALS:
+        key, names = refusal("n", None, code)
+        fields = {field for _, field, _, _ in string.Formatter().parse(exceptions[key]["message"]) if field}
+        assert "node" in fields and fields <= set(names), (code, fields)
+        if code.startswith("backup_host_"):
+            assert "hypervisor" in fields, code
 
 
 @pytest.mark.parametrize("lang", sorted(LANGS))

@@ -637,6 +637,18 @@
     "command_refused_backup_unmapped": {
       "message": "{node}: not installed - hub.yaml names no PBS group for this host (backup.guests)."
     },
+    "command_refused_backup_host_unknown": {
+      "message": "{node}: not installed - the backup before the install is made by {hypervisor}, and the hub does not know that host. Check before_install in hub.yaml."
+    },
+    "command_refused_backup_host_not_approved": {
+      "message": "{node}: not installed - the backup before the install is made by {hypervisor}, and its agent is not approved at the hub."
+    },
+    "command_refused_backup_host_no_guest_backup": {
+      "message": "{node}: not installed - the backup before the install is made by {hypervisor}, and its agent makes no backups: its agent.yaml has no guest_backup, or the agent is too old."
+    },
+    "command_refused_backup_host_offline": {
+      "message": "{node}: not installed - the backup before the install is made by {hypervisor}, and its agent is offline. Install again once it is back."
+    },
     "command_refused_backup_host_unavailable": {
       "message": "{node}: not installed - the backup before the install is made by {hypervisor}, and its agent is not there (offline, not approved, or without guest_backup)."
     },
@@ -707,6 +719,10 @@
           "command_refused_backup_missing": "The hub refused the install on {node}: PBS has no backup in {group}.",
           "command_refused_backup_unreachable": "The hub refused the install on {node}: Proxmox Backup Server does not answer, so the backup cannot be checked.",
           "command_refused_backup_unmapped": "The hub refused the install on {node}: hub.yaml names no PBS group for this host (backup.guests).",
+          "command_refused_backup_host_unknown": "The hub refused the install on {node}: the backup before the install is made by {hypervisor}, and the hub does not know that host. Check before_install in hub.yaml.",
+          "command_refused_backup_host_not_approved": "The hub refused the install on {node}: the backup before the install is made by {hypervisor}, and its agent is not approved at the hub.",
+          "command_refused_backup_host_no_guest_backup": "The hub refused the install on {node}: the backup before the install is made by {hypervisor}, and its agent makes no backups: its agent.yaml has no guest_backup, or the agent is too old.",
+          "command_refused_backup_host_offline": "The hub refused the install on {node}: the backup before the install is made by {hypervisor}, and its agent is offline. Install again once it is back.",
           "command_refused_backup_host_unavailable": "The hub refused the install on {node}: the backup before the install is made by {hypervisor}, and its agent is not there (offline, not approved, or without guest_backup)."
         }
       }
