@@ -145,7 +145,7 @@ Generated from the files by `python3 docs/adr/check_index.py --write`. `build.sh
 | [0109](0109-the-install-button-installs-at-once.md) | The install button in Home Assistant installs at once, also outside the window | accepted | 2026-11-04 |
 | [0110](0110-the-hub-checks-the-minimum-interval-before-the-backup.md) | The hub checks the minimum interval before it has a guest backed up | accepted | 2026-11-04 |
 | [0111](0111-shorter-minimum-age-for-security-fixes.md) | A shorter minimum age for releases that fix a known vulnerability | accepted | 2026-11-04 |
-| [0112](0112-windows-time-zone-through-the-cldr-table.md) | The Windows agent reports its time zone through the CLDR table | proposed | 2026-11-05 |
+| [0112](0112-windows-time-zone-through-the-cldr-table.md) | The Windows agent reports its time zone through the CLDR table | accepted | 2026-11-05 |
 | [0113](0113-report-outdated-container-images.md) | Report outdated container images: same tag rebuilt, or a newer tag of the same form | accepted | 2026-11-05 |
 | [0114](0114-agent-names-its-run-and-the-hub-acknowledges-results.md) | The agent names its running job in the hello, and the hub acknowledges final results | accepted | 2026-11-05 |
 | [0115](0115-recognize-images-compose-built-on-the-host.md) | Recognize images Compose built on the host | accepted | 2026-11-05 |

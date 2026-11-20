@@ -1,7 +1,7 @@
 ---
-status: proposed
+status: accepted
 date: 2026-11-05
-decision-makers: proposed by Claude (work kay asked for on 2026-11-04, "eigenständig umsetzen"); kay decides with the merge
+decision-makers: kay (asked for the work on 2026-11-04, "eigenständig umsetzen"; merged the implementation on 2026-11-05; accepted on 2026-11-20); proposed by Claude
 ---
 
 # The Windows agent reports its time zone through the CLDR table
