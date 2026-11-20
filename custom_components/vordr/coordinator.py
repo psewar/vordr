@@ -75,6 +75,8 @@ FINGERPRINT_PATTERN = re.compile(r"[0-9a-f]{64}")
 WAITING_OS_MAX = 64
 # ADR-0192: the kind of the waiting host's repair while it is fixable, in the issue's data (repairs.py).
 APPROVE_HOST_KIND = "approve_host"
+# ADR-0203: the kind and the text key of the problem repair while its fix installs what a button takes.
+STALE_INSTALL_KIND = "stale_install"
 
 
 def valid_reason(value: Any) -> str:
@@ -174,6 +176,31 @@ def only_failed_install(problem: dict[str, Any] | None, host: dict[str, Any] | N
     """The problem is nothing but the kept failed install: the install-again repair carries all of it."""
     failed = failed_install(host)
     return bool(problem) and failed is not None and problem_reasons(problem) == {str(failed.get("state", ""))}
+
+
+def stale_install_command(problem: dict[str, Any] | None, host: dict[str, Any] | None) -> str:
+    """ADR-0203: the command the fix of a stale problem sends - that of the button whose updates the hub counts as
+    installable (ADR-0106): "install" where it offers the install button, else "install_security" where it offers the
+    button for security updates. Empty where the fix does not apply: the problem is not stale alone, the hub sends no
+    count (an older hub), or the button takes none of the pending updates."""
+    if not problem or problem_reasons(problem) != {"stale"}:
+        return ""
+    installable = (host or {}).get("installable")
+    if type(installable) is not int or installable <= 0:
+        return ""
+    caps = (host or {}).get("capabilities") or {}
+    if caps.get("install"):
+        return "install"
+    if caps.get("install_security"):
+        return "install_security"
+    return ""
+
+
+def stale_install_names(host: dict[str, Any] | None) -> dict[str, str]:
+    """What the fix dialog of a stale problem names: how many pending updates the button takes, of how many; "?" while
+    the host's state is not known right now."""
+    host = host or {}
+    return {"installable": str(host.get("installable", "?")), "pending": str(host.get("pending", "?"))}
 
 
 def failed_install_names(host: dict[str, Any] | None) -> dict[str, str]:
@@ -370,10 +397,13 @@ class VordrCoordinator(DataUpdateCoordinator[VordrData]):
             self.hass.bus.async_fire(EVENT_PROBLEM, self._problem_event(node, problem, limits, reboot, host))
         carried = only_failed_install(problem, host) and install_again_offered(host)
         text_key = problem_key(problem, reboot, host) if problem else None
+        if text_key is not None and stale_install_command(problem, host):
+            text_key = STALE_INSTALL_KIND  # the repair has a fix now, and with it another text (ADR-0203)
         if changed or snapshot or carried != self._carried.get(node, False) or text_key != self._text_keys.get(node):
             # After a reconnect too: the hub's limits, which the repair names, may have changed. And when the
             # install-again repair starts or stops carrying the problem (capability or failed install changed), or the
-            # same problem needs another text (the host's reboot or install offer changed; no event for that).
+            # same problem needs another text or gains or loses its fix (the host's reboot or install offer changed; no
+            # event for that).
             self._problem_issue(node, problem, limits, reboot, host)
         self._problems[node] = problem
         self._packages[node] = packages
@@ -488,6 +518,21 @@ class VordrCoordinator(DataUpdateCoordinator[VordrData]):
             # that is nothing but a kept failed install in the install-again repair (ADR-0148); both can also act.
             # The problem sensor and event stay as they are.
             ir.async_delete_issue(self.hass, DOMAIN, issue_id)
+            return
+        if stale_install_command(problem, host):
+            # ADR-0203: updates pending too long that a button takes - the fix installs them, as that button would. A
+            # fixable repair shows its text in the fix dialog (hassfest allows a description or a fix flow, not both),
+            # which names the counts when it opens. The problem sensor and event keep the stale text.
+            ir.async_create_issue(
+                self.hass,
+                DOMAIN,
+                issue_id,
+                is_fixable=True,
+                severity=ir.IssueSeverity.WARNING,
+                translation_key=STALE_INSTALL_KIND,
+                translation_placeholders={"node": node, **stale_install_names(host)},
+                data={"entry_id": self.config_entry.entry_id, "node": node, "kind": STALE_INSTALL_KIND},
+            )
             return
         ir.async_create_issue(
             self.hass,

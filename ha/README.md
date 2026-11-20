@@ -71,6 +71,10 @@ was checked and has nothing to update, e.g. as a template condition
   again" where Vördr may install: once the cause is fixed, "Fix" installs again, and a run that goes through clears it,
   even with nothing left to install
   ([ADR-0148](../docs/adr/0148-a-kept-failed-install-is-a-repair-that-installs-again.md)).
+- Updates pending too long that a button of the host takes make their repair hint fixable: "Fix" installs them as that
+  button would, and the hint goes once they are installed. Where the host's policy lets no button take them, the hint
+  says how to install them instead
+  ([ADR-0203](../docs/adr/0203-the-stale-repair-installs-what-a-button-takes.md)).
 - A host waiting for approval at the hub shows up as a repair hint (a warning) with the fingerprint the hub saw and the
   command for the hub, `vordr-hub approve <node> --fingerprint <fp>`. Compare the fingerprint with
   `vordr-agent identity` on the host first. The hint goes once the host is approved, rejected or forgotten

@@ -18,7 +18,14 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.vordr import agent_install as ai, ai_explain as ax, ha_updates as hu, ha_updates_installer as hi
 from custom_components.vordr.const import CODES, DOMAIN, REASONS
-from custom_components.vordr.coordinator import BACKUP_REFUSALS, reboot_held, refusal, waiting_hosts
+from custom_components.vordr.coordinator import (
+    BACKUP_REFUSALS,
+    STALE_INSTALL_KIND,
+    reboot_held,
+    refusal,
+    stale_install_names,
+    waiting_hosts,
+)
 from custom_components.vordr.repairs import (
     APPROVE_REFUSALS,
     CONF_FINGERPRINT,
@@ -26,6 +33,7 @@ from custom_components.vordr.repairs import (
     FORM_INVALID,
     InstallAgainFlow,
     RebootFlow,
+    StaleInstallFlow,
     approve_refusal,
 )
 from custom_components.vordr.texts import TEXT_KEYS, Texts, placeholders, problem_key, reboot_key, reboot_names
@@ -136,7 +144,11 @@ def test_repair_refusals_have_their_texts(lang: str) -> None:
     """Each code a repair flow says why for has its text in the flow's dialog, under the key the buttons use, and the
     text needs no placeholder the refusal does not fill; any other code shows as command_refused. No refusal text is
     left unused."""
-    for flow, issue in ((RebootFlow, "reboot_required"), (InstallAgainFlow, "install_again")):
+    for flow, issue in (
+        (RebootFlow, "reboot_required"),
+        (InstallAgainFlow, "install_again"),
+        (StaleInstallFlow, STALE_INSTALL_KIND),
+    ):
         abort = LANGS[lang]["issues"][issue]["fix_flow"]["abort"]
         used = set()
         for code in (*flow.refusals, "some_future_code"):
@@ -145,6 +157,30 @@ def test_repair_refusals_have_their_texts(lang: str) -> None:
             assert "node" in fields and fields <= set(names), (issue, code, fields)
             used.add(key)
         assert used == {k for k in abort if k.startswith("command_refused")}, issue
+
+
+@pytest.mark.parametrize("lang", sorted(LANGS))
+def test_stale_install_texts(lang: str) -> None:
+    """ADR-0203: the fixable stale repair names the host in its title; its dialog names the counts the flow fills, and
+    each reason the flow aborts with has its text, with no placeholder beyond the host. The refusals of the hub read as
+    those of the install-again repair, without "again"."""
+    issue = LANGS[lang]["issues"][STALE_INSTALL_KIND]
+    fields = {f for _, f, _, _ in string.Formatter().parse(issue["title"]) if f}
+    assert fields == {"node"}
+    confirm = issue["fix_flow"]["step"]["confirm"]
+    for text in confirm.values():
+        fields = {f for _, f, _, _ in string.Formatter().parse(text) if f}
+        assert fields <= {"node", *stale_install_names(None)}, fields
+    described = {f for _, f, _, _ in string.Formatter().parse(confirm["description"]) if f}
+    assert described == {"node", *stale_install_names(None)}
+    abort = issue["fix_flow"]["abort"]
+    for reason in ("hub_not_connected", "host_gone", "no_longer_needed", "install_not_offered"):
+        fields = {f for _, f, _, _ in string.Formatter().parse(abort[reason]) if f}
+        assert fields <= {"node"}, (reason, fields)
+    again = LANGS[lang]["issues"]["install_again"]["fix_flow"]["abort"]
+    assert {k for k in abort if k.startswith("command_refused")} == {
+        k for k in again if k.startswith("command_refused")
+    }
 
 
 @pytest.mark.parametrize("lang", sorted(LANGS))

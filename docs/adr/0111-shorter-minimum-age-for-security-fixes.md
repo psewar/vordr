@@ -1,7 +1,7 @@
 ---
-status: proposed
+status: accepted
 date: 2026-11-04
-decision-makers: kay (2026-11-04, asked whether 7 days are too long now that vulnerabilities are exploited within days; chose 2 days with a floor of 1 and the normal age for the rest of the plan, "Ja, so umsetzen"); proposed by Claude
+decision-makers: kay (2026-11-04, asked whether 7 days are too long now that vulnerabilities are exploited within days; chose 2 days with a floor of 1 and the normal age for the rest of the plan, "Ja, so umsetzen"; accepted on 2026-11-20); proposed by Claude
 ---
 
 # A shorter minimum age for releases that fix a known vulnerability

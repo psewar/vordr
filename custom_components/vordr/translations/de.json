@@ -782,6 +782,36 @@
         }
       }
     },
+    "stale_install": {
+      "title": "Vördr: ausstehende Updates auf {node} installieren",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Ausstehende Updates auf {node} installieren?",
+            "description": "Auf {node} liegen Updates länger, als die Leitstelle erlaubt. Der Installieren-Knopf des Hosts nimmt {installable} seiner {pending} ausstehenden Updates. Jetzt installieren: Vördr bittet die Leitstelle um denselben Install wie dieser Knopf, auch ausserhalb des Fensters des Hosts, mit Backup-Prüfung und Mindestabstand wie immer. Hat der Lauf sie installiert, verschwinden das Problem und diese Reparatur; Updates, die der Knopf nicht nimmt, bleiben ausstehend."
+          }
+        },
+        "abort": {
+          "hub_not_connected": "Home Assistant ist gerade nicht mit der Vördr-Leitstelle verbunden. Bitte später noch einmal versuchen.",
+          "host_gone": "Die Leitstelle kennt {node} nicht mehr.",
+          "no_longer_needed": "Auf {node} liegen keine Updates mehr zu lange.",
+          "install_not_offered": "Der Installieren-Knopf von {node} nimmt keines der ausstehenden Updates mehr, oder ein anderes Problem ist dazugekommen. Die Reparatur nennt den nächsten Schritt.",
+          "command_refused": "Die Leitstelle hat den Install auf {node} abgelehnt (Code {code}).",
+          "command_refused_role_forbids": "Die Leitstelle hat den Install auf {node} abgelehnt: Dieses Home Assistant darf ihn nicht auslösen - seine Rolle an der Leitstelle erlaubt es nicht (vordr-hub client-role).",
+          "command_refused_outside_window": "Die Leitstelle hat den Install auf {node} abgelehnt: Das Fenster des Hosts ist zu, und sein Agent ist zu alt, um ausserhalb davon zu installieren. Agent aktualisieren oder das Fenster abwarten.",
+          "command_refused_rate_limited": "Die Leitstelle hat den Install auf {node} abgelehnt: Sein letzter Lauf ist weniger lang her als sein Mindestabstand (install.min_interval_h). Wieder möglich ab {next}.",
+          "command_refused_backup_stale": "Die Leitstelle hat den Install auf {node} abgelehnt: Das letzte Backup ({group}) ist {age} h alt, erlaubt sind {max} h. Erst sichern, dann installieren.",
+          "command_refused_backup_missing": "Die Leitstelle hat den Install auf {node} abgelehnt: PBS hat kein Backup in {group}.",
+          "command_refused_backup_unreachable": "Die Leitstelle hat den Install auf {node} abgelehnt: Proxmox Backup Server antwortet nicht, das Backup ist nicht prüfbar.",
+          "command_refused_backup_unmapped": "Die Leitstelle hat den Install auf {node} abgelehnt: In hub.yaml ist für diesen Host keine PBS-Gruppe eingetragen (backup.guests).",
+          "command_refused_backup_host_unknown": "Die Leitstelle hat den Install auf {node} abgelehnt: Das Backup vor der Installation macht {hypervisor}, und diesen Host kennt die Leitstelle nicht. before_install in hub.yaml prüfen.",
+          "command_refused_backup_host_not_approved": "Die Leitstelle hat den Install auf {node} abgelehnt: Das Backup vor der Installation macht {hypervisor}, und dessen Agent ist an der Leitstelle nicht freigegeben.",
+          "command_refused_backup_host_no_guest_backup": "Die Leitstelle hat den Install auf {node} abgelehnt: Das Backup vor der Installation macht {hypervisor}, und dessen Agent macht keine Backups: In seiner agent.yaml fehlt guest_backup, oder der Agent ist zu alt.",
+          "command_refused_backup_host_offline": "Die Leitstelle hat den Install auf {node} abgelehnt: Das Backup vor der Installation macht {hypervisor}, und dessen Agent ist offline. Installieren, sobald er wieder da ist.",
+          "command_refused_backup_host_unavailable": "Die Leitstelle hat den Install auf {node} abgelehnt: Das Backup vor der Installation macht {hypervisor}, und dessen Agent ist nicht da (offline, nicht freigegeben oder ohne guest_backup)."
+        }
+      }
+    },
     "problem_offline": {
       "title": "Vördr: Update-Problem auf {node}",
       "description": "Seit über {offline_minutes} Minuten nicht mit der Leitstelle verbunden.\n\nNächster Schritt: Host und Agent prüfen."

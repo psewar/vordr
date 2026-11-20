@@ -782,6 +782,36 @@
         }
       }
     },
+    "stale_install": {
+      "title": "Vördr: install the pending updates on {node}",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Install the pending updates on {node}?",
+            "description": "Updates have been pending on {node} for longer than the hub allows. The host's install button takes {installable} of its {pending} pending updates. Install them now: Vördr asks the hub for the same install as that button, also outside the host's window, with the backup check and the minimum interval as always. Once the run has installed them, the problem and this repair are gone; updates the button does not take stay pending."
+          }
+        },
+        "abort": {
+          "hub_not_connected": "Home Assistant is not connected to the Vördr hub right now. Try again once it is.",
+          "host_gone": "The hub no longer knows {node}.",
+          "no_longer_needed": "No updates have been pending too long on {node} any more.",
+          "install_not_offered": "The install button of {node} takes none of the pending updates any more, or another problem came along. The repair names the next step.",
+          "command_refused": "The hub refused the install on {node} (code {code}).",
+          "command_refused_role_forbids": "The hub refused the install on {node}: this Home Assistant may not start it - its role at the hub does not allow it (vordr-hub client-role).",
+          "command_refused_outside_window": "The hub refused the install on {node}: the host's window is closed, and its agent is too old to install outside it. Update the agent, or wait for the window.",
+          "command_refused_rate_limited": "The hub refused the install on {node}: its last run was less than its minimum interval (install.min_interval_h) ago. Possible again from {next}.",
+          "command_refused_backup_stale": "The hub refused the install on {node}: the last backup ({group}) is {age} h old, at most {max} h are allowed. Back up first, then install.",
+          "command_refused_backup_missing": "The hub refused the install on {node}: PBS has no backup in {group}.",
+          "command_refused_backup_unreachable": "The hub refused the install on {node}: Proxmox Backup Server does not answer, so the backup cannot be checked.",
+          "command_refused_backup_unmapped": "The hub refused the install on {node}: hub.yaml names no PBS group for this host (backup.guests).",
+          "command_refused_backup_host_unknown": "The hub refused the install on {node}: the backup before the install is made by {hypervisor}, and the hub does not know that host. Check before_install in hub.yaml.",
+          "command_refused_backup_host_not_approved": "The hub refused the install on {node}: the backup before the install is made by {hypervisor}, and its agent is not approved at the hub.",
+          "command_refused_backup_host_no_guest_backup": "The hub refused the install on {node}: the backup before the install is made by {hypervisor}, and its agent makes no backups: its agent.yaml has no guest_backup, or the agent is too old.",
+          "command_refused_backup_host_offline": "The hub refused the install on {node}: the backup before the install is made by {hypervisor}, and its agent is offline. Install once it is back.",
+          "command_refused_backup_host_unavailable": "The hub refused the install on {node}: the backup before the install is made by {hypervisor}, and its agent is not there (offline, not approved, or without guest_backup)."
+        }
+      }
+    },
     "problem_offline": {
       "title": "Vördr: update problem on {node}",
       "description": "Not connected to the hub for more than {offline_minutes} minutes.\n\nNext step: Check the host and its agent."

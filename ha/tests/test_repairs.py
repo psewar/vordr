@@ -1,9 +1,10 @@
 """The reboot repair (ADR-0132): from the first report, fixable where the hub offers the reboot, gone once the host no
 longer needs one; one repair for the long-pending reboot instead of two. The install-again repair (ADR-0148): a kept
-failed install is fixable where the hub offers the install, and gone with the failure. Both say why the hub refused
-their command, as the buttons do. The waiting-host repair (ADR-0157): a host waiting for approval names the command
-for the hub and goes once the hub decided; where the hub lets this Home Assistant approve hosts, its fix approves the
-host with the fingerprint read on the host (ADR-0192)."""
+failed install is fixable where the hub offers the install, and gone with the failure. The stale repair (ADR-0203):
+updates pending too long that a button takes are fixable, and the fix sends that button's command. Each says why the
+hub refused its command, as the buttons do. The waiting-host repair (ADR-0157): a host waiting for approval names the
+command for the hub and goes once the hub decided; where the hub lets this Home Assistant approve hosts, its fix
+approves the host with the fingerprint read on the host (ADR-0192)."""
 
 from __future__ import annotations
 
@@ -395,6 +396,112 @@ async def test_install_again_refused_says_why(hass: HomeAssistant, fake_hub: Fak
         assert result["type"] is FlowResultType.ABORT and result["reason"] == "command_refused", code
         assert result["description_placeholders"] == {"node": "h", "code": code}
     assert issue(hass, "install_again_h") is not None
+
+
+STALE = {"reason": "stale", "reasons": ["stale"]}
+SECURITY_BUTTON = {**CANNOT, "install_security": True}
+
+
+async def test_stale_repair_installs_what_the_button_takes(
+    hass: HomeAssistant, fake_hub: FakeHub, entry: MockConfigEntry
+) -> None:
+    """ADR-0203: updates pending too long that the install button takes make a fixable repair. Its dialog names how
+    many of them the button takes, its fix sends the button's install, and the repair goes with the problem. The
+    problem sensor keeps the stale text."""
+    fake_hub.hosts["h"] = host_view("h", capabilities=INSTALLS, problem=STALE, installable=2, pending=3)
+    await setup(hass, entry)
+    stale = issue(hass, "problem_h")
+    assert stale is not None and stale.is_fixable and stale.translation_key == "stale_install"
+    assert stale.translation_placeholders == {"node": "h", "installable": "2", "pending": "3"}
+    assert hass.states.get("binary_sensor.vordr_h_problem").attributes["next_step"] == "stale"
+    flow = await start_fix(hass, "problem_h")
+    assert flow["description_placeholders"] == {"node": "h", "installable": "2", "pending": "3"}
+    result = await confirm(hass, flow)
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert fake_hub.commands[-1]["command"] == "install" and fake_hub.commands[-1]["node"] == "h"
+    assert "reason" not in fake_hub.commands[-1]  # as the button: the hub gives the reason outside the window
+    # The run installed them: the problem ends, and with it the repair.
+    await fake_hub.push_host(host_view("h", capabilities=INSTALLS, pending=0, security=0, installable=0))
+    await wait_until(lambda: issue(hass, "problem_h") is None)
+
+
+async def test_stale_repair_sends_the_security_button_where_it_is_the_only_one(
+    hass: HomeAssistant, fake_hub: FakeHub, entry: MockConfigEntry
+) -> None:
+    """Without the install button the hub counts the security updates as installable (ADR-0106): the fix sends the
+    command of the button for security updates."""
+    fake_hub.hosts["h"] = host_view("h", capabilities=SECURITY_BUTTON, problem=STALE, installable=1)
+    await setup(hass, entry)
+    assert issue(hass, "problem_h").is_fixable
+    result = await confirm(hass, await start_fix(hass, "problem_h"))
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert fake_hub.commands[-1]["command"] == "install_security" and fake_hub.commands[-1]["node"] == "h"
+
+
+async def test_stale_repair_without_a_fix(hass: HomeAssistant, fake_hub: FakeHub, entry: MockConfigEntry) -> None:
+    """No fix where no button takes the pending updates (the texts of ADR-0197), where the hub sends no count (an older
+    hub), where the host offers no install button at all, and where the problem has another reason besides stale:
+    installing would not end it."""
+    other = {"reason": "stale", "reasons": ["stale", "offline"]}
+    fake_hub.hosts["policy"] = host_view("policy", capabilities=INSTALLS, problem=STALE, installable=0)
+    fake_hub.hosts["older"] = host_view("older", capabilities=INSTALLS, problem=STALE)
+    fake_hub.hosts["none"] = host_view("none", capabilities=CANNOT, problem=STALE, installable=2)
+    fake_hub.hosts["both"] = host_view("both", capabilities=INSTALLS, problem=other, installable=2)
+    await setup(hass, entry)
+    for node, key in (
+        ("policy", "problem_stale_policy"),
+        ("older", "problem_stale"),
+        ("none", "problem_stale"),
+        ("both", "problem_stale"),
+    ):
+        found = issue(hass, f"problem_{node}")
+        assert found is not None and found.translation_key == key and not found.is_fixable, node
+
+
+async def test_stale_install_checks_again_at_confirmation(
+    hass: HomeAssistant, fake_hub: FakeHub, entry: MockConfigEntry
+) -> None:
+    """Each change between opening and confirming has its own reason, and no command goes out: the button takes none
+    of the updates any more, or the problem is gone."""
+    fake_hub.hosts["h"] = host_view("h", capabilities=INSTALLS, problem=STALE, installable=2)
+    await setup(hass, entry)
+    sent = len(fake_hub.commands)
+
+    flow = await start_fix(hass, "problem_h")
+    await fake_hub.push_host(host_view("h", capabilities=INSTALLS, problem=STALE, installable=0))
+    await wait_until(lambda: issue(hass, "problem_h").translation_key == "problem_stale_policy")
+    result = await confirm(hass, flow)
+    assert result["type"] is FlowResultType.ABORT and result["reason"] == "install_not_offered"
+
+    await fake_hub.push_host(host_view("h", capabilities=INSTALLS, problem=STALE, installable=2))
+    await wait_until(lambda: issue(hass, "problem_h").is_fixable)
+    flow = await start_fix(hass, "problem_h")
+    await fake_hub.push_host(host_view("h", capabilities=INSTALLS))
+    await wait_until(lambda: issue(hass, "problem_h") is None)
+    result = await confirm(hass, flow)
+    assert result["type"] is FlowResultType.ABORT and result["reason"] == "no_longer_needed"
+    assert len(fake_hub.commands) == sent
+
+
+async def test_stale_install_refused_says_why(hass: HomeAssistant, fake_hub: FakeHub, entry: MockConfigEntry) -> None:
+    """A refusal by the hub says why, as the install button does; any other code is named as it is. Every abort leaves
+    the repair and its fix."""
+    nxt = dt_util.utcnow().replace(microsecond=0) + timedelta(hours=5)
+    view = {"capabilities": INSTALLS, "problem": STALE, "installable": 2, "next_install": nxt.isoformat()}
+    fake_hub.hosts["h"] = host_view("h", **view)
+    await setup(hass, entry)
+
+    fake_hub.command_code = "rate_limited"
+    result = await confirm(hass, await start_fix(hass, "problem_h"))
+    assert result["type"] is FlowResultType.ABORT and result["reason"] == "command_refused_rate_limited"
+    assert result["description_placeholders"] == {"node": "h", "next": local_time(nxt)}
+
+    fake_hub.command_code = "queue_full"
+    result = await confirm(hass, await start_fix(hass, "problem_h"))
+    assert result["type"] is FlowResultType.ABORT and result["reason"] == "command_refused"
+    assert result["description_placeholders"] == {"node": "h", "code": "queue_full"}
+    assert [c["command"] for c in fake_hub.commands[-2:]] == ["install", "install"]
+    assert issue(hass, "problem_h").is_fixable
 
 
 FP_NEW = "ab" * 32

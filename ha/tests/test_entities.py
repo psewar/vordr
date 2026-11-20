@@ -373,10 +373,15 @@ async def test_stale_hint_names_a_way_that_exists(
     await hass.async_block_till_done()
     assert reg.async_get_issue(DOMAIN, "problem_h").translation_key == "problem_stale_policy"
 
-    # The button takes some of them: the text names it again.
+    # The button takes some of them: the repair can install them (ADR-0203); the sensor names the button again.
     await fake_hub.push_host(host_view("h", capabilities=security, problem=stale, installable=1))
-    await wait_until(lambda: reg.async_get_issue(DOMAIN, "problem_h").translation_key == "problem_stale")
+    await wait_until(lambda: reg.async_get_issue(DOMAIN, "problem_h").translation_key == "stale_install")
+    assert reg.async_get_issue(DOMAIN, "problem_h").is_fixable
     assert hass.states.get("binary_sensor.vordr_h_problem").attributes["next_step"] == "stale"
+    # A hub without the count: the text names the button, and there is no fix.
+    await fake_hub.push_host(host_view("h", capabilities=security, problem=stale))
+    await wait_until(lambda: reg.async_get_issue(DOMAIN, "problem_h").translation_key == "problem_stale")
+    assert not reg.async_get_issue(DOMAIN, "problem_h").is_fixable
     assert len(problems) == 1
 
 

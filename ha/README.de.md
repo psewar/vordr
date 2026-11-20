@@ -72,6 +72,10 @@ Host wurde geprüft und hat nichts zu aktualisieren, z. B. als Template-Bedingun
   Reparaturhinweis „erneut installieren“, wo Vördr installieren darf: Ist die Ursache behoben, installiert „Beheben“
   erneut, und ein Lauf, der durchläuft, löscht ihn, auch wenn nichts mehr zu installieren ist
   ([ADR-0148](../docs/adr/0148-a-kept-failed-install-is-a-repair-that-installs-again.md)).
+- Zu lange ausstehende Updates, die ein Knopf des Hosts nimmt, machen ihren Reparaturhinweis behebbar: „Beheben“
+  installiert sie, wie der Knopf es täte, und der Hinweis verschwindet, sobald sie installiert sind. Wo die Richtlinie
+  des Hosts keinen Knopf sie nehmen lässt, sagt der Hinweis stattdessen, wie sie zu installieren sind
+  ([ADR-0203](../docs/adr/0203-the-stale-repair-installs-what-a-button-takes.md)).
 - Ein Host, der an der Leitstelle auf Freigabe wartet, steht als Reparaturhinweis (eine Warnung) mit dem Fingerprint,
   den die Leitstelle gesehen hat, und dem Befehl für die Leitstelle, `vordr-hub approve <node> --fingerprint <fp>`.
   Zuerst den Fingerprint mit `vordr-agent identity` auf dem Host vergleichen. Der Hinweis verschwindet, sobald der Host

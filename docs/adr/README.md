@@ -143,8 +143,8 @@ Generated from the files by `python3 docs/adr/check_index.py --write`. `build.sh
 | [0107](0107-ring-delay-per-update-ended-by-a-clean-canary-run.md) | The ring delay counts per update, and a clean canary run ends it | accepted | 2026-11-04 |
 | [0108](0108-automatic-installs-take-every-update-on-linux-guests.md) | Automatic installs take every pending update on Linux guests, not only security updates | accepted | 2026-11-04 |
 | [0109](0109-the-install-button-installs-at-once.md) | The install button in Home Assistant installs at once, also outside the window | accepted | 2026-11-04 |
-| [0110](0110-the-hub-checks-the-minimum-interval-before-the-backup.md) | The hub checks the minimum interval before it has a guest backed up | proposed | 2026-11-04 |
-| [0111](0111-shorter-minimum-age-for-security-fixes.md) | A shorter minimum age for releases that fix a known vulnerability | proposed | 2026-11-04 |
+| [0110](0110-the-hub-checks-the-minimum-interval-before-the-backup.md) | The hub checks the minimum interval before it has a guest backed up | accepted | 2026-11-04 |
+| [0111](0111-shorter-minimum-age-for-security-fixes.md) | A shorter minimum age for releases that fix a known vulnerability | accepted | 2026-11-04 |
 | [0112](0112-windows-time-zone-through-the-cldr-table.md) | The Windows agent reports its time zone through the CLDR table | proposed | 2026-11-05 |
 | [0113](0113-report-outdated-container-images.md) | Report outdated container images: same tag rebuilt, or a newer tag of the same form | accepted | 2026-11-05 |
 | [0114](0114-agent-names-its-run-and-the-hub-acknowledges-results.md) | The agent names its running job in the hello, and the hub acknowledges final results | accepted | 2026-11-05 |
@@ -236,4 +236,7 @@ Generated from the files by `python3 docs/adr/check_index.py --write`. `build.sh
 | [0200](0200-the-agent-itself-finds-processes-running-replaced-libraries.md) | The agent itself finds processes running replaced libraries | accepted | 2026-11-19 |
 | [0201](0201-the-reboot-repair-names-its-reason-and-the-services-to-restart.md) | The reboot repair names its reason and the services to restart | accepted | 2026-11-19 |
 | [0202](0202-entities-carry-a-category-by-their-role.md) | Entities carry a category by their role | accepted | 2026-11-19 |
+| [0203](0203-the-stale-repair-installs-what-a-button-takes.md) | The stale repair installs what a button takes | accepted | 2026-11-20 |
+| [0204](0204-the-firewall-reports-what-its-own-updater-offers.md) | The firewall reports what its own updater offers | proposed | 2026-11-20 |
+| [0205](0205-the-firewall-installs-through-its-own-updater-by-button.md) | The firewall installs through its own updater, by button | proposed | 2026-11-20 |
 <!-- adr-index:end -->

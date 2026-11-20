@@ -328,6 +328,19 @@ Aus, solange `hub.yaml` nicht `ha_approves_hosts: true` setzt; `check-config` ne
     wieder, bleibt beides;
   - besteht das Problem nur aus dem festgehaltenen Install, entfällt dafür `problem_<node>` (Problem-Sensor und
     `vordr_problem` bleiben); ohne angebotenen Install bleibt `problem_<node>` wie bisher.
+- **Zu lange ausstehende Updates aus ihrem Reparaturhinweis installieren:** `problem_<node>` ist behebbar, mit dem Text
+  `stale_install`, solange sein Problem allein `stale` ist, die Leitstelle `installable` über null schickt und ein Knopf
+  sie nimmt: der Installieren-Knopf (Fähigkeit `install`) oder, wo er der einzige ist, der Knopf für Sicherheitsupdates
+  (`install_security`) ([ADR-0203](../docs/adr/0203-the-stale-repair-installs-what-a-button-takes.md)):
+  - sein Dialog zum Beheben nennt, wie viele der ausstehenden Updates der Knopf nimmt, aus dem Stand des Hosts beim
+    Öffnen; „Beheben“ bestätigt und schickt dann den Befehl dieses Knopfs (`install` oder `install_security`), ohne
+    Grund, wie der Knopf; beim Bestätigen erneut geprüft (Verbindung, Host, Problem, Knopf und Zahl), jede Absage mit
+    eigenem Grund, und die Absagen der Leitstelle haben die Texte des Installieren-Knopfs;
+  - ein Lauf, der sie installiert, beendet das Problem, und der Hinweis verschwindet mit ihm; Updates, die kein Knopf
+    nimmt, halten ihn;
+  - `next_step` des Problem-Sensors und `vordr_problem` behalten den Text von `stale`; ohne Zahl (eine ältere
+    Leitstelle), mit einem weiteren Grund neben `stale` oder wo kein Knopf die Updates nimmt, behält der Hinweis seinen
+    Text ohne Beheben.
 - **Wartender Host als Reparaturhinweis** `waiting_<node>`, solange die Leitstelle den Host als wartend auf Freigabe
   führt ([ADR-0157](../docs/adr/0157-a-waiting-host-is-a-repair-that-names-the-approval-command.md)):
   - eine Warnung: Ein neuer Host ist eine Nachricht, kein Alarm;

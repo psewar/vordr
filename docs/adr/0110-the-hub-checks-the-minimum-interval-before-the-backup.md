@@ -1,7 +1,7 @@
 ---
-status: proposed
+status: accepted
 date: 2026-11-04
-decision-makers: kay (2026-11-04, "und die Verbesserung umsetzen", after an install refused for the minimum interval had its guest backed up first); proposed by Claude
+decision-makers: kay (2026-11-04, "und die Verbesserung umsetzen", after an install refused for the minimum interval had its guest backed up first; accepted on 2026-11-20); proposed by Claude
 ---
 
 # The hub checks the minimum interval before it has a guest backed up

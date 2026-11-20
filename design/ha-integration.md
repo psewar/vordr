@@ -316,6 +316,17 @@ Off unless `hub.yaml` sets `ha_approves_hosts: true`; `check-config` names it ei
   - a run that goes through clears the failure at the hub, and the repair goes with it; one that fails again keeps both;
   - if the problem consists only of the kept failed install, `problem_<node>` is omitted for it (problem sensor and
     `vordr_problem` stay); without the install offered, `problem_<node>` stays as before.
+- **Installing updates pending too long from their repair:** `problem_<node>` is fixable, with the text `stale_install`,
+  while its problem is `stale` alone, the hub sends `installable` above zero, and a button takes them: the install
+  button (capability `install`), or the button for security updates where it is the only one (`install_security`)
+  ([ADR-0203](../docs/adr/0203-the-stale-repair-installs-what-a-button-takes.md)):
+  - the fix dialog names how many of the pending updates the button takes, from the host's state when it opens; "Fix"
+    confirms, then sends that button's command (`install` or `install_security`), without a reason, as the button
+    does; on confirming it is checked again (connection, host, problem, button and count), each refusal with its own
+    reason, and the hub's refusals have the install button's texts;
+  - a run that installs them ends the problem, and the repair goes with it; updates no button takes keep it;
+  - the problem sensor's `next_step` and `vordr_problem` keep the `stale` text; without the count (an older hub), with
+    another reason besides `stale`, or where no button takes the updates, the repair keeps its text without a fix.
 - **Waiting host as a repair issue** `waiting_<node>` while the hub lists the host as waiting for approval
   ([ADR-0157](../docs/adr/0157-a-waiting-host-is-a-repair-that-names-the-approval-command.md)):
   - a warning: a new host is news, not an alarm;

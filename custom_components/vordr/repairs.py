@@ -1,6 +1,7 @@
 """Repairs with a fix: the reboot a host needs (ADR-0132), installing again after a kept failed install (ADR-0148),
-installing one of Home Assistant's own updates again, at once, after its install failed (ADR-0165, ADR-0182), and
-approving a waiting host where the hub allows it (ADR-0192)."""
+installing updates pending too long that a button takes (ADR-0203), installing one of Home Assistant's own updates
+again, at once, after its install failed (ADR-0165, ADR-0182), and approving a waiting host where the hub allows it
+(ADR-0192)."""
 
 from __future__ import annotations
 
@@ -15,13 +16,17 @@ from .coordinator import (
     APPROVE_HOST_KIND,
     BACKUP_REFUSALS,
     FINGERPRINT_PATTERN,
+    STALE_INSTALL_KIND,
     VordrCoordinator,
     failed_install,
     failed_install_names,
     install_again_offered,
+    problem_reasons,
     reboot_held,
     reboot_required,
     refusal,
+    stale_install_command,
+    stale_install_names,
     waiting_hosts,
 )
 from .ha_updates_installer import FIX_KIND, STARTED, HaUpdatesInstaller, failure_names
@@ -63,6 +68,10 @@ class _HostFlow(RepairsFlow):
         known right now)."""
         return {}
 
+    def _command(self, host: dict[str, Any]) -> str:
+        """The command for host, asked after _still said the fix applies."""
+        return self.command
+
     def _host(self) -> dict[str, Any] | None:
         entry = self.hass.config_entries.async_get_entry(self._entry_id)
         if entry is None or entry.state is not ConfigEntryState.LOADED:
@@ -94,7 +103,7 @@ class _HostFlow(RepairsFlow):
             return self.async_abort(reason=reason, description_placeholders=names)
         if (held := self._held(host)) is not None:
             return self.async_abort(reason=held[0], description_placeholders=held[1])
-        code = await coordinator.command(self._node, self.command)
+        code = await coordinator.command(self._node, self._command(host))
         if code != "ok":
             if code not in self.refusals:
                 return self.async_abort(reason="command_refused", description_placeholders={**names, "code": code})
@@ -149,6 +158,30 @@ class InstallAgainFlow(_HostFlow):
         if not install_again_offered(host):
             return "install_not_offered"
         return ""
+
+
+class StaleInstallFlow(_HostFlow):
+    """Install updates pending too long that a button takes (ADR-0203): the command of the button whose updates the hub
+    counts as installable, the install button or the button for security updates. A run that installs them ends the
+    problem, and with it the repair; updates no button takes keep it."""
+
+    # As the install button: sent without a reason, the hub gives it one outside the window where the agent takes it
+    # (ADR-0109), else outside_window.
+    refusals = frozenset({"role_forbids", "outside_window", "rate_limited", *BACKUP_REFUSALS})
+
+    def _shown(self, host: dict[str, Any] | None) -> dict[str, str]:
+        return stale_install_names(host)
+
+    def _still(self, host: dict[str, Any]) -> str:
+        problem = host.get("problem")
+        if not problem or "stale" not in problem_reasons(problem):
+            return "no_longer_needed"
+        if not stale_install_command(problem, host):
+            return "install_not_offered"
+        return ""
+
+    def _command(self, host: dict[str, Any]) -> str:
+        return stale_install_command(host.get("problem"), host)
 
 
 # ADR-0192: the field of the fix, and its two refusals in the form, where nothing is sent.
@@ -283,12 +316,14 @@ class HaUpdateRetryFlow(RepairsFlow):
 async def async_create_fix_flow(
     hass: HomeAssistant, issue_id: str, data: dict[str, str | int | float | None] | None
 ) -> RepairsFlow:
-    """Home Assistant asks for the flow of a fixable repair: install_again_<node>, reboot_<node>, waiting_<node>, or
-    ha_update_failed_<object id>."""
+    """Home Assistant asks for the flow of a fixable repair: install_again_<node>, reboot_<node>, waiting_<node>,
+    problem_<node> while a button takes its stale updates, or ha_update_failed_<object id>."""
     data = data or {}
     if data.get("kind") == FIX_KIND:
         return HaUpdateRetryFlow(str(data.get("entry_id") or ""), str(data.get("entity_id") or ""))
     if data.get("kind") == APPROVE_HOST_KIND:
         return ApproveHostFlow(str(data.get("entry_id") or ""), str(data.get("node") or ""))
+    if data.get("kind") == STALE_INSTALL_KIND:
+        return StaleInstallFlow(str(data.get("entry_id") or ""), str(data.get("node") or ""))
     flow = InstallAgainFlow if data.get("kind") == "install_again" else RebootFlow
     return flow(str(data.get("entry_id") or ""), str(data.get("node") or ""))
