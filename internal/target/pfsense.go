@@ -242,26 +242,11 @@ func (p *pfsense) Backup(ctx context.Context) ([]byte, string, Result) {
 	return out, ".xml", Result{}
 }
 
-// call runs one call of the forced command. Before ssh it proves the way and the device, so that ssh's own failure
-// can only mean one thing: the address answers (otherwise precheck_repo_unreachable), and the device offers the pinned
-// host key (otherwise failed_target_hostkey). An ssh exit 255 after that is the login: failed_target_auth. Any other
-// exit is the forced command's refusal, whose own answer says why. Decided on these facts, never on ssh's text.
+// call runs one call of the forced command over one connection, ssh's own (ADR-0206). ssh compares the device's host
+// key with the pinned one in the key exchange, before it offers the client key, so a device without the pinned key
+// never sees a login. An exit 255 means ssh did not get through; why is established afterwards (whyNotThrough). Any
+// other exit is the forced command's refusal, whose own answer says why. Decided on facts, never on ssh's text.
 func (p *pfsense) call(ctx context.Context, words string) ([]byte, Result) {
-	d := net.Dialer{Timeout: p.dialTimeout}
-	conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(p.host, p.port))
-	if err != nil {
-		return nil, Result{protocol.CodePrecheckRepoUnreachable, err.Error()}
-	}
-	conn.Close()
-	keyType, _, _ := strings.Cut(p.hostKey, " ")
-	scanned, err := exec.CommandContext(ctx, p.keyscan, "-T", "10", "-p", p.port, "-t", keyType, p.host).Output()
-	if err != nil {
-		return nil, Result{protocol.CodePrecheckRepoUnreachable, "ssh-keyscan: " + err.Error()}
-	}
-	if !offersHostKey(scanned, p.hostKey) {
-		return nil, Result{protocol.CodeFailedTargetHostKey, "the device does not offer the pinned host key " + keyType}
-	}
-
 	dir, err := os.MkdirTemp("", "vordr-ssh-") // 0700; the key lives here only for this call
 	if err != nil {
 		return nil, Result{protocol.CodeFailedTargetAuth, "temporary key file: " + err.Error()}
@@ -291,12 +276,35 @@ func (p *pfsense) call(ctx context.Context, words string) ([]byte, Result) {
 	case err == nil:
 		return stdout.Bytes(), Result{}
 	case errors.As(err, &exit) && exit.ExitCode() == 255:
-		return nil, Result{protocol.CodeFailedTargetAuth, strings.TrimSpace(stderr.String())}
+		return nil, p.whyNotThrough(ctx, strings.TrimSpace(stderr.String()))
 	case errors.As(err, &exit):
 		return nil, Result{protocol.CodeRejectedUnsupported, fmt.Sprintf("the firewall's command refused %q: %s",
 			words, keyValues(stdout.Bytes())["reason"])}
 	}
 	return nil, Result{protocol.CodePrecheckRepoUnreachable, err.Error()}
+}
+
+// whyNotThrough establishes, after ssh ended with 255, why it did not get through: the address does not answer
+// (precheck_repo_unreachable; a login protection that blocks the agent's address looks the same), the device does not
+// offer the pinned host key (failed_target_hostkey), or else the login (failed_target_auth, with ssh's text for
+// people). These probes open connections that end before a login, which a login protection such as sshguard counts
+// as attacks; that is why they run only after a failure and never before each call (ADR-0206).
+func (p *pfsense) whyNotThrough(ctx context.Context, sshText string) Result {
+	d := net.Dialer{Timeout: p.dialTimeout}
+	conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(p.host, p.port))
+	if err != nil {
+		return Result{protocol.CodePrecheckRepoUnreachable, err.Error()}
+	}
+	conn.Close()
+	keyType, _, _ := strings.Cut(p.hostKey, " ")
+	scanned, err := exec.CommandContext(ctx, p.keyscan, "-T", "10", "-p", p.port, "-t", keyType, p.host).Output()
+	if err != nil {
+		return Result{protocol.CodePrecheckRepoUnreachable, "ssh-keyscan: " + err.Error()}
+	}
+	if !offersHostKey(scanned, p.hostKey) {
+		return Result{protocol.CodeFailedTargetHostKey, "the device does not offer the pinned host key " + keyType}
+	}
+	return Result{protocol.CodeFailedTargetAuth, sshText}
 }
 
 // offersHostKey: ssh-keyscan printed "<host> <type> <base64>" with exactly the pinned type and key.

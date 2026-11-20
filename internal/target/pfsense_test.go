@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/psewar/vordr/internal/policy"
@@ -22,12 +23,16 @@ const (
 
 // sshFake puts stand-ins for ssh and ssh-keyscan first in PATH. ssh checks what the driver hands it (key file 0600
 // with the key, known_hosts with exactly the pinned key, no user configuration, batch mode) and answers like the
-// firewall's forced command; FAKE_* in the environment choose the case.
+// firewall's forced command; FAKE_* in the environment choose the case. Like OpenSSH, ssh compares the device's host
+// key with known_hosts in the key exchange, before it offers the client key, and ends with 255 when the port does not
+// answer, the device offers no key or another one, or the login is refused. The listener counts the bare connections
+// to the device, and ssh-keyscan logs each run: both end before a login.
 type sshFake struct {
 	t        *testing.T
 	dir, log string
 	host     string
 	port     string
+	accepts  atomic.Int32
 }
 
 func newSSHFake(t *testing.T) *sshFake {
@@ -41,6 +46,7 @@ func newSSHFake(t *testing.T) *sshFake {
 	must(t, os.Mkdir(bin, 0o755))
 	write(t, filepath.Join(bin, "ssh-keyscan"), `#!/bin/sh
 host=$(eval echo \${$#})
+echo "keyscan" >> "`+f.log+`.keyscan"
 case "${FAKE_KEYSCAN:-}" in
 fail) exit 1 ;;
 none) exit 0 ;;
@@ -49,15 +55,23 @@ other) echo "# $host:22 SSH-2.0-OpenSSH_9.9"; echo "$host `+otherKey+`" ;;
 esac
 `, 0o755)
 	write(t, filepath.Join(bin, "ssh"), `#!/bin/sh
-key=""; known=""; prev=""
+key=""; known=""; port=""; prev=""
 for a in "$@"; do
   case "$prev" in
   -i) key=$a ;;
+  -p) port=$a ;;
   -o) case "$a" in UserKnownHostsFile=*) known=${a#UserKnownHostsFile=} ;; esac ;;
   esac
   prev=$a
 done
 echo "args: $*" >> "`+f.log+`"
+if [ "$port" != "$FAKE_PORT" ]; then echo "ssh: connect to host port $port: Connection refused" >&2; exit 255; fi
+case "${FAKE_KEYSCAN:-}" in
+none|fail) echo "kex_exchange_identification: Connection closed by remote host" >&2; exit 255 ;;
+other) device="`+otherKey+`" ;;
+*) device="`+pinnedKey+`" ;;
+esac
+grep -qF "$device" "$known" || { echo "Host key verification failed." >&2; exit 255; }
 echo "key: $key $(stat -c %a "$key") $(cat "$key" | base64 -w0)" >> "`+f.log+`"
 echo "known: $(cat "$known")" >> "`+f.log+`"
 case "${FAKE_SSH:-}" in
@@ -83,10 +97,12 @@ esac
 			if err != nil {
 				return
 			}
+			f.accepts.Add(1)
 			c.Close()
 		}
 	}()
 	f.host, f.port, _ = net.SplitHostPort(ln.Addr().String())
+	t.Setenv("FAKE_PORT", f.port)
 	version := filepath.Join(d, "version")
 	write(t, version, versionAnswer, 0o644)
 	t.Setenv("FAKE_VERSION", version)
@@ -115,6 +131,12 @@ func (f *sshFake) driver() Driver {
 func (f *sshFake) logged() string {
 	raw, _ := os.ReadFile(f.log)
 	return string(raw)
+}
+
+// keyscans: how often ssh-keyscan ran.
+func (f *sshFake) keyscans() int {
+	raw, _ := os.ReadFile(f.log + ".keyscan")
+	return strings.Count(string(raw), "keyscan\n")
 }
 
 func TestPfsenseCheck(t *testing.T) {
@@ -384,6 +406,32 @@ func TestPfsenseInstallStatus(t *testing.T) {
 	}
 }
 
+// TestPfsenseOneConnectionPerCall: a call that goes through opens one connection, ssh's own. Probing the address and
+// the host key before each call would add two connections that end before a login; a login protection such as
+// pfSense's sshguard counts each as an attack, and an install asks for its status every 15 seconds, so the
+// protection would block the agent in the middle of an install (ADR-0206).
+func TestPfsenseOneConnectionPerCall(t *testing.T) {
+	f := newSSHFake(t)
+	d := f.driver()
+	in := d.(Installer)
+	id := "0123456789abcdef01234567"
+	write(t, os.Getenv("FAKE_STATUS"), "install_job="+id+"\ninstall_state=queued\n", 0o644)
+	for i := 0; i < 10; i++ {
+		if _, res := d.Check(context.Background()); !res.OK() {
+			t.Fatalf("check: %+v", res)
+		}
+		if _, res := in.InstallStatus(context.Background(), id); !res.OK() {
+			t.Fatalf("install status: %+v", res)
+		}
+	}
+	if n := strings.Count(f.logged(), "args: "); n != 20 {
+		t.Errorf("%d ssh calls, want 20", n)
+	}
+	if n, k := f.accepts.Load(), f.keyscans(); n != 0 || k != 0 {
+		t.Errorf("connections that end before a login: %d bare, %d ssh-keyscan; want none", n, k)
+	}
+}
+
 func TestPfsenseUpToDate(t *testing.T) {
 	f := newSSHFake(t)
 	write(t, os.Getenv("FAKE_VERSION"), "product=pfSense\nversion=1.2.3-RELEASE\nupdates_format=2\n"+
@@ -401,16 +449,19 @@ func TestPfsenseUpToDate(t *testing.T) {
 	}
 }
 
+// TestPfsenseCodes: when ssh ends with 255, the driver tells why from facts it establishes afterwards, once: the
+// address does not answer, the device offers no host key or another one, or else the login (ADR-0206).
 func TestPfsenseCodes(t *testing.T) {
 	for name, tc := range map[string]struct {
-		env  map[string]string
-		want protocol.Code
+		env    map[string]string
+		want   protocol.Code
+		probes int // runs of ssh-keyscan after ssh
 	}{
-		"login refused":         {map[string]string{"FAKE_SSH": "auth"}, protocol.CodeFailedTargetAuth},
-		"other host key":        {map[string]string{"FAKE_KEYSCAN": "other"}, protocol.CodeFailedTargetHostKey},
-		"no host key":           {map[string]string{"FAKE_KEYSCAN": "none"}, protocol.CodeFailedTargetHostKey},
-		"keyscan fails":         {map[string]string{"FAKE_KEYSCAN": "fail"}, protocol.CodePrecheckRepoUnreachable},
-		"forced command refuse": {map[string]string{"FAKE_SSH": "refuse"}, protocol.CodeRejectedUnsupported},
+		"login refused":         {map[string]string{"FAKE_SSH": "auth"}, protocol.CodeFailedTargetAuth, 1},
+		"other host key":        {map[string]string{"FAKE_KEYSCAN": "other"}, protocol.CodeFailedTargetHostKey, 1},
+		"no host key":           {map[string]string{"FAKE_KEYSCAN": "none"}, protocol.CodeFailedTargetHostKey, 1},
+		"keyscan fails":         {map[string]string{"FAKE_KEYSCAN": "fail"}, protocol.CodePrecheckRepoUnreachable, 1},
+		"forced command refuse": {map[string]string{"FAKE_SSH": "refuse"}, protocol.CodeRejectedUnsupported, 0},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newSSHFake(t)
@@ -421,8 +472,11 @@ func TestPfsenseCodes(t *testing.T) {
 			if res.Code != tc.want {
 				t.Fatalf("code %q (%s), want %q", res.Code, res.Detail, tc.want)
 			}
-			if tc.want == protocol.CodeFailedTargetHostKey && strings.Contains(f.logged(), "args:") {
-				t.Error("ssh ran although the host key did not match")
+			if tc.want == protocol.CodeFailedTargetHostKey && strings.Contains(f.logged(), "key:") {
+				t.Error("the client key was offered to a device without the pinned host key")
+			}
+			if n := f.keyscans(); n != tc.probes {
+				t.Errorf("ssh-keyscan ran %d times, want %d", n, tc.probes)
 			}
 		})
 	}
@@ -437,8 +491,13 @@ func TestPfsenseCodes(t *testing.T) {
 		defer c.Close()
 		_, closed, _ := net.SplitHostPort(c.LocalAddr().String())
 		d.(*pfsense).port = closed
+		// The same as a login protection that blocks the agent's address: ssh ends with 255, and the address no
+		// longer answers. That is no refused login.
 		if _, res := d.Check(context.Background()); res.Code != protocol.CodePrecheckRepoUnreachable {
 			t.Fatalf("closed port: %+v", res)
+		}
+		if n := f.keyscans(); n != 0 {
+			t.Errorf("ssh-keyscan ran %d times against an address that does not answer", n)
 		}
 	})
 	t.Run("refusal reason", func(t *testing.T) {

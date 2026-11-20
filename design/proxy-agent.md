@@ -119,9 +119,13 @@ health:
     credentials: /etc/vordr/targets/fw-a.cred    # KEY=<base64 of the private OpenSSH key>
   ```
 
-  Before `ssh` the driver checks facts: address reachable (otherwise `precheck_repo_unreachable`), device offers exactly
-  the pinned host key (`ssh-keyscan`, otherwise `failed_target_hostkey`). An `ssh` abort (255) after that is the login
-  (`failed_target_auth`); any other return value is the fixed command's refusal with its `reason`. `ssh` runs with
+  Each call is one `ssh` connection: `ssh` itself refuses any host key but the pinned one, before it offers the client
+  key. Only when `ssh` ends with 255 does the driver establish why: address not reachable
+  (`precheck_repo_unreachable`, also while a login protection such as sshguard blocks the agent), device does not
+  offer exactly the pinned host key (`ssh-keyscan`, `failed_target_hostkey`), otherwise the login
+  (`failed_target_auth`). Probes before every call would trip that login protection
+  ([ADR-0206](../docs/adr/0206-the-ssh-driver-probes-the-device-only-after-ssh-fails.md)). Any other return value is
+  the fixed command's refusal with its `reason`. `ssh` runs with
   `-F /dev/null`, `BatchMode`, `IdentitiesOnly`, without an agent, with its own `known_hosts` containing only the pinned
   key; the private key exists only during the call, in a 0600 file. Report: firmware from `version` (form
   `<version>-RELEASE`) and what pfSense's own updater and package manager offer

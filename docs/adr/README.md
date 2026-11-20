@@ -239,4 +239,5 @@ Generated from the files by `python3 docs/adr/check_index.py --write`. `build.sh
 | [0203](0203-the-stale-repair-installs-what-a-button-takes.md) | The stale repair installs what a button takes | accepted | 2026-11-20 |
 | [0204](0204-the-firewall-reports-what-its-own-updater-offers.md) | The firewall reports what its own updater offers | accepted | 2026-11-20 |
 | [0205](0205-the-firewall-installs-through-its-own-updater-by-button.md) | The firewall installs through its own updater, by button | accepted | 2026-11-20 |
+| [0206](0206-the-ssh-driver-probes-the-device-only-after-ssh-fails.md) | The SSH driver probes the device only after ssh fails | accepted | 2026-11-20 |
 <!-- adr-index:end -->

@@ -122,9 +122,13 @@ health:
     credentials: /etc/vordr/targets/fw-a.cred    # KEY=<base64 des privaten OpenSSH-Schlüssels>
   ```
 
-  Vor `ssh` prüft der Treiber Fakten: Adresse erreichbar (sonst `precheck_repo_unreachable`), Gerät bietet genau den
-  festgenagelten Host-Schlüssel (`ssh-keyscan`, sonst `failed_target_hostkey`). Ein `ssh`-Abbruch (255) danach ist die
-  Anmeldung (`failed_target_auth`); jeder andere Rückgabewert die Ablehnung des festen Befehls mit dessen `reason`.
+  Jeder Aufruf ist eine einzige `ssh`-Verbindung: `ssh` selbst lehnt jeden Host-Schlüssel ausser dem festgenagelten
+  ab, bevor es den Client-Schlüssel anbietet. Erst wenn `ssh` mit 255 endet, stellt der Treiber fest, warum: Adresse
+  nicht erreichbar (`precheck_repo_unreachable`, auch solange ein Login-Schutz wie sshguard den Agenten sperrt), Gerät
+  bietet nicht genau den festgenagelten Host-Schlüssel (`ssh-keyscan`, `failed_target_hostkey`), sonst die Anmeldung
+  (`failed_target_auth`). Proben vor jedem Aufruf würden diesen Login-Schutz auslösen
+  ([ADR-0206](../docs/adr/0206-the-ssh-driver-probes-the-device-only-after-ssh-fails.md)). Jeder andere Rückgabewert
+  ist die Ablehnung des festen Befehls mit dessen `reason`.
   `ssh` läuft mit `-F /dev/null`, `BatchMode`, `IdentitiesOnly`, ohne Agent, mit einer eigenen `known_hosts` nur mit
   dem festgenagelten Schlüssel; der private Schlüssel liegt nur während des Aufrufs in einer 0600-Datei. Bericht:
   Firmware aus `version` (Form `<version>-RELEASE`) und was pfSenses eigener Updater und Paketmanager anbieten
