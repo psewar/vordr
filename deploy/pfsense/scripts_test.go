@@ -102,6 +102,28 @@ echo "{ sec = $(cat "`+d+`/boot"), usec = 1 } Thu Jan  1 00:16:40 1970"
 	}
 	write(t, filepath.Join(d, "upgrade-answer"), "Your system is up to date\n", 0o644)
 	write(t, filepath.Join(d, "upgrade-rc"), "0\n", 0o644)
+	// awk acts as FreeBSD's, which pfSense runs: it refuses a -v value with a newline ("newline in string"), which the
+	// awk of most Linux systems takes. Everything else goes to this system's awk.
+	realAwk, err := exec.LookPath("awk")
+	if err != nil {
+		t.Skip("no awk here; the scripts are tested where awk exists")
+	}
+	write(t, filepath.Join(stubs, "awk"), `#!/bin/sh
+nl='
+'
+prev=
+for a in "$@"; do
+	case "$a" in
+	*"$nl"*)
+		if [ "$prev" = -v ] || [ "${a#-v}" != "$a" ]; then
+			echo "awk: newline in string $a... at source line 1" >&2
+			exit 2
+		fi ;;
+	esac
+	prev=$a
+done
+exec `+realAwk+` "$@"
+`, 0o755)
 	write(t, filepath.Join(stubs, "logger"), "#!/bin/sh\necho \"$*\" >> \""+d+"/log\"\n", 0o755)
 	write(t, filepath.Join(stubs, "chown"), "#!/bin/sh\nexit 0\n", 0o755)
 	write(t, filepath.Join(d, "outdated"), pkgVersion, 0o644)

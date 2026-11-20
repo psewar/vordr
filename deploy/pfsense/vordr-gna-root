@@ -61,10 +61,12 @@ newer() {
 
 # release_versions sets release_installed and release_offered (ADR-0204): the newest installed version of the meta
 # package and the core packages (base, kernel), and the newest version the configured branch's catalog has where one of
-# them is newer - the comparison of pfSense-upgrade -c; empty without one. release_packages names them.
+# them is newer - the comparison of pfSense-upgrade -c; empty without one. release_packages names them on one line:
+# it goes to awk with -v, and FreeBSD's awk refuses a value with a newline.
 release_versions() {
 	set -f
-	release_packages="$(pkg query -e '%n ~ pfSense-kernel-* || %n ~ pfSense-base*' %n 2>/dev/null) $META_PACKAGE"
+	release_packages="$(pkg query -e '%n ~ pfSense-kernel-* || %n ~ pfSense-base*' %n 2>/dev/null | tr '\n' ' ')"
+	release_packages="$release_packages$META_PACKAGE"
 	release_installed=""
 	release_offered=""
 	for p in $release_packages; do

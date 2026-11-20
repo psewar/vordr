@@ -1,5 +1,7 @@
 // Package pfsense holds no Go code: it is the home of the two shell scripts the proxy agent uses on the pfSense
 // firewall (ADR-0091, ADR-0093) and of their tests, which run the scripts with /bin/sh against stubbed pfctl and pkg.
+// Their awk refuses what FreeBSD's refuses and the awk of most Linux systems takes, a -v value with a newline, so that
+// a script that works only with the test machine's awk fails here first.
 //
 //   - vordr-gna: the forced command of the proxy's SSH key, run as the unprivileged user vordr-gna.
 //   - vordr-gna-root: the root job, run by cron every minute; it works the queue and keeps the update window.
