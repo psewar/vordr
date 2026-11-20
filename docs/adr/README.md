@@ -231,12 +231,12 @@ Generated from the files by `python3 docs/adr/check_index.py --write`. `build.sh
 | [0195](0195-the-hub-bounds-reports-inventories-and-the-home-assistant-hello.md) | The hub bounds reports, inventories and the Home Assistant hello | accepted | 2026-11-18 |
 | [0196](0196-the-hub-refuses-a-vet-request-out-of-bounds-whole.md) | The hub refuses a vet request out of bounds whole | accepted | 2026-11-18 |
 | [0197](0197-the-stale-repair-names-only-a-way-that-exists.md) | The stale repair names only a way that exists | accepted | 2026-11-19 |
-| [0198](0198-the-firewall-root-job-names-only-real-package-updates-with-their-versions.md) | The firewall's root job names only real package updates, with their versions | accepted | 2026-11-19 |
+| [0198](0198-the-firewall-root-job-names-only-real-package-updates-with-their-versions.md) | The firewall's root job names only real package updates, with their versions | superseded by ADR-0204 | 2026-11-19 |
 | [0199](0199-the-backup-gate-names-the-hypervisors-state-and-waits-for-its-restart.md) | The backup gate names the hypervisor's state and waits for its restart | accepted | 2026-11-19 |
 | [0200](0200-the-agent-itself-finds-processes-running-replaced-libraries.md) | The agent itself finds processes running replaced libraries | accepted | 2026-11-19 |
 | [0201](0201-the-reboot-repair-names-its-reason-and-the-services-to-restart.md) | The reboot repair names its reason and the services to restart | accepted | 2026-11-19 |
 | [0202](0202-entities-carry-a-category-by-their-role.md) | Entities carry a category by their role | accepted | 2026-11-19 |
 | [0203](0203-the-stale-repair-installs-what-a-button-takes.md) | The stale repair installs what a button takes | accepted | 2026-11-20 |
-| [0204](0204-the-firewall-reports-what-its-own-updater-offers.md) | The firewall reports what its own updater offers | proposed | 2026-11-20 |
-| [0205](0205-the-firewall-installs-through-its-own-updater-by-button.md) | The firewall installs through its own updater, by button | proposed | 2026-11-20 |
+| [0204](0204-the-firewall-reports-what-its-own-updater-offers.md) | The firewall reports what its own updater offers | accepted | 2026-11-20 |
+| [0205](0205-the-firewall-installs-through-its-own-updater-by-button.md) | The firewall installs through its own updater, by button | accepted | 2026-11-20 |
 <!-- adr-index:end -->

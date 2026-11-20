@@ -126,6 +126,22 @@ func TestTargetCheckerPackageOffers(t *testing.T) {
 	}
 }
 
+// An offer no install takes - a release in another branch (ADR-0204) - is pending and kept back: the package says so,
+// and the report counts it, so that the hub leaves it out of what the install button takes.
+func TestTargetCheckerKeptBackOffer(t *testing.T) {
+	d := &stubDriver{exportLen: 2048, status: target.Status{Product: "pfSense", Installed: "1.2.3-RELEASE",
+		Offers: []target.Offer{{Name: "package pfSense-pkg-acme", From: "1.2", Version: "1.3.2"},
+			{Name: "pfSense (other branch)", From: "1.2.3", Version: "1.3.0", KeptBack: true}}}}
+	c := TargetChecker(d, target.Store{Dir: t.TempDir(), Keep: 5}, 26*time.Hour, time.Now)
+	fw, _ := reportOf(t, c.Check(context.Background()))
+	if fw.Pending != 2 || fw.KeptBack != 1 || len(fw.Packages) != 2 {
+		t.Fatalf("report: %+v", fw)
+	}
+	if fw.Packages[0].KeptBack || !fw.Packages[1].KeptBack {
+		t.Errorf("kept back on the wrong package: %+v", fw.Packages)
+	}
+}
+
 func TestTargetCheckerWithoutAnyBackup(t *testing.T) {
 	d := &stubDriver{check: target.Result{Code: protocol.CodePrecheckRepoUnreachable, Detail: "connection refused"}}
 	c := TargetChecker(d, target.Store{Dir: t.TempDir(), Keep: 5}, 26*time.Hour, time.Now)

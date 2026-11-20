@@ -42,7 +42,43 @@ type Offer struct {
 	// ADR-0198). Empty for the firmware, whose installed version is Status.Installed.
 	From     string
 	Security bool // the vendor marks it as a security update
+	// KeptBack: no install through Vördr takes it - a release the device offers only in another branch of its updates,
+	// which the operator switches in the device's own settings (ADR-0204). It still counts as pending.
+	KeptBack bool
+	// Install: how the driver installs this offer (ADR-0205) - for pfSense "release" or "addon <name>"; empty where no
+	// install through Vördr takes it.
+	Install string
 }
+
+// Installer is a driver that installs what its device offers (ADR-0205). Queue asks the device to install one offer
+// and names the request with id; InstallStatus says where the request of that id stands.
+type Installer interface {
+	Driver
+	Queue(ctx context.Context, o Offer, id string) Result
+	InstallStatus(ctx context.Context, id string) (InstallState, Result)
+}
+
+// InstallState is where one install request stands on the device.
+type InstallState struct {
+	State    string // one of the Install* states below
+	Code     string // with failed or refused, why: busy, not_offered, failed, interrupted
+	RC       string // the updater's exit code, where it ended
+	Finished int64  // when it ended, seconds since the epoch; 0 while it has not
+}
+
+// The states of an install request on the device.
+const (
+	InstallQueued   = "queued"   // waiting for the device to take it
+	InstallRunning  = "running"  // the device's updater runs
+	InstallOK       = "ok"       // the updater ended without an error
+	InstallFailed   = "failed"   // the updater ended with an error, or the run was cut short
+	InstallRefused  = "refused"  // the device did not start it: the offer is gone, or another update runs
+	InstallRebooted = "rebooted" // the device rebooted during the run, as a release install does
+	InstallUnknown  = "unknown"  // the device knows no request of this id
+)
+
+// InstallBusy: the code of a request refused because another update runs on the device.
+const InstallBusy = "busy"
 
 // UnknownVersion stands for an offered update whose version the device does not name.
 const UnknownVersion = "unknown version"

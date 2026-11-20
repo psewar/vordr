@@ -485,6 +485,25 @@ def test_stale_key_follows_what_vordr_installs() -> None:
     assert problem_key(both, True, {"capabilities": none, "installable": 0}) == "offline"
 
 
+def test_stale_key_names_updates_the_host_holds_back() -> None:
+    """ADR-0204: where the host holds back every pending update - a release an appliance offers only in another branch,
+    or apt's install mode upgrade - the text says so, with or without installs through Vördr. Held back in part, the
+    policy or the lack of installs decides as before; a button that takes some keeps "with the button"."""
+    stale = {"reason": "stale", "reasons": ["stale"]}
+    none = {"install": False, "install_security": False}
+    held = {"installable": 0, "pending": 1, "kept_back": 1}
+    assert problem_key(stale, True, {"capabilities": none, **held}) == "stale_kept_back"
+    assert problem_key(stale, True, {"capabilities": {"install": True}, **held}) == "stale_kept_back"
+    part = {"installable": 0, "pending": 3, "kept_back": 1}
+    assert problem_key(stale, True, {"capabilities": none, **part}) == "stale_manual"
+    assert problem_key(stale, True, {"capabilities": {"install": True}, **part}) == "stale_policy"
+    assert problem_key(stale, True, {"capabilities": {"install": True}, **held, "installable": 1}) == "stale"
+    # No count of kept back updates (an older hub), or none: as before.
+    assert problem_key(stale, True, {"capabilities": none, "installable": 0, "pending": 1}) == "stale_manual"
+    assert problem_key(stale, True, {"capabilities": none, **held, "kept_back": 0, "pending": 0}) == "stale_manual"
+    assert problem_key(stale, True, {"capabilities": none, **held, "kept_back": True}) == "stale_manual"
+
+
 async def test_release_summary_fits(hass: HomeAssistant) -> None:
     texts = Texts(hass)
     await texts.async_load()

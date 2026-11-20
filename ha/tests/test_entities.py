@@ -382,6 +382,10 @@ async def test_stale_hint_names_a_way_that_exists(
     await fake_hub.push_host(host_view("h", capabilities=security, problem=stale))
     await wait_until(lambda: reg.async_get_issue(DOMAIN, "problem_h").translation_key == "problem_stale")
     assert not reg.async_get_issue(DOMAIN, "problem_h").is_fixable
+    # ADR-0204: the host holds back every pending update (a release in another branch): the text says so.
+    await fake_hub.push_host(host_view("h", capabilities=none, problem=stale, installable=0, pending=1, kept_back=1))
+    await wait_until(lambda: reg.async_get_issue(DOMAIN, "problem_h").translation_key == "problem_stale_kept_back")
+    assert hass.states.get("binary_sensor.vordr_h_problem").attributes["next_step"] == "stale_kept_back"
     assert len(problems) == 1
 
 

@@ -7,12 +7,21 @@
 # 1..30 minutes. Whatever is in the queue counts as untrusted input, because the unprivileged user writes it.
 # Then it closes what has expired, drops table entries it does not know, and refreshes the update facts once an hour
 # from the local package catalog (no network; the catalog is refreshed by pfSense's own nightly job), and at once when
-# an earlier root job wrote them.
+# an earlier root job wrote them. Once a day it asks pfSense-upgrade -C for a newer release in another branch, which
+# may fetch the other branches' catalogs from the vendor (ADR-0204). At most one install request per run is run with
+# pfSense-upgrade, after checking again that its offer is still there (ADR-0205).
 # State, readable by the forced command:
 #   /var/db/vordr-gna/window    window_checked_at=<epoch> and one "entry=<address> <closes_at_epoch>" per open entry
 #   /var/db/vordr-gna/updates   updates_checked_at, updates_format, base_installed, base_offered,
 #                               packages_outdated(_count), one "package_offer=<name> <installed> <offered>" per
-#                               outdated package (ADR-0198)
+#                               outdated package (ADR-0198); release_installed, release_offered, release_other,
+#                               addon_offer_count, one "addon_offer=<name> <installed> <offered>" per outdated add-on
+#                               package, packages_behind_release (ADR-0204)
+#   /var/db/vordr-gna/release_other   the newest release in another branch as of the last daily ask, or empty
+#   /var/db/vordr-gna/install   the last install (ADR-0205): install_job, install_kind (release, addon), install_name,
+#                               install_state (running, ok, failed, refused, rebooted), install_code (busy,
+#                               not_offered, failed, interrupted), install_rc, install_started, install_finished,
+#                               install_boot; upgrade.log beside it is the updater's log of that run
 set -u
 PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin
 export PATH
@@ -23,12 +32,104 @@ OWNER=vordr-gna
 TABLE=vordr_update_window
 MAX_MINUTES=30
 BASE_PACKAGE=pfSense-base
-# The form of the update facts: 2 names each outdated package with its versions (ADR-0198); before it there was none.
-UPDATES_FORMAT=2
+META_PACKAGE=pfSense
+# The form of the update facts: 2 names each outdated package with its versions (ADR-0198); 3 adds what pfSense's own
+# updater and package manager offer (ADR-0204), and keeps the keys of 2 for agents that read only those. Before 2 there
+# was none.
+UPDATES_FORMAT=3
+# How often to ask for a release in another branch, in minutes, and how long that ask may take, in seconds.
+OTHER_EVERY_MIN=1440
+OTHER_TIMEOUT_S=300
+# pfSense-upgrade holds this lock while it runs, also in the later boot stages of a release upgrade.
+UPGRADE_LOCK=/tmp/pfSense-upgrade.lock
 now=$(date +%s)
 
 log() {
 	logger -t vordr-gna "$*"
+}
+
+# newer prints the newer of two package versions as pkg compares them; either may be empty.
+newer() {
+	if [ -z "$1" ]; then
+		echo "$2"
+	elif [ -n "$2" ] && [ "$(pkg version -t "$1" "$2" 2>/dev/null)" = "<" ]; then
+		echo "$2"
+	else
+		echo "$1"
+	fi
+}
+
+# release_versions sets release_installed and release_offered (ADR-0204): the newest installed version of the meta
+# package and the core packages (base, kernel), and the newest version the configured branch's catalog has where one of
+# them is newer - the comparison of pfSense-upgrade -c; empty without one. release_packages names them.
+release_versions() {
+	set -f
+	release_packages="$(pkg query -e '%n ~ pfSense-kernel-* || %n ~ pfSense-base*' %n 2>/dev/null) $META_PACKAGE"
+	release_installed=""
+	release_offered=""
+	for p in $release_packages; do
+		i=$(pkg query %v "$p" 2>/dev/null | head -n 1)
+		[ -n "$i" ] || continue
+		release_installed=$(newer "$release_installed" "$i")
+		o=$(pkg rquery -U %v "$p" 2>/dev/null | head -n 1)
+		if [ -n "$o" ] && [ "$(pkg version -t "$i" "$o" 2>/dev/null)" = "<" ]; then
+			release_offered=$(newer "$release_offered" "$o")
+		fi
+	done
+	set +f
+}
+
+# addon_offered: the add-on package is installed and the catalog has a newer version of it.
+addon_offered() {
+	i=$(pkg query %v "$1" 2>/dev/null | head -n 1)
+	o=$(pkg rquery -U %v "$1" 2>/dev/null | head -n 1)
+	[ -n "$i" ] && [ -n "$o" ] && [ "$(pkg version -t "$i" "$o" 2>/dev/null)" = "<" ]
+}
+
+# The id an install reports under, and an add-on's name: as the forced command checks them (ADR-0205).
+valid_id() {
+	case "$1" in
+	'' | *[!0-9a-f]*) return 1 ;;
+	esac
+	[ ${#1} -ge 8 ] && [ ${#1} -le 32 ]
+}
+
+valid_addon() {
+	case "$1" in
+	pfSense-pkg-*) ;;
+	*) return 1 ;;
+	esac
+	case "${1#pfSense-pkg-}" in
+	'' | *[!A-Za-z0-9._+-]*) return 1 ;;
+	esac
+	[ ${#1} -le 48 ]
+}
+
+# boot_time: when the firewall last booted, in seconds since the epoch, from "{ sec = <s>, usec = <us> } <date>".
+boot_time() {
+	sysctl -n kern.boottime 2>/dev/null | sed -n 's/^{ sec = \([0-9][0-9]*\),.*/\1/p'
+}
+
+# write_install <state> <code> <exit code> <finished>: the state of the install inst_* names, for install status.
+write_install() {
+	tmp=$(mktemp "$STATE/.install.XXXXXX")
+	{
+		echo "install_job=$inst_job"
+		echo "install_kind=$inst_kind"
+		echo "install_name=$inst_name"
+		echo "install_state=$1"
+		echo "install_code=$2"
+		echo "install_rc=$3"
+		echo "install_started=$inst_started"
+		echo "install_finished=$4"
+		echo "install_boot=$inst_boot"
+	} >"$tmp"
+	chmod 0644 "$tmp"
+	mv "$tmp" "$STATE/install"
+}
+
+install_field() {
+	sed -n "s/^$1=//p" "$STATE/install" 2>/dev/null | head -n 1
 }
 
 valid_address() {
@@ -73,6 +174,28 @@ fi
 mkdir -p "$QUEUE"
 chown "$OWNER":wheel "$QUEUE"
 chmod 0700 "$QUEUE"
+
+# An install that a run before left running (ADR-0205) ended with that run: by the reboot the updater starts, or cut
+# short. While pfSense-upgrade still holds its lock (a later boot stage of a release upgrade) it stays running. After a
+# reboot it is rebooted, for the agent to verify; in the same boot, failed as interrupted. The update facts are read
+# again in this run either way.
+if [ "$(install_field install_state)" = running ] && [ ! -e "$UPGRADE_LOCK" ]; then
+	inst_job=$(install_field install_job)
+	inst_kind=$(install_field install_kind)
+	inst_name=$(install_field install_name)
+	inst_started=$(install_field install_started)
+	inst_boot=$(install_field install_boot)
+	if [ "$(boot_time)" != "$inst_boot" ]; then
+		write_install rebooted "" "" "$now"
+	else
+		write_install failed interrupted "" "$now"
+	fi
+	log "install for job $inst_job: $(install_field install_state) after its run ended"
+	rm -f "$STATE/updates"
+fi
+inst_job=""
+inst_kind=""
+inst_name=""
 
 # Open entries: "<address> <closes_at>" per line, rebuilt below.
 entries=$(sed -n 's/^entry=//p' "$STATE/window" 2>/dev/null)
@@ -121,6 +244,22 @@ for f in "$QUEUE"/req.*; do
 			log "request refused: close with unlisted address"
 		fi
 		;;
+	install)
+		# At most one install per run (ADR-0205): the kind, an add-on's name and the id it reports under, nothing else.
+		if [ -n "$inst_job" ]; then
+			log "request refused: one install per run"
+		elif [ "${2:-}" = release ] && [ $# -eq 3 ] && valid_id "$3"; then
+			inst_kind=release
+			inst_name=""
+			inst_job=$3
+		elif [ "${2:-}" = addon ] && [ $# -eq 4 ] && valid_addon "$3" && valid_id "$4"; then
+			inst_kind=addon
+			inst_name=$3
+			inst_job=$4
+		else
+			log "request refused: install with a bad kind, name or id"
+		fi
+		;;
 	*) log "request refused: unknown" ;;
 	esac
 done
@@ -154,6 +293,39 @@ tmp=$(mktemp "$STATE/.window.XXXXXX")
 chmod 0644 "$tmp"
 mv "$tmp" "$STATE/window"
 
+# The install (ADR-0205), at most one per run, through pfSense's own updater. Checked again first: no other run of the
+# updater holds its lock, and the offer is still there - the configured branch's release, or a newer version of the
+# installed add-on. Then pfSense-upgrade -y installs it, with its log in the state directory. A release may end in the
+# reboot the updater starts; the first run after it notes that. pfSense-upgrade ends 75 when another instance runs.
+# The update facts are read again in this run.
+if [ -n "$inst_job" ]; then
+	inst_started=$now
+	inst_boot=$(boot_time)
+	if [ -e "$UPGRADE_LOCK" ]; then
+		write_install refused busy "" "$now"
+	elif [ "$inst_kind" = release ] && release_versions && [ -z "$release_offered" ]; then
+		write_install refused not_offered "" "$now"
+	elif [ "$inst_kind" = addon ] && ! addon_offered "$inst_name"; then
+		write_install refused not_offered "" "$now"
+	else
+		write_install running "" "" ""
+		log "install $inst_kind $inst_name started for job $inst_job"
+		if [ "$inst_kind" = release ]; then
+			pfSense-upgrade -y -l "$STATE/upgrade.log" >/dev/null 2>&1
+		else
+			pfSense-upgrade -y -l "$STATE/upgrade.log" -i "$inst_name" >/dev/null 2>&1
+		fi
+		rc=$?
+		case $rc in
+		0) write_install ok "" "$rc" "$(date +%s)" ;;
+		75) write_install refused busy "$rc" "$(date +%s)" ;;
+		*) write_install failed failed "$rc" "$(date +%s)" ;;
+		esac
+		log "install $inst_kind $inst_name for job $inst_job ended $rc"
+		rm -f "$STATE/updates"
+	fi
+fi
+
 # Update facts, at most once an hour, from the local catalog only (-U: no repository update); at once when the file is
 # from an earlier root job, so that a new one is read within a minute of its install.
 # Only "<" is an update: the catalog has a newer version. ">" (the installed one is newer) and "?" (not in the catalog)
@@ -162,8 +334,42 @@ mv "$tmp" "$STATE/window"
 # and becomes "<name>-<version>", followed by "<name> <version> <offered>" where the line has that form. Every "<"
 # counts and stays in packages_outdated, which keeps its earlier form for agents that read only that; package_offer
 # lines are written for those whose versions were read, and an agent refuses facts where the two differ.
+#
+# A newer release in another branch (ADR-0204), as pfSense-upgrade -C names it: once a day, since it may fetch the
+# other branches' catalogs from the vendor. It ends 2 with "<version> version of pfSense is available", 0 without one.
+# Any other end (another instance running, no answer in time) keeps the last value until the next day's ask; so does an
+# answer it cannot read. The file's time says when it was asked; update facts that name another value are refreshed
+# at once.
+if [ -z "$(find "$STATE/release_other" -mmin -"$OTHER_EVERY_MIN" 2>/dev/null)" ]; then
+	answer=$(timeout "$OTHER_TIMEOUT_S" pfSense-upgrade -C -U 2>/dev/null)
+	rc=$?
+	other=$(head -n 1 "$STATE/release_other" 2>/dev/null)
+	case $rc in
+	0) other="" ;;
+	2)
+		said=$(printf '%s\n' "$answer" |
+			sed -n 's/^\([0-9][0-9A-Za-z._,-]*\) version of pfSense is available$/\1/p' | head -n 1)
+		[ -n "$said" ] && other=$said
+		;;
+	*) log "release check in other branches ended $rc, last value kept" ;;
+	esac
+	tmp=$(mktemp "$STATE/.release_other.XXXXXX")
+	printf '%s\n' "$other" >"$tmp"
+	chmod 0644 "$tmp"
+	mv "$tmp" "$STATE/release_other"
+fi
+
+# The release and the add-ons (ADR-0204): what pfSense-upgrade and the package manager would install.
+#   * release: pfSense-upgrade installs only together with a release, when the meta package or a core package (base,
+#     kernel) of the configured branch is newer - the comparison of pfSense-upgrade -c. release_installed is the newest
+#     installed of them, release_offered the newest the catalog has where one is newer, else empty.
+#   * add-ons: the package manager updates an installed pfSense-pkg-* package; one addon_offer line per "<" add-on
+#     whose versions were read, and addon_offer_count counts them all, so that an agent refuses facts it cannot read.
+#   * every other "<" package comes with the next release or with an add-on's update: packages_behind_release counts
+#     them, and they offer nothing on their own.
 if [ -z "$(find "$STATE/updates" -mmin -60 2>/dev/null)" ] ||
-	! grep -qx "updates_format=$UPDATES_FORMAT" "$STATE/updates" 2>/dev/null; then
+	! grep -qx "updates_format=$UPDATES_FORMAT" "$STATE/updates" 2>/dev/null ||
+	! grep -qxF "release_other=$(head -n 1 "$STATE/release_other" 2>/dev/null)" "$STATE/updates" 2>/dev/null; then
 	tmp=$(mktemp "$STATE/.updates.XXXXXX")
 	outdated=$(pkg version -U -vRl'<' 2>/dev/null | awk '
 		$2 != "<" { next }
@@ -174,14 +380,34 @@ if [ -z "$(find "$STATE/updates" -mmin -60 2>/dev/null)" ] ||
 				out = out " " substr($1, 1, RSTART - 1) " " substr($1, RSTART + 1) " " substr($NF, 1, length($NF) - 1)
 			print out
 		}')
+	release_versions
+	addons=$(printf '%s\n' "$outdated" | awk 'NF && $1 ~ /^pfSense-pkg-/')
+	behind=$(printf '%s\n' "$outdated" | awk -v release="$release_packages" '
+		BEGIN { n = split(release, r, " "); for (i = 1; i <= n; i++) skip[r[i]] = 1 }
+		!NF || $1 ~ /^pfSense-pkg-/ { next }
+		{
+			name = $1
+			if (NF == 4) name = $2
+			else sub(/-[^-]+$/, "", name)
+			if (!(name in skip)) count++
+		}
+		END { print count + 0 }')
 	{
-		echo "updates_checked_at=$now"
+		# The time of this reading, not of the run's start: after an install in this run it is later than the
+		# install's end, which the agent's verification asks for (ADR-0205).
+		echo "updates_checked_at=$(date +%s)"
 		echo "updates_format=$UPDATES_FORMAT"
 		echo "base_installed=$(pkg query %v "$BASE_PACKAGE" 2>/dev/null | head -n 1)"
 		echo "base_offered=$(pkg rquery -U %v "$BASE_PACKAGE" 2>/dev/null | head -n 1)"
 		echo "packages_outdated_count=$(printf '%s\n' "$outdated" | awk 'NF' | wc -l | tr -d ' ')"
 		echo "packages_outdated=$(printf '%s\n' "$outdated" | awk 'NF { print $1 }' | paste -s -d , -)"
 		printf '%s\n' "$outdated" | awk 'NF == 4 { print "package_offer=" $2 " " $3 " " $4 }'
+		echo "release_installed=$release_installed"
+		echo "release_offered=$release_offered"
+		echo "release_other=$(head -n 1 "$STATE/release_other" 2>/dev/null)"
+		echo "addon_offer_count=$(printf '%s\n' "$addons" | awk 'NF' | wc -l | tr -d ' ')"
+		printf '%s\n' "$addons" | awk 'NF == 4 { print "addon_offer=" $2 " " $3 " " $4 }'
+		echo "packages_behind_release=$behind"
 	} >"$tmp"
 	chmod 0644 "$tmp"
 	mv "$tmp" "$STATE/updates"

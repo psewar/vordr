@@ -8,11 +8,15 @@
 #   window status                 the update window: open entries and when the root job last looked
 #   window open <address> <min>   ask the root job to let a listed device reach its vendor for 1..30 minutes
 #   window close <address>        ask the root job to close it again
+#   install release <id>          ask the root job to install the release its configured branch offers (ADR-0205)
+#   install addon <name> <id>     ask the root job to update one installed add-on package (pfSense-pkg-*)
+#   install status <id>           where the install of that id stands: the root job's state, or queued, or unknown
 #
 # Answers are key=value lines. A refusal says state=refused and reason=<code>; the exit code tells the kind:
 # 0 done, 2 not a known call, 3 not allowed, 4 not ready (the root job has not set up the queue).
 # This script never changes pf itself: /dev/pf needs root. It only drops a request into the queue, which the root job
-# vordr-gna-root checks again against the same list (ADR-0093).
+# vordr-gna-root checks again against the same list (ADR-0093), and installs nothing: an install request carries no
+# command, only its kind, an add-on's name and an id, and the root job checks it again (ADR-0205).
 set -u
 PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin
 export PATH
@@ -57,6 +61,27 @@ valid_minutes() {
 	'' | *[!0-9]* | 0*) return 1 ;;
 	esac
 	[ ${#1} -le 2 ] && [ "$1" -ge 1 ] && [ "$1" -le "$MAX_MINUTES" ]
+}
+
+# The id an install reports under (ADR-0205): 8 to 32 lower-case hex digits, so that a request stays within the 100
+# bytes the root job reads.
+valid_id() {
+	case "$1" in
+	'' | *[!0-9a-f]*) return 1 ;;
+	esac
+	[ ${#1} -ge 8 ] && [ ${#1} -le 32 ]
+}
+
+# An add-on package's name: pfSense-pkg- and at most 36 more letters, digits or ._+-.
+valid_addon() {
+	case "$1" in
+	pfSense-pkg-*) ;;
+	*) return 1 ;;
+	esac
+	case "${1#pfSense-pkg-}" in
+	'' | *[!A-Za-z0-9._+-]*) return 1 ;;
+	esac
+	[ ${#1} -le 48 ]
 }
 
 request() {
@@ -114,6 +139,36 @@ window)
 		valid_address "$3" || refuse bad_address 2
 		listed "$3" || refuse not_listed 3
 		request "close $3"
+		;;
+	*) refuse unknown_call 2 ;;
+	esac
+	;;
+install)
+	case "${2:-}" in
+	release)
+		[ $# -eq 3 ] || refuse bad_arguments 2
+		valid_id "$3" || refuse bad_id 2
+		request "install release $3"
+		;;
+	addon)
+		[ $# -eq 4 ] || refuse bad_arguments 2
+		valid_addon "$3" || refuse bad_name 2
+		valid_id "$4" || refuse bad_id 2
+		request "install addon $3 $4"
+		;;
+	status)
+		[ $# -eq 3 ] || refuse bad_arguments 2
+		valid_id "$3" || refuse bad_id 2
+		if [ -f "$STATE/install" ] && grep -qxF "install_job=$3" "$STATE/install"; then
+			cat "$STATE/install"
+		elif [ -d "$QUEUE" ] && find "$QUEUE" -maxdepth 1 -type f -name 'req.*' -exec cat {} + 2>/dev/null |
+			grep -qxE "install (release|addon [^ ]+) $3"; then
+			echo "install_job=$3"
+			echo "install_state=queued"
+		else
+			echo "install_job=$3"
+			echo "install_state=unknown"
+		fi
 		;;
 	*) refuse unknown_call 2 ;;
 	esac

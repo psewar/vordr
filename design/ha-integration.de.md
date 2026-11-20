@@ -410,7 +410,11 @@ aus ihren Übersetzungsdateien ([ADR-0027](../docs/adr/0027-protocol-2-codes-and
   - `stale` bleibt, wo der Installieren-Knopf einen Teil der ausstehenden Updates nimmt (`installable` über null, oder
     keine Zahl von der Leitstelle); sonst wird es `stale_policy`, wo der Host Installationen über Vördr annimmt, seine
     Richtlinie aber keines dieser Updates, und `stale_manual`, wo er keine annimmt
-    ([ADR-0197](../docs/adr/0197-the-stale-repair-names-only-a-way-that-exists.md));
+    ([ADR-0197](../docs/adr/0197-the-stale-repair-names-only-a-way-that-exists.md)); vor beiden `stale_kept_back`, wo
+    der Host jedes ausstehende Update zurückhält (`kept_back` der Leitstelle gleich `pending`): ein Release, das ein Gerät
+    nur in einem anderen Zweig anbietet, oder der Installationsmodus `upgrade` von apt; sein nächster Schritt ist, den
+    Update-Zweig des Geräts zu wechseln, `install.mode: full-upgrade` zu setzen oder von Hand zu installieren
+    ([ADR-0204](../docs/adr/0204-the-firewall-reports-what-its-own-updater-offers.md));
   - die Reparatur folgt einem geänderten Schlüssel auch, wenn das Problem dasselbe bleibt; `vordr_problem` feuert
     dafür nicht.
 - **Ereignisse** tragen `message` in jeder mitgelieferten Sprache, damit eine Automation die Sprache ihres

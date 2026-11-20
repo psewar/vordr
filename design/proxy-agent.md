@@ -4,7 +4,9 @@ English · [Deutsch](proxy-agent.de.md)
 
 > **Status:** Built are reporting and backing up through the drivers `synology-dsm` and `pfsense` (4.1), the instance
 > units (4.7), the configuration backup with its check at the hub (4.4) and the fixed command on the firewall (4.6).
-> Installing through a driver is not built yet; `check-config` rejects it. Rationale:
+> Installing is built for the firewall, by button through pfSense's own updater
+> ([ADR-0205](../docs/adr/0205-the-firewall-installs-through-its-own-updater-by-button.md)); for every other driver
+> `check-config` rejects it. Rationale:
 > [ADR-0089](../docs/adr/0089-appliances-through-a-proxy-agent.md) (proxy agent instead of hub),
 > [ADR-0090](../docs/adr/0090-appliance-installs-need-a-fresh-config-backup.md) (configuration backup before every
 > update), [ADR-0091](../docs/adr/0091-firmware-for-devices-without-internet.md) (offline devices),
@@ -46,7 +48,7 @@ devices and would thus be the central server with remote execution that Vördr r
 
 ```
 ┌─────────────── Proxy container ───────────────┐
-│ vordr-agent@firewall ── fixed commands ───────┼──▶ firewall (report only)
+│ vordr-agent@firewall ── fixed commands ───────┼──▶ firewall (report, install by button)
 │ vordr-agent@gateway  ── web API ──────────────┼──▶ smart home gateway
 │ vordr-agent@nas      ── DSM web API ──────────┼──▶ NAS
 │ vordr-agent@mesh-…   ── web login ────────────┼──▶ mesh Wi-Fi, each unit (report only)
@@ -88,14 +90,18 @@ config_backup:                     # ADR-0090; these values if omitted
   max_age_h: 26                    # older: HA shows a problem (failed_config_backup)
 health:
   - http: https://<device>/         # after an update, from the proxy agent
+# install:                         # only for driver pfsense (ADR-0205); closed without it
+#   allowed_scopes: [all]          # what the device's own updater offers; never auto
+#   default_scope: all
+#   timeout_min: 60                # the whole run: backup, install, reboot, verification
 ```
 
-- **Built:** reporting and backing up. `install` is not allowed with `target:` yet; installing comes with the first
-  driver that can do it.
+- **Built:** reporting and backing up through every driver; installing by button through `pfsense` (4.6,
+  [ADR-0205](../docs/adr/0205-the-firewall-installs-through-its-own-updater-by-button.md)).
 - `check-config` checks the section like any other: known driver, `https` address without a path, exactly one TLS way,
-  credentials file absolute and readable only by its owner. With `target:`, `install`, `install.auto`,
-  `reboot.allowed`, `agent_update`, `apps`, `packages` (the inventory is off) and `health` other than `http` are not
-  allowed: They meant the container, not the device.
+  credentials file absolute and readable only by its owner. With `target:`, `install.auto`, `reboot.allowed`,
+  `agent_update`, `apps`, `packages` (the inventory is off) and `health` other than `http` are not allowed: They meant
+  the container, not the device. `install` is allowed only for `pfsense`, and only as `allowed_scopes: [all]`.
 - **NAS (synology-dsm):** If DSM has its own rule for its host name (e.g. reverse proxy), it returns 404 everywhere on
   port 5001 under the name and the web API under the address. Hence `address` = address, `server_name` = name.
   A service account without the admin group may sign in only to a known application (session `webui`) and gets
@@ -118,13 +124,22 @@ health:
   (`failed_target_auth`); any other return value is the fixed command's refusal with its `reason`. `ssh` runs with
   `-F /dev/null`, `BatchMode`, `IdentitiesOnly`, without an agent, with its own `known_hosts` containing only the pinned
   key; the private key exists only during the call, in a 0600 file. Report: firmware from `version` (form
-  `<version>-RELEASE`), an offer "pfSense" if the catalog has a newer `pfSense-base`, and for each package the catalog
-  has a newer version of an offer `package <name>` from the installed to the offered version
-  ([ADR-0198](../docs/adr/0198-the-firewall-root-job-names-only-real-package-updates-with-their-versions.md)); a
-  package whose installed version is newer, or that is not in the catalog, is no offer. Update facts in another form
-  than the root job writes are refused (`rejected_unsupported`); those of an earlier root job without `updates_format`
-  give the packages without a version. `self_update: off`. Backup: `config.xml` (XML header, root `<pfsense>`, at
-  least 1 KB).
+  `<version>-RELEASE`) and what pfSense's own updater and package manager offer
+  ([ADR-0204](../docs/adr/0204-the-firewall-reports-what-its-own-updater-offers.md)):
+  - an offer "pfSense" from `release_installed` to `release_offered` when the configured branch has a newer release
+    (the meta package or a core package newer, as `pfSense-upgrade -c` compares);
+  - an offer `package <name>` per installed add-on package (`pfSense-pkg-*`) with a newer version, from the installed
+    to the offered version;
+  - an offer "pfSense (other branch)" for a newer release in another branch, kept back: no install through Vördr takes
+    it, the operator switches the branch in pfSense's update settings;
+  - every other newer package of the catalog comes with the next release or an add-on's update and offers nothing; the
+    fact `packages_behind_release` counts them.
+
+  Update facts in another form than the root job writes are refused (`rejected_unsupported`). Those of a root job in
+  form 2 give an offer "pfSense" if the catalog has a newer `pfSense-base` and one `package <name>` per newer package
+  ([ADR-0198](../docs/adr/0198-the-firewall-root-job-names-only-real-package-updates-with-their-versions.md)); those
+  of an earlier root job without `updates_format` give the packages without a version. `self_update: off`. Backup:
+  `config.xml` (XML header, root `<pfsense>`, at least 1 KB).
 - **Facts** come from the driver: product and firmware as `os`, the driver as `os_id`, model, update channel, whether
   the device updates itself, time and checksum of the last configuration backup.
 
@@ -136,6 +151,20 @@ health:
 | back up | export the configuration, check its form (not empty, readable, expected root or header), store it with time and checksum, delete old versions down to `keep` | Fact `config_backup_at`; failed: `check_failed` with its own code |
 | install | precheck (fresh backup, device healthy), trigger the update | Phase `installing`, then `rebooting` while the device does not answer |
 | verify | wait until the device answers again and reports the new version (deadline `timeout_min`) | `ok` or `failed_verification` with reason; then `health:` |
+
+Install and verify are built for `pfsense` (ADR-0205): a driver that installs is a `target.Installer` (`Queue` one
+offer under a request id, `InstallStatus` of that id). An install of scope `all`:
+
+1. takes a configuration backup and stores it, right before; without it nothing starts (`failed_config_backup`);
+2. checks the device; its plan is the release of the configured branch alone (the updater brings the add-ons along),
+   else each add-on; a kept-back offer never;
+3. per offer: queue it and ask its state every 15 s - `installing` while the device runs it, `rebooting` while it does
+   not answer; the device's end decides: `busy` is `rejected_busy`, any other refusal or failure
+   `failed_package_manager`, a request the device has not taken after 3 minutes as well, no end within `timeout_min`
+   `timeout`;
+4. verifies: waits for update facts read after the install's end, and the offer must be gone; after an ok the first
+   such facts decide, after a reboot it asks until `timeout_min` (a release upgrade may go on in later boot stages),
+   else `failed_verification`.
 
 Fixed codes as everywhere ([ADR-0007](../docs/adr/0007-fixed-codes-instead-of-error-texts.md)), decided by the type of
 the error, never by its text: device not reachable → `precheck_repo_unreachable`; new: device rejects the service
@@ -213,13 +242,19 @@ devices). For their update there are two ways, in this order of preference:
 
 | Part | Place on the firewall | runs as | does |
 |---|---|---|---|
-| fixed command `vordr-gna` | `/usr/local/sbin/vordr-gna` (0755) | `vordr-gna`, only through the proxy agent's key (`command=` in the key line) | `version`, `backup`, `window status`, `window open <address> <minutes>`, `window close <address>`; puts jobs only into the queue |
-| root job `vordr-gna-root` | `/usr/local/sbin/vordr-gna-root` (0700), cron every minute under `lockf` | root | checks every job again, enters into the pf table `vordr_update_window`, closes what has expired, reconciles table and state, writes the update facts hourly |
+| fixed command `vordr-gna` | `/usr/local/sbin/vordr-gna` (0755) | `vordr-gna`, only through the proxy agent's key (`command=` in the key line) | `version`, `backup`, `window status`, `window open <address> <minutes>`, `window close <address>`, `install release <id>`, `install addon <name> <id>`, `install status <id>` (ADR-0205); puts jobs only into the queue |
+| root job `vordr-gna-root` | `/usr/local/sbin/vordr-gna-root` (0700), cron every minute under `lockf` | root | checks every job again, enters into the pf table `vordr_update_window`, closes what has expired, reconciles table and state, runs at most one install per run with `pfSense-upgrade -y` (an add-on with `-i <name>`) after checking that its offer is still there and no other run of the updater holds its lock, writes the update facts hourly and after an install, asks `pfSense-upgrade -C -U` once a day for a release in another branch |
 | device list | `/usr/local/etc/vordr-gna-allow` (0644) | – | addresses of the devices that may get a window, one per line, e.g. `192.0.2.40`; the list belongs to the site, the repo ships it empty |
-| queue, state | `/var/db/vordr-gna-queue` (vordr-gna, 0700), `/var/db/vordr-gna/` (root) | – | `window`: `entry=<address> <end>`; `updates`: `updates_format=2`, `base_installed`, `base_offered`, `packages_outdated(_count)` (only status `<`), one `package_offer=<name> <installed> <offered>` per such package (ADR-0198) |
+| queue, state | `/var/db/vordr-gna-queue` (vordr-gna, 0700), `/var/db/vordr-gna/` (root) | – | `window`: `entry=<address> <end>`; `updates`: `updates_format=3`, the keys of form 2 (`base_installed`, `base_offered`, `packages_outdated(_count)` with status `<` only, one `package_offer=<name> <installed> <offered>` per such package, ADR-0198), and `release_installed`, `release_offered`, `release_other`, `addon_offer_count`, one `addon_offer=<name> <installed> <offered>` per outdated add-on package, `packages_behind_release` (ADR-0204); `release_other`: the last daily answer; `install`: the last install (`install_job`, `install_kind`, `install_name`, `install_state` running, ok, failed, refused or rebooted, `install_code` busy, not_offered, failed or interrupted, `install_rc`, `install_started`, `install_finished`, `install_boot`), `upgrade.log` the updater's log of it (ADR-0205) |
 
 - Answers are `key=value` lines; a refusal says `state=refused` and `reason=<code>` (`unknown_call`, `bad_arguments`,
-  `bad_address`, `bad_minutes`, `not_listed`, `not_ready`), the return value the kind (2, 3, 4).
+  `bad_address`, `bad_minutes`, `not_listed`, `not_ready`, `bad_id`, `bad_name`), the return value the kind (2, 3, 4).
+- An install request carries its kind, an add-on's name (`pfSense-pkg-` and at most 36 more of `A-Za-z0-9._+-`) and an
+  id (8 to 32 lower-case hex digits), so that it stays within the 100 bytes the root job reads. `install status <id>`
+  answers the root job's state of that id, else `queued` while its request waits in the queue, else `unknown`.
+- An install that a run left running ended with that run: after a reboot it is `rebooted` (the agent verifies), in the
+  same boot `failed` with `interrupted`; while `pfSense-upgrade` holds its lock (a later boot stage of a release
+  upgrade) it stays `running`.
 - A window opens or closes up to a minute after the job; the driver waits for `window status`.
 - The rule "table → vendor's update servers" is not part of `deploy/pfsense/`: It comes with the first driver that needs
   a window and names the update servers of its vendor. Without it an entry in the table has no effect.
@@ -269,7 +304,7 @@ before the build, read-only.
 
 | Device | Access | Update status | Back up (driver) | Install | Note |
 |---|---|---|---|---|---|
-| Firewall (pfSense) | admin interface or SSH, fixed commands | firmware and offered base version, plus package updates; without a driver this appears nowhere in HA (section 2, item 3) | read `config.xml`, check XML root | report only | Versions on the device (at every change) are not stored off-site; the vendor's cloud backup is none (4.4: no vendor account) |
+| Firewall (pfSense) | admin interface or SSH, fixed commands | firmware and offered base version, plus package updates; without a driver this appears nowhere in HA (section 2, item 3) | read `config.xml`, check XML root | by button through `pfSense-upgrade`: the release of the configured branch or an add-on; another branch is switched in pfSense (ADR-0204, ADR-0205) | Versions on the device (at every change) are not stored off-site; the vendor's cloud backup is none (4.4: no vendor account) |
 | Smart home gateway | web API, SSH | installed version, update channel, offered update | backup function of the interface (to be verified which way is the official one) | by button | – |
 | NAS (Synology DSM) | DSM web API | the NAS's update check, also with major versions; whether it installs security hotfixes itself | export through `SYNO.Backup.Config.Backup` (4.1) | by button, later | If the vendor's download list for the model ends, no new major version comes any more; how long the last one still gets security updates is told by the vendor's support status |
 | Mesh Wi-Fi | web login (SSH mostly off) | firmware per unit, the vendor's notice; whether a unit updates itself (mostly only the master) | settings file of the interface (to be verified) | report only (ADR-0092) | often **one admin session**: a query can kick an open session out of the browser → query rarely, sign out afterwards |
@@ -290,8 +325,10 @@ before the build, read-only.
 ## 7. Security
 
 - **Hub:** holds no credentials. If taken over, it can start checks and, where an instance's policy allows it, a
-  firmware update – as with hosts. The threat model (architecture.md 5) gets one line: "proxy agent taken over → can
-  operate the devices whose credentials it holds and read their configuration backups".
+  firmware update – as with hosts. The threat model (architecture.md 5) has the line: "proxy agent taken over → can
+  operate the devices whose credentials it holds and read their configuration backups". For the firewall that means
+  starting its vendor's update where the instance allows install (ADR-0205); the request carries no command, and the
+  root job checks it again.
 - **Container:** only for this purpose; no SSH service, management through the hypervisor. Outbound only what the
   hypervisor's firewall allows (4.7): hub (8443), DNS, the registered devices on their ports, plus HTTP(S) to the
   internet for packages and vendor firmware.
@@ -315,7 +352,7 @@ before the build, read-only.
 4. Proxy agent in a management network, driver for remote server management (report through a local vendor
    repository).
 5. Install by button, per device class with backup before and verification after. Offline devices that can load only
-   themselves, only with the short-term approval (4.6).
+   themselves, only with the short-term approval (4.6). **Built for pfSense** (ADR-0205).
 
 ## 9. Decided and open
 

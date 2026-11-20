@@ -4,7 +4,9 @@
 
 > **Stand:** Gebaut sind Melden und Sichern über die Treiber `synology-dsm` und `pfsense` (4.1), die Instanz-Units
 > (4.7), die Konfigurationssicherung samt Prüfung an der Leitstelle (4.4) und der feste Befehl auf der Firewall (4.6).
-> Installieren über einen Treiber ist noch nicht gebaut; `check-config` lehnt es ab. Begründungen:
+> Installieren ist für die Firewall gebaut, per Knopf über pfSenses eigenen Updater
+> ([ADR-0205](../docs/adr/0205-the-firewall-installs-through-its-own-updater-by-button.md)); für jeden anderen Treiber
+> lehnt `check-config` es ab. Begründungen:
 > [ADR-0089](../docs/adr/0089-appliances-through-a-proxy-agent.md) (Stellvertreter statt Leitstelle),
 > [ADR-0090](../docs/adr/0090-appliance-installs-need-a-fresh-config-backup.md) (Konfigurationssicherung vor jedem
 > Update), [ADR-0091](../docs/adr/0091-firmware-for-devices-without-internet.md) (Geräte ohne Internet),
@@ -48,7 +50,7 @@ Geräten und wäre damit der zentrale Server mit Fernausführung, den Vördr ers
 
 ```
 ┌────────── Stellvertreter-Container ──────────┐
-│ vordr-agent@firewall ── feste Befehle ────────┼──▶ Firewall (nur melden)
+│ vordr-agent@firewall ── feste Befehle ────────┼──▶ Firewall (melden, installieren per Knopf)
 │ vordr-agent@gateway  ── Web-API ──────────────┼──▶ Smart-Home-Gateway
 │ vordr-agent@nas      ── DSM-Web-API ──────────┼──▶ NAS
 │ vordr-agent@mesh-…   ── Web-Login ────────────┼──▶ Mesh-WLAN, je Einheit (nur melden)
@@ -91,14 +93,18 @@ config_backup:                     # ADR-0090; ohne Angabe diese Werte
   max_age_h: 26                    # älter: HA zeigt ein Problem (failed_config_backup)
 health:
   - http: https://<gerät>/         # nach einem Update, vom Stellvertreter aus
+# install:                         # nur für den Treiber pfsense (ADR-0205); ohne ihn geschlossen
+#   allowed_scopes: [all]          # was der eigene Updater des Geräts anbietet; nie auto
+#   default_scope: all
+#   timeout_min: 60                # der ganze Lauf: Sicherung, Install, Neustart, Nachweis
 ```
 
-- **Gebaut:** melden und sichern. `install` ist mit `target:` noch nicht erlaubt; Installieren kommt mit dem ersten
-  Treiber, der es kann.
+- **Gebaut:** melden und sichern über jeden Treiber; installieren per Knopf über `pfsense` (4.6,
+  [ADR-0205](../docs/adr/0205-the-firewall-installs-through-its-own-updater-by-button.md)).
 - `check-config` prüft den Abschnitt wie jeden anderen: bekannter Treiber, `https`-Adresse ohne Pfad, genau ein TLS-Weg,
-  Zugangsdatei absolut und nur für ihren Besitzer lesbar. Mit `target:` sind `install`, `install.auto`,
-  `reboot.allowed`, `agent_update`, `apps`, `packages` (das Inventar ist aus) und `health` ausser `http` nicht erlaubt:
-  Sie meinten den Container, nicht das Gerät.
+  Zugangsdatei absolut und nur für ihren Besitzer lesbar. Mit `target:` sind `install.auto`, `reboot.allowed`,
+  `agent_update`, `apps`, `packages` (das Inventar ist aus) und `health` ausser `http` nicht erlaubt: Sie meinten den
+  Container, nicht das Gerät. `install` ist nur für `pfsense` erlaubt, und nur als `allowed_scopes: [all]`.
 - **NAS (synology-dsm):** Hat DSM für seinen Host-Namen eine eigene Regel (z. B. Reverse Proxy), liefert es unter dem
   Namen auf Port 5001 überall 404, unter der Adresse die Web-API. Darum `address` = Adresse, `server_name` = Name.
   Ein Dienstkonto ohne Admin-Gruppe darf sich nur an einer bekannten Anwendung anmelden (Sitzung `webui`) und bekommt für Update-Prüfung und Einstellungen
@@ -121,14 +127,23 @@ health:
   Anmeldung (`failed_target_auth`); jeder andere Rückgabewert die Ablehnung des festen Befehls mit dessen `reason`.
   `ssh` läuft mit `-F /dev/null`, `BatchMode`, `IdentitiesOnly`, ohne Agent, mit einer eigenen `known_hosts` nur mit
   dem festgenagelten Schlüssel; der private Schlüssel liegt nur während des Aufrufs in einer 0600-Datei. Bericht:
-  Firmware aus `version` (Form `<version>-RELEASE`), ein Angebot „pfSense“, wenn der Katalog ein neueres
-  `pfSense-base` hat, und je Paket, von dem der Katalog eine neuere Version hat, ein Angebot `package <name>` von der
-  installierten zur angebotenen Version
-  ([ADR-0198](../docs/adr/0198-the-firewall-root-job-names-only-real-package-updates-with-their-versions.md)); ein
-  Paket, dessen installierte Version neuer ist oder das nicht im Katalog steht, ist kein Angebot. Update-Fakten in einer
-  anderen Form, als der Wurzel-Job sie schreibt, werden abgelehnt (`rejected_unsupported`); die eines früheren
-  Wurzel-Jobs ohne `updates_format` ergeben die Pakete ohne Version. `self_update: off`. Sicherung: `config.xml`
-  (XML-Kopf, Wurzel `<pfsense>`, mindestens 1 KB).
+  Firmware aus `version` (Form `<version>-RELEASE`) und was pfSenses eigener Updater und Paketmanager anbieten
+  ([ADR-0204](../docs/adr/0204-the-firewall-reports-what-its-own-updater-offers.md)):
+  - ein Angebot „pfSense“ von `release_installed` zu `release_offered`, wenn der eingestellte Zweig ein neueres Release
+    hat (das Meta-Paket oder ein Kern-Paket neuer, wie `pfSense-upgrade -c` vergleicht);
+  - je installiertem Zusatzpaket (`pfSense-pkg-*`) mit neuerer Version ein Angebot `package <name>` von der
+    installierten zur angebotenen Version;
+  - ein Angebot „pfSense (other branch)“ für ein neueres Release in einem anderen Zweig, zurückgehalten: Kein Install
+    über Vördr nimmt es, den Zweig wechselt der Betreiber in den Update-Einstellungen von pfSense;
+  - jedes andere neuere Paket des Katalogs kommt mit dem nächsten Release oder dem Update eines Zusatzpakets und ist
+    kein eigenes Angebot; der Fakt `packages_behind_release` zählt sie.
+
+  Update-Fakten in einer anderen Form, als der Wurzel-Job sie schreibt, werden abgelehnt (`rejected_unsupported`). Die
+  eines Wurzel-Jobs in Form 2 ergeben ein Angebot „pfSense“, wenn der Katalog ein neueres `pfSense-base` hat, und je
+  neuerem Paket ein Angebot `package <name>`
+  ([ADR-0198](../docs/adr/0198-the-firewall-root-job-names-only-real-package-updates-with-their-versions.md)); die eines
+  früheren Wurzel-Jobs ohne `updates_format` ergeben die Pakete ohne Version. `self_update: off`. Sicherung:
+  `config.xml` (XML-Kopf, Wurzel `<pfsense>`, mindestens 1 KB).
 - **Fakten** kommen vom Treiber: Produkt und Firmware als `os`, der Treiber als `os_id`, Modell, Update-Kanal, ob das
   Gerät sich selbst aktualisiert, Zeit und Prüfsumme der letzten Konfigurationssicherung.
 
@@ -140,6 +155,21 @@ health:
 | sichern | Konfiguration exportieren, auf Form prüfen (nicht leer, lesbar, erwartete Wurzel bzw. Kopf), mit Zeit und Prüfsumme ablegen, alte Stände bis `keep` löschen | Fakt `config_backup_at`; gescheitert: `check_failed` mit eigenem Code |
 | installieren | Vorprüfung (frische Sicherung, Gerät gesund), Update anstossen | Phase `installing`, dann `rebooting`, solange das Gerät nicht antwortet |
 | nachweisen | warten, bis das Gerät wieder antwortet und die neue Version meldet (Frist `timeout_min`) | `ok` oder `failed_verification` mit Grund; danach `health:` |
+
+Installieren und Nachweisen sind für `pfsense` gebaut (ADR-0205): Ein Treiber, der installiert, ist ein
+`target.Installer` (`Queue` reiht ein Angebot unter einer Auftragskennung ein, `InstallStatus` meldet den Stand dieser
+Kennung). Ein Install mit Umfang `all`:
+
+1. nimmt unmittelbar davor eine Konfigurationssicherung und legt sie ab; ohne sie beginnt nichts (`failed_config_backup`);
+2. prüft das Gerät; sein Plan ist das Release des eingestellten Zweigs allein (der Updater bringt die Zusatzpakete mit),
+   sonst jedes Zusatzpaket; ein zurückgehaltenes Angebot nie;
+3. je Angebot: einreihen und alle 15 s nach dem Stand fragen – `installing`, solange das Gerät ihn ausführt,
+   `rebooting`, solange es nicht antwortet; das Ende des Geräts entscheidet: `busy` ist `rejected_busy`, jede andere
+   Ablehnung oder jeder Fehlschlag `failed_package_manager`, ebenso ein Auftrag, den das Gerät nach 3 Minuten nicht
+   übernommen hat, kein Ende innerhalb von `timeout_min` `timeout`;
+4. weist nach: wartet auf Update-Fakten, die nach dem Ende des Installs gelesen sind, und das Angebot muss weg sein;
+   nach einem ok entscheiden die ersten solchen Fakten, nach einem Neustart fragt er bis `timeout_min` (ein
+   Release-Upgrade kann in späteren Boot-Stufen weiterlaufen), sonst `failed_verification`.
 
 Feste Codes wie überall ([ADR-0007](../docs/adr/0007-fixed-codes-instead-of-error-texts.md)), entschieden am Typ des
 Fehlers, nie an seinem Text: Gerät nicht erreichbar → `precheck_repo_unreachable`; neu: Gerät lehnt das Dienstkonto ab
@@ -218,13 +248,21 @@ ihr Update gibt es zwei Wege, in dieser Rangfolge:
 
 | Teil | Ort auf der Firewall | läuft als | macht |
 |---|---|---|---|
-| fester Befehl `vordr-gna` | `/usr/local/sbin/vordr-gna` (0755) | `vordr-gna`, nur über den Schlüssel des Stellvertreters (`command=` in der Schlüsselzeile) | `version`, `backup`, `window status`, `window open <adresse> <minuten>`, `window close <adresse>`; legt Aufträge nur in die Warteschlange |
-| Wurzel-Job `vordr-gna-root` | `/usr/local/sbin/vordr-gna-root` (0700), Cron jede Minute unter `lockf` | root | prüft jeden Auftrag erneut, trägt in die pf-Tabelle `vordr_update_window` ein, schliesst Abgelaufenes, gleicht Tabelle und Zustand ab, schreibt stündlich die Update-Fakten |
+| fester Befehl `vordr-gna` | `/usr/local/sbin/vordr-gna` (0755) | `vordr-gna`, nur über den Schlüssel des Stellvertreters (`command=` in der Schlüsselzeile) | `version`, `backup`, `window status`, `window open <adresse> <minuten>`, `window close <adresse>`, `install release <kennung>`, `install addon <name> <kennung>`, `install status <kennung>` (ADR-0205); legt Aufträge nur in die Warteschlange |
+| Wurzel-Job `vordr-gna-root` | `/usr/local/sbin/vordr-gna-root` (0700), Cron jede Minute unter `lockf` | root | prüft jeden Auftrag erneut, trägt in die pf-Tabelle `vordr_update_window` ein, schliesst Abgelaufenes, gleicht Tabelle und Zustand ab, führt höchstens einen Install je Lauf mit `pfSense-upgrade -y` aus (ein Zusatzpaket mit `-i <name>`), nachdem er geprüft hat, dass sein Angebot noch besteht und kein anderer Lauf des Updaters dessen Sperre hält, schreibt stündlich und nach einem Install die Update-Fakten, fragt einmal am Tag `pfSense-upgrade -C -U` nach einem Release in einem anderen Zweig |
 | Geräteliste | `/usr/local/etc/vordr-gna-allow` (0644) | – | Adressen der Geräte, die ein Fenster bekommen dürfen, eine je Zeile, z. B. `192.0.2.40`; die Liste gehört dem Standort, das Repo liefert sie leer |
-| Warteschlange, Zustand | `/var/db/vordr-gna-queue` (vordr-gna, 0700), `/var/db/vordr-gna/` (root) | – | `window`: `entry=<adresse> <ende>`; `updates`: `updates_format=2`, `base_installed`, `base_offered`, `packages_outdated(_count)` (nur Status `<`), je solchem Paket eine Zeile `package_offer=<name> <installiert> <angeboten>` (ADR-0198) |
+| Warteschlange, Zustand | `/var/db/vordr-gna-queue` (vordr-gna, 0700), `/var/db/vordr-gna/` (root) | – | `window`: `entry=<adresse> <ende>`; `updates`: `updates_format=3`, die Schlüssel von Form 2 (`base_installed`, `base_offered`, `packages_outdated(_count)` nur mit Status `<`, je solchem Paket eine Zeile `package_offer=<name> <installiert> <angeboten>`, ADR-0198) sowie `release_installed`, `release_offered`, `release_other`, `addon_offer_count`, je veraltetem Zusatzpaket eine Zeile `addon_offer=<name> <installiert> <angeboten>`, `packages_behind_release` (ADR-0204); `release_other`: die letzte tägliche Antwort; `install`: der letzte Install (`install_job`, `install_kind`, `install_name`, `install_state` running, ok, failed, refused oder rebooted, `install_code` busy, not_offered, failed oder interrupted, `install_rc`, `install_started`, `install_finished`, `install_boot`), `upgrade.log` das Protokoll des Updaters dazu (ADR-0205) |
 
 - Antworten sind `key=value`-Zeilen; eine Ablehnung sagt `state=refused` und `reason=<code>` (`unknown_call`,
-  `bad_arguments`, `bad_address`, `bad_minutes`, `not_listed`, `not_ready`), der Rückgabewert die Art (2, 3, 4).
+  `bad_arguments`, `bad_address`, `bad_minutes`, `not_listed`, `not_ready`, `bad_id`, `bad_name`), der Rückgabewert die
+  Art (2, 3, 4).
+- Ein Install-Auftrag trägt seine Art, den Namen eines Zusatzpakets (`pfSense-pkg-` und höchstens 36 weitere aus
+  `A-Za-z0-9._+-`) und eine Kennung (8 bis 32 Hex-Ziffern in Kleinbuchstaben), damit er in den 100 Bytes bleibt, die
+  der Wurzel-Job liest. `install status <kennung>` antwortet mit dem Zustand des Wurzel-Jobs für diese Kennung, sonst
+  `queued`, solange ihr Auftrag in der Warteschlange liegt, sonst `unknown`.
+- Ein Install, den ein Lauf laufend zurückliess, endete mit diesem Lauf: nach einem Neustart ist er `rebooted` (der Agent
+  weist nach), im selben Boot `failed` mit `interrupted`; solange `pfSense-upgrade` seine Sperre hält (eine spätere
+  Boot-Stufe eines Release-Upgrades), bleibt er `running`.
 - Ein Fenster geht bis zu einer Minute nach dem Auftrag auf bzw. zu; der Treiber wartet auf `window status`.
 - Die Regel „Tabelle → Update-Server des Herstellers“ gehört nicht zu `deploy/pfsense/`: Sie kommt mit dem ersten
   Treiber, der ein Fenster braucht, und nennt die Update-Server seines Herstellers. Ohne sie bewirkt ein Eintrag in
@@ -276,7 +314,7 @@ nachzuweisen, nur lesend.
 
 | Gerät | Zugang | Update-Stand | Sichern (Treiber) | Installieren | Zu beachten |
 |---|---|---|---|---|---|
-| Firewall (pfSense) | Admin-Oberfläche bzw. SSH, feste Befehle | Firmware und angebotene Basis-Version, dazu Paket-Updates; ohne Treiber erscheint das nirgends in HA (Abschnitt 2, Punkt 3) | `config.xml` lesen, XML-Wurzel prüfen | nur melden | Stände auf dem Gerät (bei jeder Änderung) liegen nicht ausser Haus; die Cloud-Sicherung des Herstellers ist keine (4.4: kein Herstellerkonto) |
+| Firewall (pfSense) | Admin-Oberfläche bzw. SSH, feste Befehle | Firmware und angebotene Basis-Version, dazu Paket-Updates; ohne Treiber erscheint das nirgends in HA (Abschnitt 2, Punkt 3) | `config.xml` lesen, XML-Wurzel prüfen | per Knopf über `pfSense-upgrade`: das Release des eingestellten Zweigs oder ein Zusatzpaket; einen anderen Zweig stellt man in pfSense ein (ADR-0204, ADR-0205) | Stände auf dem Gerät (bei jeder Änderung) liegen nicht ausser Haus; die Cloud-Sicherung des Herstellers ist keine (4.4: kein Herstellerkonto) |
 | Smart-Home-Gateway | Web-API, SSH | installierte Version, Update-Kanal, angebotenes Update | Sicherungsfunktion der Oberfläche (zu prüfen, welcher Weg der offizielle ist) | per Knopf | – |
 | NAS (Synology DSM) | DSM-Web-API | Update-Prüfung des NAS, auch mit Hauptversionen; ob es Sicherheits-Hotfixes selbst installiert | Export über `SYNO.Backup.Config.Backup` (4.1) | per Knopf, später | Endet die Downloadliste des Herstellers für das Modell, kommt keine neue Hauptversion mehr; wie lange die letzte noch Sicherheitsupdates bekommt, sagt der Supportstatus des Herstellers |
 | Mesh-WLAN | Web-Login (SSH meist aus) | Firmware je Einheit, Meldung des Herstellers; ob sich eine Einheit selbst aktualisiert (meist nur der Master) | Einstellungsdatei der Oberfläche (zu prüfen) | nur melden (ADR-0092) | oft **eine Admin-Sitzung**: eine Abfrage kann eine offene Sitzung im Browser hinauswerfen → selten abfragen, danach abmelden |
@@ -297,9 +335,10 @@ nachzuweisen, nur lesend.
 ## 7. Sicherheit
 
 - **Leitstelle:** hält keine Zugangsdaten. Übernommen kann sie Prüfungen und, wo die Richtlinie einer Instanz es
-  erlaubt, ein Firmware-Update anstossen – wie bei Hosts. Das Bedrohungsmodell (architecture.de.md 5) bekommt eine Zeile:
+  erlaubt, ein Firmware-Update anstossen – wie bei Hosts. Das Bedrohungsmodell (architecture.de.md 5) hat die Zeile:
   „den Stellvertreter übernommen → kann die Geräte bedienen, deren Zugangsdaten er hält, und ihre
-  Konfigurationssicherungen lesen“.
+  Konfigurationssicherungen lesen“. Für die Firewall heisst das: das Update ihres Herstellers anstossen, wo die Instanz
+  Installieren erlaubt (ADR-0205); der Auftrag trägt keinen Befehl, und der Wurzel-Job prüft ihn erneut.
 - **Container:** nur für diesen Zweck; kein SSH-Dienst, Verwaltung über den Hypervisor. Ausgehend nur, was die
   Firewall des Hypervisors erlaubt (4.7): Leitstelle (8443), DNS, die eingetragenen Geräte auf ihren Ports, dazu
   HTTP(S) ins Internet für Pakete und Hersteller-Firmware.
@@ -324,7 +363,7 @@ nachzuweisen, nur lesend.
 4. Stellvertreter in einem Verwaltungsnetz, Treiber für die Server-Fernwartung (melden über ein lokales
    Hersteller-Repository).
 5. Installieren per Knopf, je Geräteklasse mit Sicherung davor und Nachweis danach. Geräte ohne Internet, die nur
-   selbst laden können, erst mit der kurzzeitigen Freigabe (4.6).
+   selbst laden können, erst mit der kurzzeitigen Freigabe (4.6). **Gebaut für pfSense** (ADR-0205).
 
 ## 9. Entschieden und offen
 

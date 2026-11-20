@@ -48,6 +48,11 @@ func TestTargetRules(t *testing.T) {
 	if _, issues = Parse([]byte(strings.Replace(ssh, "192.0.2.1\n", "192.0.2.1:2222\n", 1))); len(issues) > 0 {
 		t.Fatalf("ssh with a port: %v", issues)
 	}
+	// ADR-0205: the firewall installs by button, scope all, never automatically.
+	if cfg, issues = Parse([]byte(ssh + "install: {allowed_scopes: [all], default_scope: all}\n")); len(issues) > 0 ||
+		cfg.Install.Auto != AutoOff {
+		t.Fatalf("pfSense instance that installs: %v", issues)
+	}
 
 	for name, tc := range map[string]struct{ yaml, field string }{
 		"host_key on https":     {strings.Replace(base, "  credentials:", "  host_key: \""+hostKey+"\"\n  credentials:", 1), "target.host_key"},
@@ -72,6 +77,9 @@ func TestTargetRules(t *testing.T) {
 		"backup keep 0":         {base + "config_backup: {keep: 400}\n", "config_backup.keep"},
 		"backup age":            {base + "config_backup: {max_age_h: 2}\n", "config_backup.max_age_h"},
 		"install":               {base + "install: {allowed_scopes: [all], default_scope: all}\n", "install"},
+		"ssh: install security": {ssh + "install: {allowed_scopes: [security], default_scope: security}\n", "install.allowed_scopes"},
+		"ssh: install more":     {ssh + "install: {allowed_scopes: [security, all], default_scope: all}\n", "install.allowed_scopes"},
+		"ssh: install auto":     {ssh + "install: {allowed_scopes: [all], default_scope: all, auto: hub, window: {days: [mon], start: \"01:00\", end: \"02:00\"}}\n", "install.auto"},
 		"reboot":                {base + "reboot: {allowed: true, window: {days: [mon], start: \"01:00\", end: \"02:00\"}}\n", "reboot.allowed"},
 		"self-update":           {base + "agent_update: {enabled: true, public_key: \"" + key(t) + "\"}\n", "agent_update"},
 		"apps":                  {base + "apps: [{id: x, name: X, source: apt-package, package: jq}]\n", "apps"},

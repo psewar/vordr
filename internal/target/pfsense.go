@@ -57,12 +57,20 @@ func newPfsense(t *policy.Target, creds map[string]string) (*pfsense, Result) {
 func (p *pfsense) Name() string { return "pfsense" }
 
 // updatesFormat is the first form of the root job's update facts that names each outdated package with its installed
-// and its offered version (ADR-0198). A root job before it writes no updates_format.
-const updatesFormat = 2
+// and its offered version (ADR-0198); updatesFormatRelease the first that names what pfSense's own updater and package
+// manager offer (ADR-0204). A root job before form 2 writes no updates_format.
+const (
+	updatesFormat        = 2
+	updatesFormatRelease = 3
+)
+
+// releaseOther names the offer of a release in another branch.
+const releaseOther = "pfSense (other branch)"
 
 // Check reads the firmware and the outdated packages from the root job's update facts (written hourly from the local
-// package catalog). The base system counts as offered when the catalog has a newer pfSense-base; every outdated
-// package is one offer, from the version installed to the one in the catalog (packageOffers).
+// package catalog). From form 3 on it offers what pfSense's own updater and package manager would install
+// (releaseOffers); before it, the base system when the catalog has a newer pfSense-base and every outdated package,
+// from the version installed to the one in the catalog (packageOffers).
 func (p *pfsense) Check(ctx context.Context) (Status, Result) {
 	out, res := p.call(ctx, "version")
 	if !res.OK() {
@@ -74,10 +82,18 @@ func (p *pfsense) Check(ctx context.Context) (Status, Result) {
 	}
 	st := Status{Product: "pfSense", Installed: kv["version"], SelfUpdate: "off", Facts: map[string]string{}}
 	for _, k := range []string{"updates_checked_at", "updates_format", "base_installed", "base_offered",
-		"packages_outdated_count"} {
+		"packages_outdated_count", "release_installed", "release_offered", "release_other", "packages_behind_release"} {
 		if v := kv[k]; v != "" {
 			st.Facts[k] = v
 		}
+	}
+	if n, err := strconv.Atoi(kv["updates_format"]); err == nil && n >= updatesFormatRelease {
+		offers, res := releaseOffers(out, kv)
+		if !res.OK() {
+			return Status{}, res
+		}
+		st.Offers = offers
+		return st, Result{}
 	}
 	if offered := kv["base_offered"]; offered != "" && offered != kv["base_installed"] {
 		st.Offers = append(st.Offers, Offer{Name: "pfSense", Version: offered})
@@ -127,6 +143,91 @@ func packageOffers(out []byte, kv map[string]string) ([]Offer, Result) {
 				"it does not read", count, len(lines))}
 	}
 	return offers, Result{}
+}
+
+// releaseOffers reads what pfSense's own updater and package manager offer, from form 3 of the update facts on
+// (ADR-0204):
+//   - the release of the configured branch, from release_installed to release_offered, where the root job names one;
+//   - one package per addon_offer line, an installed add-on package from its installed to its offered version; there
+//     must be as many lines as addon_offer_count says, else the root job could not read one, and the facts are refused
+//     as in form 2;
+//   - a newer release in another branch (release_other) as an offer no install through Vördr takes (KeptBack): the
+//     operator switches the branch in pfSense's own settings. It is left out where it is the release already offered.
+//
+// Other newer packages of the catalog are no offers: they come with the next release or an add-on's update, and
+// packages_behind_release counts them.
+func releaseOffers(out []byte, kv map[string]string) ([]Offer, Result) {
+	installed := kv["release_installed"]
+	if installed == "" {
+		return nil, Result{protocol.CodeRejectedUnsupported, "the update facts name no installed release"}
+	}
+	var offers []Offer
+	offered := kv["release_offered"]
+	if offered != "" && offered != installed {
+		offers = append(offers, Offer{Name: "pfSense", From: installed, Version: offered, Install: "release"})
+	}
+	lines := keyLines(out, "addon_offer")
+	for i, line := range lines {
+		f := strings.Fields(line)
+		if len(f) != 3 {
+			return nil, Result{protocol.CodeRejectedUnsupported, fmt.Sprintf(
+				"addon_offer line %d is not <name> <installed> <offered>", i+1)}
+		}
+		offers = append(offers, Offer{Name: "package " + f[0], From: f[1], Version: f[2], Install: "addon " + f[0]})
+	}
+	if count := kv["addon_offer_count"]; count != strconv.Itoa(len(lines)) {
+		return nil, Result{protocol.CodeRejectedUnsupported, fmt.Sprintf(
+			"the root job counts %q outdated add-on packages but names the versions of %d", count, len(lines))}
+	}
+	if other := kv["release_other"]; other != "" && other != installed && other != offered {
+		offers = append(offers, Offer{Name: releaseOther, From: installed, Version: other, KeptBack: true})
+	}
+	return offers, Result{}
+}
+
+// Queue asks the root job to install one offer (ADR-0205): the release of the configured branch ("release") or one
+// add-on package ("addon <name>"). The forced command checks the words, the root job checks the offer again before it
+// runs pfSense-upgrade. Only offers of form 3 name how they are installed.
+func (p *pfsense) Queue(ctx context.Context, o Offer, id string) Result {
+	if o.Install == "" {
+		return Result{protocol.CodeRejectedUnsupported, fmt.Sprintf("%s is not installed through Vördr", o.Name)}
+	}
+	out, res := p.call(ctx, "install "+o.Install+" "+id)
+	if !res.OK() {
+		return res
+	}
+	if keyValues(out)["state"] != "requested" {
+		return Result{protocol.CodeFailedPackageManager, "the firewall's command did not take the install request"}
+	}
+	return Result{}
+}
+
+// InstallStatus asks where the install request of id stands. An answer for another id, a state the root job does not
+// write, or an end that is no time is refused: the agent would read it as an outcome.
+func (p *pfsense) InstallStatus(ctx context.Context, id string) (InstallState, Result) {
+	out, res := p.call(ctx, "install status "+id)
+	if !res.OK() {
+		return InstallState{}, res
+	}
+	kv := keyValues(out)
+	if kv["install_job"] != id {
+		return InstallState{}, Result{protocol.CodeRejectedUnsupported, "the install status names another request"}
+	}
+	st := InstallState{State: kv["install_state"], Code: kv["install_code"], RC: kv["install_rc"]}
+	switch st.State {
+	case InstallQueued, InstallRunning, InstallOK, InstallFailed, InstallRefused, InstallRebooted, InstallUnknown:
+	default:
+		return InstallState{}, Result{protocol.CodeRejectedUnsupported, fmt.Sprintf(
+			"the install status says %q, which the root job does not write", st.State)}
+	}
+	if f := kv["install_finished"]; f != "" {
+		n, err := strconv.ParseInt(f, 10, 64)
+		if err != nil || n <= 0 {
+			return InstallState{}, Result{protocol.CodeRejectedUnsupported, "the install's end is no time"}
+		}
+		st.Finished = n
+	}
+	return st, Result{}
 }
 
 // Backup reads config.xml and checks that it is one: an XML declaration, the root element <pfsense>, at least 1 KB.

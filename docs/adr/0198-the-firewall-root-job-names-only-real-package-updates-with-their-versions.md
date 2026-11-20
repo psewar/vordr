@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by ADR-0204
 date: 2026-11-19
 decision-makers: kay (2026-11-19, asked that the firewall's packages count only real updates, with both versions; accepted with the merge); proposed by Claude
 ---

@@ -348,7 +348,8 @@
               "reboot_pending_manual": "Von Hand neu starten – dieser Host erlaubt keinen Neustart über Vördr",
               "ok_reboot_required_manual": "Von Hand neu starten – dieser Host erlaubt keinen Neustart über Vördr",
               "stale_manual": "Updates von Hand installieren – dieser Host erlaubt keine Installation über Vördr",
-              "stale_policy": "Von Hand installieren oder den Abschnitt install in der agent.yaml des Hosts erweitern"
+              "stale_policy": "Von Hand installieren oder den Abschnitt install in der agent.yaml des Hosts erweitern",
+              "stale_kept_back": "Den Update-Zweig in den Einstellungen des Geräts wechseln oder install.mode full-upgrade setzen – oder von Hand installieren"
             }
           },
           "check_failed_code": {
@@ -979,6 +980,10 @@
     "problem_stale_policy": {
       "title": "Vördr: Update-Problem auf {node}",
       "description": "Updates liegen seit über {stale_days} Tagen. Die Richtlinie des Hosts lässt Vördr keines davon installieren: Sie erlaubt nur Sicherheitsupdates, und keines davon ist eines, oder ihr Installationsmodus hält sie zurück.\n\nNächster Schritt: Von Hand installieren oder den Abschnitt install in der agent.yaml des Hosts erweitern."
+    },
+    "problem_stale_kept_back": {
+      "title": "Vördr: Update-Problem auf {node}",
+      "description": "Updates liegen seit über {stale_days} Tagen, und ein Install über Vördr nimmt keines davon: Der Host hält sie zurück. Ein Gerät bietet sie nur in einem anderen Zweig seiner Updates an; der Installationsmodus upgrade von apt lässt jene liegen, die Pakete hinzufügen oder entfernen müssten.\n\nNächster Schritt: Den Update-Zweig in den Einstellungen des Geräts wechseln oder install.mode full-upgrade setzen – oder von Hand installieren."
     },
     "protocol_mismatch": {
       "title": "Vördr: Leitstelle zu alt oder zu neu",

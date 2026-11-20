@@ -389,7 +389,11 @@ Since H5, the hub sends only codes and numbers, and the integration writes every
   - `stale` stays where the install button takes some of the pending updates (`installable` above zero, or no count
     from the hub); otherwise it becomes `stale_policy` where the host takes installs through Vördr but its policy none
     of these, and `stale_manual` where it takes none
-    ([ADR-0197](../docs/adr/0197-the-stale-repair-names-only-a-way-that-exists.md));
+    ([ADR-0197](../docs/adr/0197-the-stale-repair-names-only-a-way-that-exists.md)); before both, `stale_kept_back`
+    where the host holds back every pending update (the hub's `kept_back` equals `pending`): a release an appliance
+    offers only in another branch, or apt's install mode `upgrade`; its next step is to switch the device's update
+    branch, set `install.mode: full-upgrade`, or install by hand
+    ([ADR-0204](../docs/adr/0204-the-firewall-reports-what-its-own-updater-offers.md));
   - the repair follows a changed key even while the problem stays the same; `vordr_problem` does not fire for it.
 - **Events** carry `message` in every supplied language, so that an automation chooses the language of its recipient,
   independent of the system language.

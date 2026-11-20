@@ -376,7 +376,7 @@ func check(path string, refresh bool) int {
 	checker := agent.System(host, refresh, cfg.Install.Mode)
 	if cfg.Target != nil {
 		var res target.Result
-		if checker, host, res = targetSetup(ctx, cfg); !res.OK() {
+		if checker, _, host, res = targetSetup(ctx, cfg); !res.OK() {
 			fmt.Fprintf(os.Stderr, "target %s: %s %s\n", cfg.Target.Driver, res.Code, res.Detail)
 			return 2
 		}
@@ -491,15 +491,16 @@ func updateGuard(path, job, exe string) int {
 	return 0
 }
 
-// targetSetup opens the instance's driver, its backup store under the state directory and the appliance's facts.
-func targetSetup(ctx context.Context, cfg policy.Config) (agent.Checker, facts.Host, target.Result) {
+// targetSetup opens the instance's driver, its backup store under the state directory and the appliance's facts, and
+// the installer where the driver installs (ADR-0205; nil otherwise).
+func targetSetup(ctx context.Context, cfg policy.Config) (agent.Checker, agent.Installer, facts.Host, target.Result) {
 	d, res := target.Open(cfg.Target)
 	if !res.OK() {
-		return nil, facts.Host{}, res
+		return nil, nil, facts.Host{}, res
 	}
 	store := target.Store{Dir: filepath.Join(cfg.StateDir, "config-backups"), Keep: cfg.ConfigBackup.Keep}
 	checker := agent.TargetChecker(d, store, time.Duration(cfg.ConfigBackup.MaxAgeH)*time.Hour, time.Now)
-	return checker, agent.TargetFacts(ctx, cfg.Node, d), target.Result{}
+	return checker, agent.TargetInstaller(d, store, time.Now), agent.TargetFacts(ctx, cfg.Node, d), target.Result{}
 }
 
 // runAgent runs in the foreground until interrupted.
@@ -541,21 +542,26 @@ func runAgentCtx(ctx context.Context, path string, toFile bool, onClient func(*a
 		logger.Printf("new key pair created")
 	}
 	if cfg.Target != nil {
-		// A proxy instance (design/proxy-agent.md): it speaks for its appliance only. No installer, reboot, containers,
-		// packages or self-update - they would act on the container it runs in (4.3: the container's own agent updates
-		// the shared binary and restarts the instances).
-		checker, host, res := targetSetup(ctx, cfg)
+		// A proxy instance (design/proxy-agent.md): it speaks for its appliance only. No reboot, containers, packages or
+		// self-update - they would act on the container it runs in (4.3: the container's own agent updates the shared
+		// binary and restarts the instances). It installs only through the appliance's own updater, where the driver
+		// can (ADR-0205); agent.yaml decides whether it may.
+		checker, installer, host, res := targetSetup(ctx, cfg)
 		if !res.OK() {
 			logger.Printf("target %s: %s %s", cfg.Target.Driver, res.Code, res.Detail)
 			return 2
 		}
 		client := agent.NewClient(cfg, id, version, host, checker, logger)
+		if installer != nil {
+			client.Installer = installer
+		}
 		logger.Printf("vordr-agent %s, node %s for %s at %s, fingerprint %s, hub %s, verbs %v", version, cfg.Node,
 			cfg.Target.Driver, cfg.Target.Address, id.Fingerprint(), cfg.Hub.URL, client.Verbs())
 		if onClient != nil {
 			onClient(client)
 		}
 		client.Run(ctx)
+		client.WaitRuns() // a stop request does not cut an appliance's install short
 		return 0
 	}
 	host := facts.Collect(ctx, runner.Exec{})

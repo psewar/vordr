@@ -95,6 +95,10 @@ var TargetDrivers = []string{"synology-dsm", "pfsense"}
 // SSHDrivers reach their appliance over SSH (the system's OpenSSH client, ADR-0094); all others over HTTPS.
 var SSHDrivers = []string{"pfsense"}
 
+// InstallDrivers install what their appliance offers, through its own updater (ADR-0205); the others report and back
+// up only.
+var InstallDrivers = []string{"pfsense"}
+
 // ConfigBackup: the driver exports the configuration daily and keeps the newest Keep exports; one older than MaxAgeH
 // counts as missing (ADR-0090).
 type ConfigBackup struct {
@@ -784,8 +788,14 @@ func (c *Config) validateTarget() []Issue {
 			add("config_backup.max_age_h", "must be between 6 and 168")
 		}
 	}
-	if len(c.Install.AllowedScopes) > 0 {
-		add("install", "firmware updates of an appliance are not built yet - leave install out (report and back up only)")
+	switch {
+	case len(c.Install.AllowedScopes) == 0:
+	case !slices.Contains(InstallDrivers, c.Target.Driver):
+		add("install", "installing is built for %s only (ADR-0205) - leave install out for %s (report and back up "+
+			"only)", strings.Join(InstallDrivers, ", "), c.Target.Driver)
+	case len(c.Install.AllowedScopes) != 1 || c.Install.AllowedScopes[0] != string(protocol.ScopeAll):
+		add("install.allowed_scopes", "an appliance installs what its own updater offers: allowed_scopes [all] "+
+			"(ADR-0205)")
 	}
 	if c.Install.Auto != AutoOff {
 		add("install.auto", "an appliance is never updated automatically (ADR-0089)")

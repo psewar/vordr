@@ -1,13 +1,13 @@
 ---
-status: proposed
+status: accepted
 date: 2026-11-20
-decision-makers: proposed by Claude (2026-11-20) after kay asked that the firewall's pending updates become installable from Home Assistant; for the maintainer to accept or reject
+decision-makers: kay (2026-11-20, accepted with ADR-0205: "annehmen und umsetzen"); proposed by Claude (2026-11-20) after kay asked that the firewall's pending updates become installable from Home Assistant
 ---
 
 # The firewall reports what its own updater offers
 
-Would supersede [ADR-0198](0198-the-firewall-root-job-names-only-real-package-updates-with-their-versions.md) once
-accepted: its blank-separated offers with both versions stay, what counts as an offer changes.
+Supersedes [ADR-0198](0198-the-firewall-root-job-names-only-real-package-updates-with-their-versions.md): its
+blank-separated offers with both versions stay, what counts as an offer changes.
 
 ## Context and Problem Statement
 
@@ -45,19 +45,22 @@ And a newer release in another branch, the update the operator would actually ma
 
 ## Decision Outcome
 
-Proposed: what the updater and the package manager offer.
+Chosen: what the updater and the package manager offer.
 
-* The root job writes `updates_format=3` with:
+* The root job writes `updates_format=3`, keeps the keys of form 2 for agents that read only those, and adds:
   * `release_installed` and `release_offered`: the newest version of the meta and core packages, installed and in the
     configured branch's catalog - the comparison `pfSense-upgrade -c` makes;
   * `release_other`: the newest release in another release branch, as `pfSense-upgrade -C -U` names it, read once a
     day (it may fetch the other branches' catalogs from the vendor; the configured branch's catalog stays pfSense's
     own job), empty without one;
   * `addon_offer=<name> <installed> <offered>`: one line per installed add-on package (`pfSense-pkg-*`) with status
-    `<`, blank-separated as in ADR-0198.
+    `<`, blank-separated as in ADR-0198, and `addon_offer_count` counting them all, so that the driver refuses facts
+    with a line the root job could not read, as in ADR-0198.
 * The driver offers the release of the configured branch as the firmware (from installed to offered), and each add-on
-  offer as `package <name>`. A newer release in another branch is an offer `release <version> (other branch)` that no
-  button installs; the integration's text names the step: switch the branch in pfSense's update settings.
+  offer as `package <name>`. A newer release in another branch is the offer `pfSense (other branch)` that no button
+  installs: it is kept back (the hub leaves it out of `installable`, as apt's kept-back updates of
+  [ADR-0127](0127-count-only-what-the-upgrade-mode-installs.md)). Where the host holds back every pending update, the
+  integration's text names the step (`stale_kept_back`): switch the branch in the device's update settings.
 * Other newer packages of the catalog are no offers. The root job keeps their count as the fact
   `packages_behind_release`, so that it stays visible, without making the firewall pending.
 * Without `updates_format` 3 (an earlier root job) the driver reads the facts as ADR-0198 describes.
@@ -65,7 +68,7 @@ Proposed: what the updater and the package manager offer.
 ### Consequences
 
 * Good, because the firewall is pending exactly when its vendor offers something, and each offer has a way: the
-  release and add-ons by the updater (ADR-0205 proposes the button), another branch by the operator.
+  release and add-ons by the updater (ADR-0205 gives the button), another branch by the operator.
 * Good, because the new release line, the update that matters, shows in Home Assistant.
 * Bad, because newer packages of the branch that the vendor ships only with the next release no longer count; a
   security fix among them waits for that release, as it does in pfSense's own interface.
@@ -76,8 +79,12 @@ Proposed: what the updater and the package manager offer.
 
 * `deploy/pfsense/` tests with a stubbed `pkg` and `pfSense-upgrade`: a newer core package gives `release_offered`, a
   newer dependency alone gives none, an older add-on gives its `addon_offer` line, another branch gives
-  `release_other`; the `version` call returns them.
+  `release_other` once a day and keeps it on any other answer; the `version` call returns them
+  (`TestRootJobNamesReleaseAndAddOns`, `TestRootJobAsksOtherBranchesOnceADay`).
 * `internal/target`: the offers from format 3, the refusal of malformed lines (as ADR-0198), and format 2 read as
-  before.
+  before (`TestPfsenseOffersWhatTheUpdaterOffers`, `TestPfsenseRefusesReleaseFactsItDoesNotRead`).
+  `internal/agent`: a kept-back offer is pending and counted as kept back (`TestTargetCheckerKeptBackOffer`).
+* `ha/tests/test_texts.py`: `stale_kept_back` where the host holds back every pending update
+  (`test_stale_key_names_updates_the_host_holds_back`).
 * Before the first rollout, the root job's facts on a firewall are compared with `pfSense-upgrade -c`, `-C` and the
   package manager's list of installed packages.
