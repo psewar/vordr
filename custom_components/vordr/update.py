@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.update import UpdateEntity, UpdateEntityFeature
+from homeassistant.const import EntityCategory
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv, entity_platform
 import voluptuous as vol
@@ -74,6 +75,10 @@ class HostSystem(VordrHostEntity, UpdateEntity):
     (design 8.3), worded here in HA's system language. An unknown latest version (failed check) is shown as unknown,
     not as up to date. The entity is on only when the install button would install something (ADR-0106): what the
     host's policy keeps out stays in the counts and the summary."""
+
+    # Primary, set here: left alone, the update platform picks config or diagnostic by the install feature, and the
+    # entity would move with the host's policy (ADR-0202). The same for packages and container images.
+    _attr_entity_category = None
 
     def __init__(self, coordinator: VordrCoordinator, node: str) -> None:
         super().__init__(coordinator, node, "system", PLATFORM)
@@ -157,6 +162,8 @@ class HostPackages(VordrHostEntity, UpdateEntity):
     public for at least the host's minimum age, the whole plan checked against OSV by the hub; the service
     vordr.update_package does it for one. What waits (too new) or is flagged is named in the summary; with nothing
     ready the entity is off (ADR-0106)."""
+
+    _attr_entity_category = None  # primary, as HostSystem (ADR-0202)
 
     def __init__(self, coordinator: VordrCoordinator, node: str, location: str) -> None:
         super().__init__(coordinator, node, f"packages_{location}", PLATFORM)
@@ -280,6 +287,7 @@ class HostContainers(VordrHostEntity, UpdateEntity):
     the image."""
 
     _unrecorded_attributes = frozenset({"updates", "vulnerable", "compare_failed"})  # can be long (ADR-0101)
+    _attr_entity_category = None  # primary, as HostSystem (ADR-0202)
 
     def __init__(self, coordinator: VordrCoordinator, node: str) -> None:
         super().__init__(coordinator, node, "containers", PLATFORM)
@@ -404,6 +412,8 @@ class HostContainers(VordrHostEntity, UpdateEntity):
 class HostAgent(VordrHostEntity, UpdateEntity):
     """The Vördr agent of a host against the release the hub hands out. The hub rolls a release out by itself
     (canaries first); installing here asks for it now. Only the operator's signed release can be installed."""
+
+    _attr_entity_category = EntityCategory.CONFIG  # Vördr's own software, also where it cannot be installed (ADR-0202)
 
     def __init__(self, coordinator: VordrCoordinator, node: str) -> None:
         super().__init__(coordinator, node, "agent", PLATFORM)

@@ -83,6 +83,7 @@ def _time(value: Any) -> datetime | None:
 
 class HostLastReport(VordrHostEntity, SensorEntity):
     _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_entity_category = EntityCategory.DIAGNOSTIC  # how Vördr sees the host (ADR-0202)
 
     def __init__(self, coordinator: VordrCoordinator, node: str) -> None:
         super().__init__(coordinator, node, "last_report", PLATFORM)
@@ -97,6 +98,7 @@ class HostLastBackup(VordrHostEntity, SensorEntity):
     its state is ok. The attribute state is a code (ok, stale, missing, unreachable, unmapped), translated by HA."""
 
     _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_entity_category = EntityCategory.DIAGNOSTIC  # ADR-0202
 
     def __init__(self, coordinator: VordrCoordinator, node: str) -> None:
         super().__init__(coordinator, node, "last_backup", PLATFORM)

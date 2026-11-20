@@ -235,4 +235,5 @@ Generated from the files by `python3 docs/adr/check_index.py --write`. `build.sh
 | [0199](0199-the-backup-gate-names-the-hypervisors-state-and-waits-for-its-restart.md) | The backup gate names the hypervisor's state and waits for its restart | accepted | 2026-11-19 |
 | [0200](0200-the-agent-itself-finds-processes-running-replaced-libraries.md) | The agent itself finds processes running replaced libraries | accepted | 2026-11-19 |
 | [0201](0201-the-reboot-repair-names-its-reason-and-the-services-to-restart.md) | The reboot repair names its reason and the services to restart | accepted | 2026-11-19 |
+| [0202](0202-entities-carry-a-category-by-their-role.md) | Entities carry a category by their role | accepted | 2026-11-19 |
 <!-- adr-index:end -->

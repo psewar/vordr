@@ -263,6 +263,13 @@ Aus, solange `hub.yaml` nicht `ha_approves_hosts: true` setzt; `check-config` ne
   `update.vordr_*` nennen (etwa ein Auto-Update-Blueprint, der sie auslassen soll,
   [ADR-0028](../docs/adr/0028-site-decision.md)), weiter passen. Weg: die `entity_id` vor dem Hinzufügen
   als Vorschlag setzen, per Test gegen die HA-Version belegt (6a).
+- **Entitäts-Kategorien** nach Rolle ([ADR-0202](../docs/adr/0202-entities-carry-a-category-by-their-role.md)):
+  Was die Wartung eines Hosts ausmacht, hat keine (die Updates für Systempakete, pip/npm-Pakete und Container-Images,
+  Update-Problem, Neustart nötig, letzter Lauf, die Zähler, die Knöpfe für Sicherheitsupdates, Neustart und Apps; die
+  Zähler der Leitstelle). Wie Vördr einen Host oder die Leitstelle sieht, ist `diagnostic` („Verbunden“, „Letzte
+  Meldung“, „Letztes Backup“; bei der Leitstelle „Leitstelle“, „Verbindung“, „Schwachstellendaten“). Wie Vördr selbst
+  arbeitet, ist `config` (der Knopf „Jetzt prüfen“, das Update „Agent“, der Schalter „Home-Assistant-Updates
+  pausieren“). Die Update-Entitäten setzen ihre Kategorie selbst, damit keine mit einer Fähigkeit wandert.
 - **Reparaturhinweise** (Abschnitt 11): je Host mit Problem ein Hinweis mit Grund und nächstem Schritt; er
   verschwindet, sobald das Problem weg ist.
 - **Diagnose-Download:** Verbindung, Versionen, Hostliste – ohne Schlüssel und ohne Hinweis auf den Standort, weil er

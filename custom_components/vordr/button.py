@@ -6,6 +6,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.button import ButtonDeviceClass, ButtonEntity
+from homeassistant.const import EntityCategory
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_platform
 import voluptuous as vol
@@ -67,6 +68,8 @@ class HostButton(VordrHostEntity, ButtonEntity):
             self._attr_translation_placeholders = {"app": app}
         if key == "reboot":
             self._attr_device_class = ButtonDeviceClass.RESTART
+        if key == "check":  # refreshes Vördr's view and changes nothing on the host (ADR-0202)
+            self._attr_entity_category = EntityCategory.CONFIG
 
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:

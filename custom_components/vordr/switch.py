@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.switch import SwitchEntity
+from homeassistant.const import EntityCategory
 
 from .entity import HA_UPDATES_UID
 from .ha_updates_installer import HaUpdatesInstaller
@@ -31,6 +32,7 @@ class HaUpdatesPaused(SwitchEntity):
     _attr_has_entity_name = True
     _attr_should_poll = False
     _attr_translation_key = "ha_updates_paused"
+    _attr_entity_category = EntityCategory.CONFIG  # how Vördr itself works (ADR-0202)
 
     def __init__(self, installer: HaUpdatesInstaller) -> None:
         self._installer = installer

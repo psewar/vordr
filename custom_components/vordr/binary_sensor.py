@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.binary_sensor import BinarySensorDeviceClass, BinarySensorEntity
+from homeassistant.const import EntityCategory
 
 from .coordinator import VordrCoordinator
 from .entity import HostEntities, VordrHostEntity, VordrHubEntity, track_host_entities
@@ -39,6 +40,7 @@ class HostOnline(VordrHostEntity, BinarySensorEntity):
     """Off while the host is away; `power` says when it announced it (sleeping, shutdown) - then it is no problem."""
 
     _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
+    _attr_entity_category = EntityCategory.DIAGNOSTIC  # how Vördr sees the host (ADR-0202)
 
     def __init__(self, coordinator: VordrCoordinator, node: str) -> None:
         super().__init__(coordinator, node, "online", PLATFORM)
@@ -119,6 +121,7 @@ class HubOnline(VordrHubEntity, BinarySensorEntity):
     """The connection to the hub itself: approved, connected, with a complete view."""
 
     _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
+    _attr_entity_category = EntityCategory.DIAGNOSTIC  # ADR-0202
 
     def __init__(self, coordinator: VordrCoordinator) -> None:
         super().__init__(coordinator, "online", PLATFORM)

@@ -7,7 +7,14 @@ import json
 from typing import Any
 
 from homeassistant.components.recorder.db_schema import MAX_STATE_ATTRS_BYTES, StateAttributes
-from homeassistant.const import EVENT_STATE_CHANGED, STATE_OFF, STATE_ON, STATE_UNAVAILABLE, STATE_UNKNOWN
+from homeassistant.const import (
+    EVENT_STATE_CHANGED,
+    STATE_OFF,
+    STATE_ON,
+    STATE_UNAVAILABLE,
+    STATE_UNKNOWN,
+    EntityCategory,
+)
 from homeassistant.core import Event, HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr, entity_registry as er, issue_registry as ir
@@ -1041,6 +1048,123 @@ async def test_forgotten_host_disappears(hass: HomeAssistant, fake_hub: FakeHub,
     assert hass.states.get("binary_sensor.vordr_gone_online") is None
     assert er.async_get(hass).async_get("binary_sensor.vordr_gone_online") is None
     assert hass.states.get("binary_sensor.vordr_stays_online") is not None
+
+
+def every_entity_view(node: str, may_install: bool) -> dict[str, Any]:
+    """A host with every entity the integration makes: backup, pip/npm location, container images, an app, an agent
+    release. may_install False takes the install capabilities away, so that the update platform would pick
+    diagnostic for the update entities instead of config."""
+    caps = {
+        **host_view(node)["capabilities"],
+        "install": may_install,
+        "install_security": True,
+        "reboot": True,
+        "agent_update": may_install,
+        "default_scope": "all",
+        "package_updates": ["npm-global"] if may_install else [],
+        "apps": [{"id": "gitlab", "name": "GitLab"}],
+    }
+    location = {"id": "npm-global", "kind": "npm-global", "ecosystem": "npm", "path": "/n", "packages": 1}
+    return host_view(
+        node,
+        capabilities=caps,
+        agent_release="1.1",
+        backup={"state": "ok", "last": "2026-10-28T23:00:00Z", "group": "ct/302", "max_age_hours": 26},
+        packages={**packages_view(0, 0, []), "locations": [location], "outdated": 0, "updates": []},
+        containers={"checked_at": "2026-10-29T00:00:00Z", "images": 1, "outdated": 0, "ready": 0},
+    )
+
+
+DIAGNOSTIC, CONFIG = EntityCategory.DIAGNOSTIC, EntityCategory.CONFIG
+HOST_CATEGORIES = {
+    # what a host's maintenance is about: no category
+    "update.{n}_system": None,
+    "update.{n}_containers": None,
+    "binary_sensor.{n}_problem": None,
+    "binary_sensor.{n}_reboot_required": None,
+    "sensor.{n}_last_run": None,
+    "sensor.{n}_pending_updates": None,
+    "sensor.{n}_security_updates": None,
+    "sensor.{n}_vulnerable_packages": None,
+    "sensor.{n}_malicious_packages": None,
+    "sensor.{n}_outdated_packages": None,
+    "sensor.{n}_outdated_images": None,
+    "button.{n}_install_security": None,
+    "button.{n}_reboot": None,
+    "button.{n}_install_app_gitlab": None,
+    # how Vördr sees the host
+    "binary_sensor.{n}_online": DIAGNOSTIC,
+    "sensor.{n}_last_report": DIAGNOSTIC,
+    "sensor.{n}_last_backup": DIAGNOSTIC,
+    # how Vördr itself works
+    "button.{n}_check": CONFIG,
+    "update.{n}_agent": CONFIG,
+}
+OTHER_CATEGORIES = {
+    "sensor.vordr_hub_hosts_online": None,
+    "sensor.vordr_hub_hosts_with_problem": None,
+    "sensor.vordr_hub_hosts_with_updates": None,
+    "sensor.vordr_hub_hosts_with_security_updates": None,
+    "sensor.vordr_hub_hosts_needing_reboot": None,
+    "sensor.vordr_hub_pending_approvals": None,
+    "sensor.vordr_ha_updates_ready": None,
+    "sensor.vordr_ha_updates_last_run": None,
+    "binary_sensor.vordr_hub_online": DIAGNOSTIC,
+    "sensor.vordr_hub_connection": DIAGNOSTIC,
+    "sensor.vordr_hub_vulnerability_data": DIAGNOSTIC,
+    "switch.vordr_ha_updates_paused": CONFIG,
+}
+
+
+async def test_entity_categories_by_role(hass: HomeAssistant, fake_hub: FakeHub, entry: MockConfigEntry) -> None:
+    """ADR-0202: primary what a host's maintenance is about, diagnostic how Vördr sees a host or the hub, config how
+    Vördr itself works. The update entities keep their category whether the host may install or not."""
+    fake_hub.hosts["full"] = every_entity_view("full", may_install=True)
+    fake_hub.hosts["bare"] = every_entity_view("bare", may_install=False)
+    await setup(hass, entry)
+    reg = er.async_get(hass)
+    want = {eid.format(n="vordr_full"): cat for eid, cat in HOST_CATEGORIES.items()}
+    want |= {eid.format(n="vordr_bare"): cat for eid, cat in HOST_CATEGORIES.items()}
+    want |= OTHER_CATEGORIES
+    want["update.vordr_full_packages_npm_global"] = None
+    for eid, cat in want.items():
+        e = reg.async_get(eid)
+        assert e is not None, eid
+        assert e.entity_category == cat, eid
+    # every entity of the integration is named above: a new one gets its category decided, not by chance
+    made = {e.entity_id for e in er.async_entries_for_config_entry(reg, entry.entry_id)}
+    assert made == set(want), made ^ set(want)
+    assert hass.states.get("update.vordr_full_system").attributes["supported_features"] & 1  # may install
+    assert not hass.states.get("update.vordr_bare_system").attributes["supported_features"] & 1
+
+
+async def test_existing_entities_take_their_category(
+    hass: HomeAssistant, fake_hub: FakeHub, entry: MockConfigEntry
+) -> None:
+    """An installation from before ADR-0202 has its entities registered without a category - or, for the update
+    entities, with the one the update platform picked. They take the new one on load, under the same entity id."""
+    entry.add_to_hass(hass)
+    reg = er.async_get(hass)
+    old = {
+        "sensor.vordr_golf_last_report": ("sensor", "golf:last_report", None),
+        "button.vordr_golf_check": ("button", "golf:check", None),
+        "update.vordr_golf_system": ("update", "golf:system", CONFIG),
+    }
+    for eid, (domain, uid, cat) in old.items():
+        e = reg.async_get_or_create(
+            domain, DOMAIN, uid, suggested_object_id=eid.split(".")[1], config_entry=entry, entity_category=cat
+        )
+        assert e.entity_id == eid and e.entity_category == cat
+    fake_hub.hosts["golf"] = host_view("golf", capabilities={**host_view("golf")["capabilities"], "install": True})
+    await setup(hass, entry)
+    for eid, cat in {
+        "sensor.vordr_golf_last_report": DIAGNOSTIC,
+        "button.vordr_golf_check": CONFIG,
+        "update.vordr_golf_system": None,
+    }.items():
+        e = reg.async_get(eid)
+        assert e is not None and e.entity_category == cat, (eid, e and e.entity_category)
+    assert len(er.async_entries_for_config_entry(reg, entry.entry_id)) == len(HOST_IDS) + len(OTHER_CATEGORIES)
 
 
 async def test_diagnostics_hide_the_key(hass: HomeAssistant, fake_hub: FakeHub, entry: MockConfigEntry) -> None:

@@ -253,6 +253,13 @@ Off unless `hub.yaml` sets `ha_approves_hosts: true`; `check-config` names it ei
   `update.vordr_*` (such as an auto-update blueprint that is to leave them out,
   [ADR-0028](../docs/adr/0028-site-decision.md)) keep fitting. The way: set the `entity_id` as a
   suggestion before adding, proven by a test against the HA version (6a).
+- **Entity categories** by role ([ADR-0202](../docs/adr/0202-entities-carry-a-category-by-their-role.md)): what a
+  host's maintenance is about has none (the updates for system packages, pip/npm packages and container images,
+  update problem, reboot required, last run, the counts, the buttons for security updates, reboot and apps; the
+  hub's counts). How Vördr sees a host or the hub is `diagnostic` ("Connected", "Last report", "Last backup"; on the
+  hub "Hub", "Connection", "Vulnerability data"). How Vördr itself works is `config` (the button "Check now", the
+  update "Agent", the switch "Pause Home Assistant updates"). The update entities set their category themselves, so
+  none moves with a capability.
 - **Repair issues** (section 11): one issue per host with a problem, with the reason and the next step; it disappears
   as soon as the problem is gone.
 - **Diagnostics download:** connection, versions, host list – without keys, and naming no site, as people attach it to
