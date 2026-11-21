@@ -1,7 +1,7 @@
 ---
-status: proposed
+status: accepted
 date: 2026-11-21
-decision-makers: proposed by Claude (2026-11-21) after kay asked for a pull request on the gap; accepting is kay's
+decision-makers: kay (asked for a pull request on the gap on 2026-11-21, "Ja, PR bauen"; merged the implementation on 2026-11-21; accepted on 2026-11-21, "Ja, PR bauen"); proposed by Claude
 ---
 
 # A release install stays running until the updater's last stage
