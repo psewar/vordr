@@ -171,6 +171,8 @@ func boundReport(r *wire.Report) *outOfBounds {
 		o.drop("sources[].packages", listBound(s.Packages, maxReportList, pendingBound), func() { s.Packages = nil })
 		o.drop("sources[].removals", listBound(s.Removals, maxReportList, nameText), func() { s.Removals = nil })
 		o.drop("sources[].facts", factsBound(s.Facts), func() { s.Facts = nil })
+		// Without its reason the count stays: Home Assistant then names every way to bring them (ADR-0207).
+		o.drop("sources[].kept_back_why", optional(string(s.KeptBackWhy), keyBound), func() { s.KeptBackWhy = "" })
 		cleaned, why := cleanExcerpt(s.Detail)
 		o.clean("sources[].detail", why, func() { s.Detail = cleaned })
 	}

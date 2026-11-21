@@ -349,7 +349,9 @@
               "ok_reboot_required_manual": "Reboot by hand - this host does not allow reboots through Vördr",
               "stale_manual": "Install the updates by hand - this host does not allow installs through Vördr",
               "stale_policy": "Install them by hand, or widen the install section of the host's agent.yaml",
-              "stale_kept_back": "Switch the device's update branch in its own settings, or set install.mode full-upgrade - or install by hand"
+              "stale_kept_back": "Switch the device's update branch in its own settings, or set install.mode full-upgrade - or install by hand",
+              "stale_other_branch": "Switch the update branch in the device's own settings - or ignore this repair while the device stays on its branch",
+              "stale_install_mode": "Set install.mode full-upgrade in the host's agent.yaml, or install them by hand"
             }
           },
           "check_failed_code": {
@@ -813,6 +815,29 @@
         }
       }
     },
+    "hold_release": {
+      "title": "Vördr: {node} offers {release} only in another branch",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Stay on the current update branch of {node}?",
+            "description": "Updates have been pending on {node} for longer than the hub allows, and an install through Vördr takes none of them: the device offers {release} only in another branch of its updates, and Vördr installs only within the branch the device is set to.\n\nTo update, switch the update branch in the device's own settings.\n\nTo stay on the current branch for now, submit: the hub holds {release}. It stays pending, but no longer counts as pending too long, so the problem and this repair end. Once the device offers a newer release in the other branch, the repair comes back; on the hub, `vordr-hub unhold {node}` ends the hold."
+          }
+        },
+        "abort": {
+          "hub_not_connected": "Home Assistant is not connected to the Vördr hub right now. Try again once it is.",
+          "host_gone": "The hub no longer knows {node}.",
+          "no_longer_needed": "{release} is no longer all that is pending too long on {node}, or the problem changed. The repair names the next step.",
+          "hold_not_offered": "The hub did not hold {release}: {node} no longer offers it in another branch.",
+          "hold_role_forbids": "The hub did not hold {release}: this Home Assistant may not - its role at the hub does not allow it (vordr-hub client-role).",
+          "hold_client_not_approved": "The hub did not hold {release}: it no longer knows this Home Assistant as approved.",
+          "hold_already_in_state": "The hub holds {release} on {node} already.",
+          "hold_no_answer": "The hub did not answer in time. Try again.",
+          "hold_hub_without_hold": "The hub does not offer holding a release to this Home Assistant: it is older, or this Home Assistant's role does not allow it.",
+          "hold_refused": "The hub did not hold {release} on {node} (code {code})."
+        }
+      }
+    },
     "problem_offline": {
       "title": "Vördr: update problem on {node}",
       "description": "Not connected to the hub for more than {offline_minutes} minutes.\n\nNext step: Check the host and its agent."
@@ -984,6 +1009,14 @@
     "problem_stale_kept_back": {
       "title": "Vördr: update problem on {node}",
       "description": "Updates have been pending for more than {stale_days} days, and an install through Vördr takes none of them: the host holds them back. An appliance offers them only in another branch of its updates; apt's install mode upgrade leaves those that need packages added or removed.\n\nNext step: Switch the device's update branch in its own settings, or set install.mode full-upgrade - or install by hand."
+    },
+    "problem_stale_other_branch": {
+      "title": "Vördr: update problem on {node}",
+      "description": "Updates have been pending for more than {stale_days} days, and an install through Vördr takes none of them: the device offers them only in another branch of its updates, and Vördr installs only within the branch the device is set to.\n\nNext step: Switch the update branch in the device's own settings - or ignore this repair while the device stays on its branch."
+    },
+    "problem_stale_install_mode": {
+      "title": "Vördr: update problem on {node}",
+      "description": "Updates have been pending for more than {stale_days} days, and an install through Vördr takes none of them: the host's install mode upgrade leaves those that need packages added or removed.\n\nNext step: Set install.mode full-upgrade in the host's agent.yaml, or install them by hand."
     },
     "protocol_mismatch": {
       "title": "Vördr: hub too old or too new",

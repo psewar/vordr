@@ -170,6 +170,12 @@ class HostCount(VordrHostEntity, SensorEntity):
         value = self.host.get(self._field)
         return value if isinstance(value, int) else None
 
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        # ADR-0208: a release in another branch the operator holds stays pending; the count says which one it is.
+        held = self.host.get("held_release") if self._field == "pending" else None
+        return {"held_release": held} if isinstance(held, str) and held else None
+
 
 class HostPackageFindings(VordrHostEntity, SensorEntity):
     """Installed pip/npm packages with an OSV advisory: the malicious ones, or the vulnerable ones (malware not counted

@@ -171,6 +171,10 @@ class FakeHub:
         # waiting list, as at the real hub.
         self.approve_requests: list[dict[str, Any]] = []
         self.approve_code: str | None = "ok"
+        # Holding a release in another branch (ADR-0208): the requests, and the code to answer; with ok the host's view
+        # goes out with the hold and without the problem, as at the real hub.
+        self.hold_requests: list[dict[str, Any]] = []
+        self.hold_code = "ok"
         self.conns: list[tuple[str, web.WebSocketResponse]] = []
         self.port = 0
         self._runner: web.AppRunner | None = None
@@ -321,6 +325,14 @@ class FakeHub:
                 elif data["t"] == "approve_host":
                     self.approve_requests.append(data)
                     await self._approve_host(ws, data)
+                elif data["t"] == "hold_release":
+                    self.hold_requests.append(data)
+                    await ws.send_json(
+                        {"t": "hold_release_result", "request_id": data["request_id"], "code": self.hold_code}
+                    )
+                    if self.hold_code == "ok" and data.get("node") in self.hosts:
+                        held = {**self.hosts[data["node"]], "problem": None, "held_release": data.get("to")}
+                        await self._push_host(held)
         finally:
             self.conns.remove((name, ws))
         return ws

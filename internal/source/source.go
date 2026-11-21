@@ -36,8 +36,9 @@ type Package struct {
 	// Major: the upgrade changes the major version (MajorJump). Set by sources whose versions are the vendor's own
 	// (winget); a distribution's stable updates keep their major version anyway.
 	Major bool `json:"major,omitempty"`
-	// KeptBack: the host's install.mode for scope all (upgrade) leaves it pending, since it needs packages added or
-	// removed; only full-upgrade would take it (ADR-0127). Still pending, but no install of scope all brings it.
+	// KeptBack: still pending, but no install of scope all brings it: the host's install.mode for scope all (upgrade)
+	// leaves it, since it needs packages added or removed, and only full-upgrade would take it (ADR-0127); or the
+	// device offers it only in another branch of its updates (ADR-0204). Report.KeptBackWhy says which.
 	KeptBack bool `json:"kept_back,omitempty"`
 }
 
@@ -74,11 +75,14 @@ type Report struct {
 	Code     protocol.Code        `json:"code,omitempty"` // set with check_failed
 	Pending  int                  `json:"pending"`
 	Security int                  `json:"security"`
-	// KeptBack: of Pending, the packages marked KeptBack (ADR-0127); 0 with any other mode.
-	KeptBack  int       `json:"kept_back,omitempty"`
-	Packages  []Package `json:"packages,omitempty"`
-	Removals  []string  `json:"removals,omitempty"` // packages the upgrade would remove
-	CheckedAt time.Time `json:"checked_at"`
+	// KeptBack: of Pending, the packages marked KeptBack (ADR-0127, ADR-0204).
+	KeptBack int `json:"kept_back,omitempty"`
+	// KeptBackWhy: why the source holds them back (ADR-0207); set exactly when KeptBack is above zero. An agent before
+	// it leaves it empty.
+	KeptBackWhy protocol.KeptBackReason `json:"kept_back_why,omitempty"`
+	Packages    []Package               `json:"packages,omitempty"`
+	Removals    []string                `json:"removals,omitempty"` // packages the upgrade would remove
+	CheckedAt   time.Time               `json:"checked_at"`
 	// Facts the source found out about the host, e.g. apt_version, install_mode, unattended_upgrades.
 	Facts map[string]string `json:"facts,omitempty"`
 	// Detail is an excerpt of the tool's output for humans. Nothing ever decides on it.

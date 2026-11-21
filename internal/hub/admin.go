@@ -210,6 +210,14 @@ func (s *Server) Admin(req AdminRequest) AdminResponse {
 			s.changed(req.Node)
 		}
 		return AdminResponse{Code: code}
+	case "unhold":
+		// A held release counts as pending again, from now (ADR-0208).
+		code := s.Reg.HoldRelease(req.Node, "", "", s.Now())
+		s.Events.Log(req.Node, "unhold", map[string]any{"code": code})
+		if code == AdminOK {
+			s.changed(req.Node)
+		}
+		return AdminResponse{Code: code}
 	case "check":
 		ctx, cancel := context.WithTimeout(context.Background(), checkTimeout)
 		defer cancel()

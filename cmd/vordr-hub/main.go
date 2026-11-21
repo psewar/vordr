@@ -48,6 +48,8 @@ func usage() {
   approve <node> --fingerprint <fp>    admit a host; compare the fingerprint with "vordr-agent identity" on the host
   reject <node>                        refuse a host; its connection is closed and stays refused
   forget <node>                        remove a host; its next hello starts over as pending (new key after reinstall)
+  unhold <node>                        end the hold of a release in another branch (held from Home Assistant); it
+                                       counts as pending again, from now
   check <node>                         send a signed check job and wait for its result
   backup <node>                        what the backup check before an install decides now (asks PBS, sends nothing)
   events [<node>] [--event <name>] [--since <when>] [--limit <n>]
@@ -60,7 +62,8 @@ func usage() {
   reject-client <name>                 refuse a client; its connection is closed and stays refused
   forget-client <name>                 remove a client; its next hello starts over as pending
   client-role <name> --role <role>     what a client may start: observe (nothing), operate (check, install, agent
-                                       update; the default), admin (also reboot, the agent release for "Add host",
+                                       update, holding a release in another branch; the default), admin (also
+                                       reboot, the agent release for "Add host",
                                        and approving a waiting host where hub.yaml sets ha_approves_hosts)
   check-config                         load hub.yaml and list every issue
   version
@@ -194,7 +197,7 @@ func main() {
 			os.Exit(2)
 		}
 		os.Exit(admin(cfg, hub.AdminRequest{Cmd: verb, Events: &f}))
-	case "approve", "reject", "forget", "check", "backup":
+	case "approve", "reject", "forget", "unhold", "check", "backup":
 		if node == "" || (verb == "approve" && fingerprint == "") {
 			usage()
 			os.Exit(2)

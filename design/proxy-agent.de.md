@@ -138,7 +138,10 @@ health:
   - je installiertem Zusatzpaket (`pfSense-pkg-*`) mit neuerer Version ein Angebot `package <name>` von der
     installierten zur angebotenen Version;
   - ein Angebot „pfSense (other branch)“ für ein neueres Release in einem anderen Zweig, zurückgehalten: Kein Install
-    über Vördr nimmt es, den Zweig wechselt der Betreiber in den Update-Einstellungen von pfSense;
+    über Vördr nimmt es, den Zweig wechselt der Betreiber in den Update-Einstellungen von pfSense; der Bericht nennt den
+    Grund `kept_back_why: other_branch` ([ADR-0207](../docs/adr/0207-the-hub-says-why-updates-are-held-back.md)); bleibt
+    der Betreiber auf dem Zweig, stellt er das Release aus Home Assistant zurück
+    ([ADR-0208](../docs/adr/0208-a-release-in-another-branch-can-be-held-from-home-assistant.md));
   - jedes andere neuere Paket des Katalogs kommt mit dem nächsten Release oder dem Update eines Zusatzpakets und ist
     kein eigenes Angebot; der Fakt `packages_behind_release` zählt sie.
 

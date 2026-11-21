@@ -501,6 +501,26 @@ def test_stale_key_names_updates_the_host_holds_back() -> None:
     # No count of kept back updates (an older hub), or none: as before.
     assert problem_key(stale, True, {"capabilities": none, "installable": 0, "pending": 1}) == "stale_manual"
     assert problem_key(stale, True, {"capabilities": none, **held, "kept_back": 0, "pending": 0}) == "stale_manual"
+
+
+def test_stale_key_names_the_one_step_the_hub_says() -> None:
+    """ADR-0207: where the hub says why the host holds back every pending update, the text names only that step - the
+    device's branch, or install.mode; without a reason (an older hub or agent), with one this integration does not
+    know, or with one that is not a text, it names both as before. Held back in part, the reason does not matter."""
+    stale = {"reason": "stale", "reasons": ["stale"]}
+    none = {"install": False, "install_security": False}
+    held = {"capabilities": none, "installable": 0, "pending": 1, "kept_back": 1}
+    assert problem_key(stale, True, {**held, "kept_back_why": "other_branch"}) == "stale_other_branch"
+    assert problem_key(stale, True, {**held, "kept_back_why": "install_mode"}) == "stale_install_mode"
+    with_button = {**held, "capabilities": {"install": True}, "kept_back_why": "other_branch"}
+    assert problem_key(stale, True, with_button) == "stale_other_branch"
+    assert problem_key(stale, True, held) == "stale_kept_back"
+    assert problem_key(stale, True, {**held, "kept_back_why": ""}) == "stale_kept_back"
+    assert problem_key(stale, True, {**held, "kept_back_why": "vendor_hold"}) == "stale_kept_back"
+    assert problem_key(stale, True, {**held, "kept_back_why": ["other_branch"]}) == "stale_kept_back"
+    assert problem_key(stale, True, {**held, "kept_back_why": None}) == "stale_kept_back"
+    part = {**held, "pending": 3, "kept_back_why": "other_branch"}
+    assert problem_key(stale, True, part) == "stale_manual"
     assert problem_key(stale, True, {"capabilities": none, **held, "kept_back": True}) == "stale_manual"
 
 

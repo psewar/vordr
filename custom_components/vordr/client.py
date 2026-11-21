@@ -38,6 +38,7 @@ CODE_HUB_NOT_CONNECTED = "hub_not_connected"
 CODE_NO_ANSWER = "no_answer"
 CODE_HUB_WITHOUT_DOWNLOAD = "hub_without_download"  # the hub's status does not name agent_download
 CODE_HUB_WITHOUT_APPROVAL = "hub_without_approval"  # the hub's status does not name approve_host
+CODE_HUB_WITHOUT_HOLD = "hub_without_hold"  # the hub's status does not name hold_release
 
 
 class Connection(StrEnum):
@@ -270,7 +271,7 @@ class VordrClient:
         t = data["t"]
         if t == p.T_STATUS:
             return self._status(Status.of(data))
-        if t in (p.T_COMMAND_RESULT, p.T_AGENT_DOWNLOAD_RESULT, p.T_APPROVE_HOST_RESULT):
+        if t in (p.T_COMMAND_RESULT, p.T_AGENT_DOWNLOAD_RESULT, p.T_APPROVE_HOST_RESULT, p.T_HOLD_RELEASE_RESULT):
             # Answers go to who asked, and nowhere else: an agent_download_result carries single-use tokens.
             fut = self._pending.get(str(data.get("request_id", "")))
             if fut and not fut.done():
@@ -326,6 +327,23 @@ class VordrClient:
         if p.FEATURE_APPROVE_HOST not in self.features:
             return CODE_HUB_WITHOUT_APPROVAL
         result = await self._request({"t": p.T_APPROVE_HOST, "node": node, "fingerprint": fingerprint})
+        return str(result.get("code", ""))
+
+    @property
+    def offers_release_hold(self) -> bool:
+        """Approved, connected, and the hub's last status names hold_release: this client has role operate or admin
+        (ADR-0208)."""
+        return self._ws is not None and self._approved and p.FEATURE_HOLD_RELEASE in self.features
+
+    async def hold_release(self, node: str, to: str) -> str:
+        """Ask the hub to hold the release node offers only in another branch, at version to; returns the code (ok, the
+        hub's refusal, or one of ours). Sent only while the hub names the feature: an older hub ends the connection on a
+        message it does not know."""
+        if self._ws is None or not self._approved:
+            return CODE_HUB_NOT_CONNECTED
+        if p.FEATURE_HOLD_RELEASE not in self.features:
+            return CODE_HUB_WITHOUT_HOLD
+        result = await self._request({"t": p.T_HOLD_RELEASE, "node": node, "to": to})
         return str(result.get("code", ""))
 
     async def _request(self, msg: dict[str, Any]) -> dict[str, Any]:

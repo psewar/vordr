@@ -70,6 +70,9 @@ func (c targetChecker) Check(ctx context.Context) wire.Report {
 			fw.Packages = append(fw.Packages, source.Package{Name: o.Name, From: from, To: o.Version,
 				Security: o.Security, KeptBack: o.KeptBack})
 		}
+		if fw.KeptBack > 0 { // an offer is kept back only as a release in another branch (target.Offer, ADR-0207)
+			fw.KeptBackWhy = protocol.KeptBackOtherBranch
+		}
 	}
 	return wire.Report{T: wire.TReport, CheckedAt: at, Sources: []source.Report{fw, c.backup(ctx, at, res)}}
 }

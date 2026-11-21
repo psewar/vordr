@@ -449,7 +449,10 @@ The reason is the weightiest that applies: `kernel` before `libraries` before `o
 
 The hub sets `stale` (with `problem`) if updates have been pending longer than `stale_after_days` (default 7) without
 a run installing them, whatever the reason. That also catches cases for which there is no code of their own
-([ADR-0014](../docs/adr/0014-stale-after-seven-days.md)).
+([ADR-0014](../docs/adr/0014-stale-after-seven-days.md)). A release the device offers only in another branch, which the
+operator holds from Home Assistant, does not count while it is all that is pending; the hub ends the hold once the
+host no longer offers exactly that release, and `vordr-hub unhold <node>` ends it by hand
+([ADR-0208](../docs/adr/0208-a-release-in-another-branch-can-be-held-from-home-assistant.md)).
 
 ### 7.6 Self-update of the agent
 
@@ -840,7 +843,9 @@ Active Backup for Business was examined for this and rejected
     as `kept_back` (per package and counted per source). It stays pending but does not count as installable for scope
     `all`: The hub subtracts it from `installable` and reports `kept_back`, and the automation with `auto_scope: all`
     starts no run for it. Scope `security` installs by name and is not affected. If the second simulation fails, nothing
-    is marked ([ADR-0127](../docs/adr/0127-count-only-what-the-upgrade-mode-installs.md)).
+    is marked ([ADR-0127](../docs/adr/0127-count-only-what-the-upgrade-mode-installs.md)). The source names the reason
+    `kept_back_why: install_mode`, which the hub passes on with `kept_back`
+    ([ADR-0207](../docs/adr/0207-the-hub-says-why-updates-are-held-back.md)).
 - After a successful run the agent empties the package cache (`apt-get clean`).
 - **Check after the update** (`health:` in `agent.yaml`;
   [ADR-0038](../docs/adr/0038-health-checks-after-install.md),
@@ -1893,8 +1898,8 @@ entry in `install.allowed_scopes`, Vördr only reports and pulls, starts or chan
   (HTTPS: with the token of an `agent_update` job at `/v1/agent/`, for a new host with a one-time token from Home
   Assistant at `/v1/agent-download/`, 10.4). No web interface.
 - Administration only locally through a Unix socket (`admin_socket`, mode 0600 in a 0700 folder): `vordr-hub list |
-  show <node> | approve <node> --fingerprint <fp> | reject <node> | forget <node> | check <node> | backup <node> |
-  events`, for Home Assistant clients (own registry `clients.json`) `clients | approve-client <name> --fingerprint
+  show <node> | approve <node> --fingerprint <fp> | reject <node> | forget <node> | unhold <node> | check <node> |
+  backup <node> | events`, for Home Assistant clients (own registry `clients.json`) `clients | approve-client <name> --fingerprint
   <fp> | reject-client <name> | forget-client <name> | client-role <name> --role <role>`. Without the socket: `key`,
   `check-config`, `version`. Not built yet: a command for the rings (`rings`)
   ([ADR-0010](../docs/adr/0010-administration-only-local.md)). The one exception: where `hub.yaml` sets
@@ -1950,7 +1955,7 @@ entry in `install.allowed_scopes`, Vördr only reports and pulls, starts or chan
     files too.
 - **Roles of the HA clients** ([ADR-0039](../docs/adr/0039-ha-client-roles.md)):
   - `observe`: views only.
-  - `operate`: check, install, agent update. This is the default.
+  - `operate`: check, install, agent update, and holding a release in another branch (ADR-0208). This is the default.
   - `admin`: additionally reboot, and the agent release for a new host (`agent_download`, 10.4,
     [ADR-0167](../docs/adr/0167-home-assistant-gets-one-time-downloads-of-the-signed-agent-release.md)); where
     `hub.yaml` sets `ha_approves_hosts`, also approving a waiting host (`approve_host`, 10.1,

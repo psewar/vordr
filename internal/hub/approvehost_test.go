@@ -186,7 +186,8 @@ func TestApproveHostFeature(t *testing.T) {
 	operate := f.haClient(t, "operator", RoleOperate)
 	h, pendingFP := haHello(t, "pending")
 	f.srv.Clients.Admit(h, pendingFP, f.now)
-	both := []string{wire.FeatureAgentDownload, wire.FeatureApproveHost}
+	both := []string{wire.FeatureAgentDownload, wire.FeatureApproveHost, wire.FeatureHoldRelease}
+	hold := []string{wire.FeatureAgentDownload, wire.FeatureHoldRelease} // ADR-0208: operate and admin
 	only := []string{wire.FeatureAgentDownload}
 	for _, c := range []struct {
 		name, client, fp string
@@ -194,8 +195,8 @@ func TestApproveHostFeature(t *testing.T) {
 		want             []string
 	}{
 		{"admin", "ha", admin.fingerprint, true, both},
-		{"admin, switch off", "ha", admin.fingerprint, false, only},
-		{"operate", "operator", operate.fingerprint, true, only},
+		{"admin, switch off", "ha", admin.fingerprint, false, hold},
+		{"operate", "operator", operate.fingerprint, true, hold},
 		{"pending", "pending", pendingFP, true, only},
 		{"another key", "ha", "SHA256:old-key", true, only},
 		{"unknown", "nobody", "x", true, only},
@@ -431,7 +432,7 @@ func TestApproveHostFeatureComesWithTheClientsApproval(t *testing.T) {
 	}
 	var again wire.Status
 	if !c.next(wire.TStatus, &again) || again.State != wire.StateApproved ||
-		!slices.Equal(again.Features, []string{wire.FeatureAgentDownload, wire.FeatureApproveHost}) {
+		!slices.Equal(again.Features, []string{wire.FeatureAgentDownload, wire.FeatureApproveHost, wire.FeatureHoldRelease}) {
 		t.Fatalf("status with the approval: %+v", again)
 	}
 }
@@ -550,12 +551,13 @@ func TestApproveHostFeatureNeedsTheSwitch(t *testing.T) {
 	defer ts.Close()
 	defer f.srv.Close(context.Background())
 	c, st := dialHA(t, ts.URL, "ha-admin", priv)
-	if st.State != wire.StateApproved || !slices.Equal(st.Features, []string{wire.FeatureAgentDownload}) {
+	hold := []string{wire.FeatureAgentDownload, wire.FeatureHoldRelease} // no approve_host without the switch
+	if st.State != wire.StateApproved || !slices.Equal(st.Features, hold) {
 		t.Fatalf("status: %+v", st)
 	}
 	f.srv.Admin(AdminRequest{Cmd: "client-role", Client: "ha-admin", Role: RoleOperate})
 	var again wire.Status
-	if !c.next(wire.TStatus, &again) || !slices.Equal(again.Features, []string{wire.FeatureAgentDownload}) {
+	if !c.next(wire.TStatus, &again) || !slices.Equal(again.Features, hold) {
 		t.Fatalf("status after the role change: %+v", again)
 	}
 }

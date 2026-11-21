@@ -267,18 +267,22 @@ Inst weird-line-without-candidate
 	if !slices.Equal(kept, []string{"pve-manager", "newdep"}) || rep.KeptBack != 2 || rep.Pending != 6 || rep.Security != 2 {
 		t.Fatalf("kept back %v (%d), pending %d, security %d", kept, rep.KeptBack, rep.Pending, rep.Security)
 	}
+	if rep.KeptBackWhy != protocol.KeptBackInstallMode { // the step that brings them is full-upgrade (ADR-0207)
+		t.Fatalf("kept back why %q", rep.KeptBackWhy)
+	}
 
 	full, f := newApt(t, answers, true)
-	if rep := full.Check(context.Background(), false); rep.KeptBack != 0 || slices.Contains(f.calls, "apt-get -s -q upgrade") {
-		t.Fatalf("full-upgrade: kept back %d, calls %v", rep.KeptBack, f.calls)
+	if rep := full.Check(context.Background(), false); rep.KeptBack != 0 || rep.KeptBackWhy != protocol.KeptBackNone ||
+		slices.Contains(f.calls, "apt-get -s -q upgrade") {
+		t.Fatalf("full-upgrade: kept back %d %q, calls %v", rep.KeptBack, rep.KeptBackWhy, f.calls)
 	}
 
 	broken := base()
 	broken["apt-get -s -q upgrade"] = exit(100, "E: something")
 	b, _ := newApt(t, broken, true)
 	b.PolicyMode = "upgrade"
-	if rep := b.Check(context.Background(), false); rep.KeptBack != 0 || rep.Pending != 6 ||
-		rep.State != protocol.SourceUpdatesAvailable {
+	if rep := b.Check(context.Background(), false); rep.KeptBack != 0 || rep.KeptBackWhy != protocol.KeptBackNone ||
+		rep.Pending != 6 || rep.State != protocol.SourceUpdatesAvailable {
 		t.Fatalf("second simulation failed: %+v", rep)
 	}
 }

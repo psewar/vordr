@@ -82,7 +82,7 @@ JSON-Nachrichten über WebSocket, wie der Agenten-Tunnel; `protocol: 1` im Hello
 |---|---|---|
 | Hub → HA | `challenge` | Nonce |
 | HA → Hub | `hello` | `role: "ha"`, Name, öffentlicher Schlüssel, Signatur (Kontext `vordr/ha-hello/v1`), Integrationsversion, `protocol` |
-| Hub → HA | `status` | `pending_approval` / `approved` / `rejected` mit Grund; erneut bei Änderung und nach einem Rollenwechsel; `features`: was die Leitstelle über das Grundprotokoll hinaus annimmt (`agent_download`; `approve_host` nur, wo 5c es erlaubt) |
+| Hub → HA | `status` | `pending_approval` / `approved` / `rejected` mit Grund; erneut bei Änderung und nach einem Rollenwechsel; `features`: was die Leitstelle über das Grundprotokoll hinaus annimmt (`agent_download`; `approve_host` nur, wo 5c es erlaubt; `hold_release` für die Rolle `operate` oder `admin`) |
 | Hub → HA | `snapshot` | Leitstelle (Version, `protocol`, wartende Hosts) und alle Hosts als `HostView`; nach jeder Freigabe und jedem Verbindungsaufbau |
 | Hub → HA | `host` / `host_removed` | ein `HostView` bei jeder Änderung / Host vergessen oder abgelehnt |
 | Hub → HA | `hub` | Leitstellen-Zustand bei Änderung (wartende Hosts) |
@@ -92,6 +92,8 @@ JSON-Nachrichten über WebSocket, wie der Agenten-Tunnel; `protocol: 1` im Hello
 | Hub → HA | `agent_download_result` | `request_id`, `code`; mit `ok` das signierte Manifest, seine Signatur, der Schlüssel der Leitstelle und je Binary ein Download-Pfad (5b) |
 | HA → Hub | `approve_host` | `request_id`, `node`, `fingerprint` eines Hosts, der auf Freigabe wartet (5c); nur an eine Leitstelle, deren `status` `approve_host` genannt hat |
 | Hub → HA | `approve_host_result` | `request_id`, `code` (`ok` = freigegeben, sonst warum nicht, 5c) |
+| HA → Hub | `hold_release` | `request_id`, `node`, `to`: das Release, das der Host nur in einem anderen Zweig anbietet (`other_branch`), zum Zurückstellen ([ADR-0208](../docs/adr/0208-a-release-in-another-branch-can-be-held-from-home-assistant.md)); nur an eine Leitstelle, deren `status` `hold_release` genannt hat |
+| Hub → HA | `hold_release_result` | `request_id`, `code` (`ok` = zurückgestellt; sonst warum nicht, z. B. `not_offered`, `role_forbids`) |
 | beide | `heartbeat` | alle 30 s; 90 s Stille = Verbindung tot |
 
 `HostView` ist die transportneutrale Fassung des früheren MQTT-Zustands: Gerät (Name, Modell, Agent-Version),
@@ -341,6 +343,22 @@ Aus, solange `hub.yaml` nicht `ha_approves_hosts: true` setzt; `check-config` ne
   - `next_step` des Problem-Sensors und `vordr_problem` behalten den Text von `stale`; ohne Zahl (eine ältere
     Leitstelle), mit einem weiteren Grund neben `stale` oder wo kein Knopf die Updates nimmt, behält der Hinweis seinen
     Text ohne Beheben.
+- **Ein Release in einem anderen Zweig aus seinem Reparaturhinweis zurückstellen:** `problem_<node>` ist behebbar, mit
+  dem Text `hold_release`, solange sein Problem allein `stale` ist, jedes ausstehende Update ein Release ist, das der
+  Host nur in einem anderen Zweig anbietet (`stale_other_branch`), die Leitstelle es nennt (`other_branch`) und ihr
+  Status `hold_release` nennt
+  ([ADR-0208](../docs/adr/0208-a-release-in-another-branch-can-be-held-from-home-assistant.md)):
+  - sein Dialog zum Beheben nennt das Release und beide Wege: den Update-Zweig des Geräts wechseln oder auf ihm bleiben
+    und das Release zurückstellen; „Beheben“ schickt `hold_release` mit diesem Release; beim Bestätigen erneut geprüft
+    (Verbindung, Host, dasselbe Release), und jede Absage der Leitstelle hat ihren eigenen Text;
+  - die Leitstelle stellt genau dieses Release zurück: Es bleibt ausstehend und zurückgehalten, zählt aber nicht mehr
+    als zu lange liegend, damit endet das Problem und der Hinweis mit ihm; die Zahl der ausstehenden Updates nennt es
+    (Attribut `held_release`);
+  - die Leitstelle beendet die Zurückstellung selbst, sobald der Host nicht mehr genau dieses Release anbietet (ein
+    neueres, ein anderer Zweig, installiert), und der Hinweis kommt mit dem nächsten Problem `stale` wieder;
+    `vordr-hub unhold <node>` beendet sie von Hand;
+  - ohne das Feature (eine ältere Leitstelle, Rolle `observe`) oder das Release behält der Hinweis den Text von
+    ADR-0207 ohne Beheben; einem geänderten Status folgt er sofort.
 - **Wartender Host als Reparaturhinweis** `waiting_<node>`, solange die Leitstelle den Host als wartend auf Freigabe
   führt ([ADR-0157](../docs/adr/0157-a-waiting-host-is-a-repair-that-names-the-approval-command.md)):
   - eine Warnung: Ein neuer Host ist eine Nachricht, kein Alarm;
@@ -410,10 +428,13 @@ aus ihren Übersetzungsdateien ([ADR-0027](../docs/adr/0027-protocol-2-codes-and
   - `stale` bleibt, wo der Installieren-Knopf einen Teil der ausstehenden Updates nimmt (`installable` über null, oder
     keine Zahl von der Leitstelle); sonst wird es `stale_policy`, wo der Host Installationen über Vördr annimmt, seine
     Richtlinie aber keines dieser Updates, und `stale_manual`, wo er keine annimmt
-    ([ADR-0197](../docs/adr/0197-the-stale-repair-names-only-a-way-that-exists.md)); vor beiden `stale_kept_back`, wo
-    der Host jedes ausstehende Update zurückhält (`kept_back` der Leitstelle gleich `pending`): ein Release, das ein Gerät
-    nur in einem anderen Zweig anbietet, oder der Installationsmodus `upgrade` von apt; sein nächster Schritt ist, den
-    Update-Zweig des Geräts zu wechseln, `install.mode: full-upgrade` zu setzen oder von Hand zu installieren
+    ([ADR-0197](../docs/adr/0197-the-stale-repair-names-only-a-way-that-exists.md)); vor beiden, wo der Host jedes
+    ausstehende Update zurückhält (`kept_back` der Leitstelle gleich `pending`), der eine Schritt, den `kept_back_why`
+    der Leitstelle nennt ([ADR-0207](../docs/adr/0207-the-hub-says-why-updates-are-held-back.md)):
+    `stale_other_branch` für ein Release, das ein Gerät nur in einem anderen Zweig anbietet (den Update-Zweig des
+    Geräts wechseln oder die Reparatur ignorieren, solange es auf seinem Zweig bleibt), `stale_install_mode` für den
+    Installationsmodus `upgrade` von apt (`install.mode: full-upgrade` setzen oder von Hand installieren); ohne Grund
+    oder mit einem, den die Integration nicht kennt, `stale_kept_back`, das beide nennt
     ([ADR-0204](../docs/adr/0204-the-firewall-reports-what-its-own-updater-offers.md));
   - die Reparatur folgt einem geänderten Schlüssel auch, wenn das Problem dasselbe bleibt; `vordr_problem` feuert
     dafür nicht.
@@ -578,8 +599,8 @@ mit systemd und apt.
   seinem Typ auf einen Code ab, liest nichts aus `~/.ssh`, verwendet keinen SSH-Agenten und keine Standardschlüssel.
   `agent_install.py` enthält die reinen Teile (Prüfungen, Skripte, Lesen), `agent_installer.py` die Schritte und was
   sie halten, `config_flow.py` den Subentry-Flow von „Host hinzufügen“.
-- **Der Client** behält die `features` des letzten Status der Leitstelle und sendet `agent_download` und
-  `approve_host` nur an eine Leitstelle, die sie genannt hat ([ADR-0067](../docs/adr/0067-hub-announces-features.md));
+- **Der Client** behält die `features` des letzten Status der Leitstelle und sendet `agent_download`, `approve_host`
+  und `hold_release` nur an eine Leitstelle, die sie genannt hat ([ADR-0067](../docs/adr/0067-hub-announces-features.md));
   die Antwort geht an den, der gefragt hat, nie an den Koordinator oder eine Entität.
 
 ### 6e. KI-Erklärungen gescheiterter Läufe (freiwillig)

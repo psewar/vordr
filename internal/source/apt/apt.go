@@ -170,6 +170,9 @@ func (a *Apt) markKeptBack(ctx context.Context, rep *source.Report) {
 			rep.KeptBack++
 		}
 	}
+	if rep.KeptBack > 0 {
+		rep.KeptBackWhy = protocol.KeptBackInstallMode // the step that brings them: full-upgrade (ADR-0207)
+	}
 }
 
 func failed(rep source.Report, code protocol.Code, res runner.Result) source.Report {

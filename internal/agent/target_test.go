@@ -140,6 +140,15 @@ func TestTargetCheckerKeptBackOffer(t *testing.T) {
 	if fw.Packages[0].KeptBack || !fw.Packages[1].KeptBack {
 		t.Errorf("kept back on the wrong package: %+v", fw.Packages)
 	}
+	// Why it is kept back, as a code: the operator switches the branch (ADR-0207).
+	if fw.KeptBackWhy != protocol.KeptBackOtherBranch {
+		t.Errorf("kept back why %q", fw.KeptBackWhy)
+	}
+	// Nothing kept back: no reason.
+	d.status.Offers = d.status.Offers[:1]
+	if fw, _ := reportOf(t, c.Check(context.Background())); fw.KeptBack != 0 || fw.KeptBackWhy != protocol.KeptBackNone {
+		t.Errorf("none kept back: %d %q", fw.KeptBack, fw.KeptBackWhy)
+	}
 }
 
 func TestTargetCheckerWithoutAnyBackup(t *testing.T) {

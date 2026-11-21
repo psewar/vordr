@@ -50,6 +50,7 @@ func reportAtTheBounds() wire.Report {
 	s := &r.Sources[0]
 	s.Source, s.State, s.Code = "a"+strings.Repeat("-", 63), protocol.SourceState(keyOf(64)), protocol.Code(keyOf(64))
 	s.Pending, s.Security, s.KeptBack = 1_000_000, 1_000_000, 1_000_000
+	s.KeptBackWhy = protocol.KeptBackReason(keyOf(64))
 	s.Packages = withFirst(10000, source.Package{Name: "pkg", From: "1", To: "2"}, source.Package{Name: textOf(1024),
 		From: textOf(1024), To: textOf(1024), Origins: withFirst(64, "Debian:12/stable", textOf(1024)), Security: true,
 		Major: true, KeptBack: true})
@@ -149,6 +150,7 @@ func TestTheHubBoundsEveryFieldOfAReport(t *testing.T) {
 	noPackages := func(r *wire.Report) { src(r).Packages = nil }
 	noRemovals := func(r *wire.Report) { src(r).Removals = nil }
 	noFacts := func(r *wire.Report) { src(r).Facts = nil }
+	noKeptBackWhy := func(r *wire.Report) { src(r).KeptBackWhy = "" }
 	detail := func(d string) func(r *wire.Report) { return func(r *wire.Report) { src(r).Detail = d } }
 	noReboot := func(r *wire.Report) { r.Reboot = nil }
 	checkBounds(t, reportAtTheBounds, boundReport, map[string]c{
@@ -165,6 +167,11 @@ func TestTheHubBoundsEveryFieldOfAReport(t *testing.T) {
 		"a million and one pending": refused("sources[].pending", dropValue, func(r *wire.Report) { src(r).Pending++ }),
 		"negative security":         refused("sources[].security", dropValue, func(r *wire.Report) { r.Sources[2].Security = -1 }),
 		"kept back 2^40":            refused("sources[].kept_back", dropValue, func(r *wire.Report) { src(r).KeptBack = 1 << 40 }),
+		// Without its reason the count stays (ADR-0207).
+		"a reason too long": {"sources[].kept_back_why", dropTooLong,
+			func(r *wire.Report) { src(r).KeptBackWhy += "x" }, noKeptBackWhy},
+		"a reason with a space": {"sources[].kept_back_why", dropCharacters,
+			func(r *wire.Report) { src(r).KeptBackWhy = "other branch" }, noKeptBackWhy},
 		"10001 packages": {"sources[].packages", dropTooMany, func(r *wire.Report) {
 			src(r).Packages = append(src(r).Packages, source.Package{Name: "x"})
 		}, noPackages},

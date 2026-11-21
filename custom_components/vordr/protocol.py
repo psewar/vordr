@@ -44,6 +44,11 @@ FEATURE_AGENT_DOWNLOAD: Final = "agent_download"
 T_APPROVE_HOST: Final = "approve_host"
 T_APPROVE_HOST_RESULT: Final = "approve_host_result"
 FEATURE_APPROVE_HOST: Final = "approve_host"
+# Holding a release a host offers only in another branch (ADR-0208); only to a hub whose status names the feature,
+# which it names while this client has role operate or admin.
+T_HOLD_RELEASE: Final = "hold_release"
+T_HOLD_RELEASE_RESULT: Final = "hold_release_result"
+FEATURE_HOLD_RELEASE: Final = "hold_release"
 
 # Registration states and reasons of the status message.
 STATE_PENDING: Final = "pending_approval"

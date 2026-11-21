@@ -27,8 +27,12 @@ type Entry struct {
 	Verbs      []protocol.Verb    `json:"verbs"`
 	Policy     wire.PolicySummary `json:"policy"`
 	LastReport *wire.Report       `json:"last_report,omitempty"`
-	// PendingSince: since when updates have been pending without interruption (for "stale").
+	// PendingSince: since when updates have been pending without interruption (for "stale"); a held release does not
+	// count (HeldRelease).
 	PendingSince *time.Time `json:"pending_since,omitempty"`
+	// HeldRelease: the release in another branch the operator holds (ADR-0208), until the host no longer offers
+	// exactly it.
+	HeldRelease *HeldRelease `json:"held_release,omitempty"`
 	// PendingUpdates: the pending updates of the last complete report, each with when it was first reported - the
 	// ring delay of automatic installs counts per update (ADR-0107).
 	PendingUpdates []PendingUpdate `json:"pending_updates,omitempty"`
@@ -317,11 +321,17 @@ func (r *Registry) SetReportAt(node string, rep wire.Report, received time.Time)
 	switch pending, known := pendingCount(rep); {
 	case !known:
 	case pending == 0:
-		e.PendingSince, e.PendingUpdates = nil, nil
+		e.PendingSince, e.PendingUpdates, e.HeldRelease = nil, nil, nil
 		at := seen
 		e.PendingAt = &at
 	default:
-		if e.PendingSince == nil {
+		if e.HeldRelease != nil && !e.HeldRelease.offeredIn(rep) {
+			e.HeldRelease = nil // a newer release, another branch, or installed: it counts from now (ADR-0208)
+		}
+		switch {
+		case e.HeldRelease != nil && pending == 1:
+			e.PendingSince = nil // only the held release is pending (ADR-0208)
+		case e.PendingSince == nil:
 			at := seen
 			e.PendingSince = &at
 		}

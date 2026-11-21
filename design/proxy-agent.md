@@ -135,7 +135,10 @@ health:
   - an offer `package <name>` per installed add-on package (`pfSense-pkg-*`) with a newer version, from the installed
     to the offered version;
   - an offer "pfSense (other branch)" for a newer release in another branch, kept back: no install through Vördr takes
-    it, the operator switches the branch in pfSense's update settings;
+    it, the operator switches the branch in pfSense's update settings; the report names the reason
+    `kept_back_why: other_branch` ([ADR-0207](../docs/adr/0207-the-hub-says-why-updates-are-held-back.md)); staying on
+    the branch, the operator holds the release from Home Assistant
+    ([ADR-0208](../docs/adr/0208-a-release-in-another-branch-can-be-held-from-home-assistant.md));
   - every other newer package of the catalog comes with the next release or an add-on's update and offers nothing; the
     fact `packages_behind_release` counts them.
 

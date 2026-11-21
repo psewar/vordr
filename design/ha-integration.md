@@ -78,7 +78,7 @@ JSON messages over WebSocket, like the agent tunnel; `protocol: 1` in the hello.
 |---|---|---|
 | Hub → HA | `challenge` | nonce |
 | HA → Hub | `hello` | `role: "ha"`, name, public key, signature (context `vordr/ha-hello/v1`), integration version, `protocol` |
-| Hub → HA | `status` | `pending_approval` / `approved` / `rejected` with reason; again on change and after a role change; `features`: what the hub accepts beyond the base protocol (`agent_download`; `approve_host` only where 5c allows it) |
+| Hub → HA | `status` | `pending_approval` / `approved` / `rejected` with reason; again on change and after a role change; `features`: what the hub accepts beyond the base protocol (`agent_download`; `approve_host` only where 5c allows it; `hold_release` for role `operate` or `admin`) |
 | Hub → HA | `snapshot` | hub (version, `protocol`, waiting hosts) and all hosts as `HostView`; after every approval and every connection setup |
 | Hub → HA | `host` / `host_removed` | one `HostView` on every change / host forgotten or rejected |
 | Hub → HA | `hub` | hub state on change (waiting hosts) |
@@ -88,6 +88,8 @@ JSON messages over WebSocket, like the agent tunnel; `protocol: 1` in the hello.
 | Hub → HA | `agent_download_result` | `request_id`, `code`; with `ok` the signed manifest, its signature, the hub's key and a download path per binary (5b) |
 | HA → Hub | `approve_host` | `request_id`, `node`, `fingerprint` of a host waiting for approval (5c); only to a hub whose `status` named `approve_host` |
 | Hub → HA | `approve_host_result` | `request_id`, `code` (`ok` = approved, otherwise why not, 5c) |
+| HA → Hub | `hold_release` | `request_id`, `node`, `to`: the release the host offers only in another branch (`other_branch`), to hold ([ADR-0208](../docs/adr/0208-a-release-in-another-branch-can-be-held-from-home-assistant.md)); only to a hub whose `status` named `hold_release` |
+| Hub → HA | `hold_release_result` | `request_id`, `code` (`ok` = held; otherwise why not, e.g. `not_offered`, `role_forbids`) |
 | both | `heartbeat` | every 30 s; 90 s of silence = connection dead |
 
 `HostView` is the transport-neutral version of the former MQTT state: device (name, model, agent version), `online`,
@@ -327,6 +329,19 @@ Off unless `hub.yaml` sets `ha_approves_hosts: true`; `check-config` names it ei
   - a run that installs them ends the problem, and the repair goes with it; updates no button takes keep it;
   - the problem sensor's `next_step` and `vordr_problem` keep the `stale` text; without the count (an older hub), with
     another reason besides `stale`, or where no button takes the updates, the repair keeps its text without a fix.
+- **Holding a release in another branch from its repair:** `problem_<node>` is fixable, with the text `hold_release`,
+  while its problem is `stale` alone, every pending update is a release the host offers only in another branch
+  (`stale_other_branch`), the hub names it (`other_branch`) and its status names `hold_release`
+  ([ADR-0208](../docs/adr/0208-a-release-in-another-branch-can-be-held-from-home-assistant.md)):
+  - the fix dialog names the release and both ways: switch the device's update branch, or stay on it and hold the
+    release; "Fix" sends `hold_release` with that release; on confirming it is checked again (connection, host, the
+    same release), and each refusal of the hub has its own text;
+  - the hub holds exactly that release: it stays pending and kept back but no longer counts as pending too long, so
+    the problem ends and the repair goes with it; the count of pending updates names it (attribute `held_release`);
+  - the hub ends the hold by itself once the host no longer offers exactly that release (a newer one, another branch,
+    installed), and the repair comes back with the next stale problem; `vordr-hub unhold <node>` ends it by hand;
+  - without the feature (an older hub, role `observe`) or the release, the repair keeps the text of ADR-0207 without a
+    fix; it follows a changed status at once.
 - **Waiting host as a repair issue** `waiting_<node>` while the hub lists the host as waiting for approval
   ([ADR-0157](../docs/adr/0157-a-waiting-host-is-a-repair-that-names-the-approval-command.md)):
   - a warning: a new host is news, not an alarm;
@@ -389,10 +404,12 @@ Since H5, the hub sends only codes and numbers, and the integration writes every
   - `stale` stays where the install button takes some of the pending updates (`installable` above zero, or no count
     from the hub); otherwise it becomes `stale_policy` where the host takes installs through Vördr but its policy none
     of these, and `stale_manual` where it takes none
-    ([ADR-0197](../docs/adr/0197-the-stale-repair-names-only-a-way-that-exists.md)); before both, `stale_kept_back`
-    where the host holds back every pending update (the hub's `kept_back` equals `pending`): a release an appliance
-    offers only in another branch, or apt's install mode `upgrade`; its next step is to switch the device's update
-    branch, set `install.mode: full-upgrade`, or install by hand
+    ([ADR-0197](../docs/adr/0197-the-stale-repair-names-only-a-way-that-exists.md)); before both, where the host holds
+    back every pending update (the hub's `kept_back` equals `pending`), the one step the hub's `kept_back_why` names
+    ([ADR-0207](../docs/adr/0207-the-hub-says-why-updates-are-held-back.md)): `stale_other_branch` for a release an
+    appliance offers only in another branch (switch the device's update branch, or ignore the repair while it stays on
+    its branch), `stale_install_mode` for apt's install mode `upgrade` (set `install.mode: full-upgrade`, or install by
+    hand); without a reason, or with one the integration does not know, `stale_kept_back`, which names both
     ([ADR-0204](../docs/adr/0204-the-firewall-reports-what-its-own-updater-offers.md));
   - the repair follows a changed key even while the problem stays the same; `vordr_problem` does not fire for it.
 - **Events** carry `message` in every supplied language, so that an automation chooses the language of its recipient,
@@ -542,8 +559,8 @@ with systemd and apt only.
   its type and reads nothing from `~/.ssh`, uses no SSH agent and no default keys. `agent_install.py` holds the pure
   parts (checks, scripts, reading), `agent_installer.py` the steps and what they hold, `config_flow.py` the subentry
   flow of "Add host".
-- **The client** keeps the `features` of the hub's last status and sends `agent_download` and `approve_host` only to a
-  hub that named them ([ADR-0067](../docs/adr/0067-hub-announces-features.md)); the answer goes to the one who asked,
+- **The client** keeps the `features` of the hub's last status and sends `agent_download`, `approve_host` and
+  `hold_release` only to a hub that named them ([ADR-0067](../docs/adr/0067-hub-announces-features.md)); the answer goes to the one who asked,
   never to the coordinator or an entity.
 
 ### 6e. AI explanations of failed runs (optional)

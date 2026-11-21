@@ -151,6 +151,12 @@ func updatesText(n hub.NodeView, at func(time.Time) string) string {
 	}
 	if v != nil && v.KeptBack != nil {
 		text += fmt.Sprintf(", %d kept back", *v.KeptBack)
+		if v.KeptBackWhy != "" {
+			text += fmt.Sprintf(" (%s)", v.KeptBackWhy)
+		}
+	}
+	if v != nil && v.HeldRelease != "" {
+		text += fmt.Sprintf(", %s held", v.HeldRelease) // ADR-0208: not counted as pending too long
 	}
 	text += "), reported " + at(*n.ReportAt)
 	if n.PendingSince != nil && *n.Pending > 0 {

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/psewar/vordr/internal/protocol"
+	"github.com/psewar/vordr/internal/source"
 	"github.com/psewar/vordr/internal/wire"
 )
 
@@ -44,6 +45,50 @@ func TestKeptBackIsNotInstallable(t *testing.T) {
 	_ = f.srv.Reg.SetReport("s", keptBackReport(f.now, 2, 2, 2)) // a security run installs by name: kept back or not
 	if v := f.view(t, "s", f.now); *v.Installable != 2 {
 		t.Fatalf("security: installable %d", *v.Installable)
+	}
+}
+
+// The view names why the host holds its updates back where every source that holds some back names the same reason, so
+// that Home Assistant names the one step; a source that holds none back does not count. Where one names none (an agent
+// before ADR-0207) or two name different ones, the view names none (ADR-0207).
+func TestKeptBackWhy(t *testing.T) {
+	f := newViewFixture(t)
+	all := wire.PolicySummary{AllowedScopes: []string{"security", "all"}, DefaultScope: "all"}
+	f.host(t, "h", []protocol.Verb{protocol.VerbCheck, protocol.VerbInstall}, all, true)
+	const none, mode, branch = protocol.KeptBackNone, protocol.KeptBackInstallMode, protocol.KeptBackOtherBranch
+	for name, c := range map[string]struct {
+		apt, device protocol.KeptBackReason
+		deviceKept  int
+		want        protocol.KeptBackReason
+	}{
+		"install mode":                           {mode, none, 0, mode},
+		"another branch":                         {branch, none, 0, branch},
+		"an agent before ADR-0207":               {none, none, 0, none},
+		"two reasons":                            {mode, branch, 1, none},
+		"the same reason twice":                  {branch, branch, 1, branch},
+		"one source names none":                  {mode, none, 1, none},
+		"a source that holds none back":          {branch, mode, 0, branch},
+		"only the second source holds some back": {none, branch, 1, none},
+	} {
+		rep := keptBackReport(f.now, 3, 0, 2)
+		rep.Sources[0].KeptBackWhy = c.apt
+		dev := source.Report{Source: "device", State: protocol.SourceUpToDate, KeptBackWhy: c.device, CheckedAt: f.now}
+		if c.deviceKept > 0 {
+			dev.State, dev.Pending, dev.KeptBack = protocol.SourceUpdatesAvailable, 1, 1
+			dev.Packages = []source.Package{{Name: "release", From: "1", To: "2", KeptBack: true}}
+		}
+		rep.Sources = append(rep.Sources, dev)
+		_ = f.srv.Reg.SetReport("h", rep)
+		if v := f.view(t, "h", f.now); v.KeptBack == nil || *v.KeptBack != 2+c.deviceKept || v.KeptBackWhy != c.want {
+			t.Errorf("%s: kept back %v, why %q, want %q", name, v.KeptBack, v.KeptBackWhy, c.want)
+		}
+	}
+	// Nothing held back: no count, no reason - also where a source names one anyway.
+	rep := aptReport(f.now, 2, 0, nil)
+	rep.Sources[0].KeptBackWhy = protocol.KeptBackInstallMode
+	_ = f.srv.Reg.SetReport("h", rep)
+	if v := f.view(t, "h", f.now); v.KeptBack != nil || v.KeptBackWhy != protocol.KeptBackNone {
+		t.Fatalf("none kept back: %v %q", v.KeptBack, v.KeptBackWhy)
 	}
 }
 

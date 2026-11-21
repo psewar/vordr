@@ -395,9 +395,7 @@ func (s *Server) loop(sess *session) {
 			bounds := boundReport(&rep) // before anything of it is kept (ADR-0195)
 			s.logBounds(sess.node, e.Fingerprint, "report", bounds)
 			if bounds.taken() {
-				if err := s.Reg.SetReportAt(sess.node, rep, s.Now()); err != nil {
-					s.Log.Printf("register: %v", err)
-				}
+				s.takeReport(sess.node, e, rep)
 			}
 			// The check that follows the agent's start is over, also when the hub refused its report (ADR-0147).
 			sess.mu.Lock()

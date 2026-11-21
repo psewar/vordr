@@ -386,6 +386,15 @@ async def test_stale_hint_names_a_way_that_exists(
     await fake_hub.push_host(host_view("h", capabilities=none, problem=stale, installable=0, pending=1, kept_back=1))
     await wait_until(lambda: reg.async_get_issue(DOMAIN, "problem_h").translation_key == "problem_stale_kept_back")
     assert hass.states.get("binary_sensor.vordr_h_problem").attributes["next_step"] == "stale_kept_back"
+    # ADR-0207: the hub says why - the text names only that step, still without a fix.
+    held = {"capabilities": none, "problem": stale, "installable": 0, "pending": 1, "kept_back": 1}
+    await fake_hub.push_host(host_view("h", **held, kept_back_why="other_branch"))
+    await wait_until(lambda: reg.async_get_issue(DOMAIN, "problem_h").translation_key == "problem_stale_other_branch")
+    assert not reg.async_get_issue(DOMAIN, "problem_h").is_fixable
+    assert hass.states.get("binary_sensor.vordr_h_problem").attributes["next_step"] == "stale_other_branch"
+    await fake_hub.push_host(host_view("h", **held, kept_back_why="install_mode"))
+    await wait_until(lambda: reg.async_get_issue(DOMAIN, "problem_h").translation_key == "problem_stale_install_mode")
+    assert hass.states.get("binary_sensor.vordr_h_problem").attributes["next_step"] == "stale_install_mode"
     assert len(problems) == 1
 
 

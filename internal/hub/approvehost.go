@@ -26,14 +26,17 @@ var hostFingerprintPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 // haFeatures: what the hub accepts from this client beyond the base protocol, in every status it sends it, as the
 // client register has it now. agent_download for every client (the role is decided per request, ADR-0167);
-// approve_host only while hub.yaml allows it and the client is approved with its key and role admin (ADR-0192).
+// approve_host only while hub.yaml allows it and the client is approved with its key and role admin (ADR-0192);
+// hold_release while the client is approved with its key and role operate or admin (ADR-0208).
 func (s *Server) haFeatures(name, fingerprint string) []string {
 	features := []string{wire.FeatureAgentDownload}
-	if s.HAApprovesHosts {
-		c, ok := s.Clients.Get(name)
-		if ok && c.State == wire.StateApproved && c.Fingerprint == fingerprint && RoleAllowsHostApproval(c.Role) {
-			features = append(features, wire.FeatureApproveHost)
-		}
+	c, ok := s.Clients.Get(name)
+	approved := ok && c.State == wire.StateApproved && c.Fingerprint == fingerprint
+	if s.HAApprovesHosts && approved && RoleAllowsHostApproval(c.Role) {
+		features = append(features, wire.FeatureApproveHost)
+	}
+	if approved && RoleAllowsReleaseHold(c.Role) {
+		features = append(features, wire.FeatureHoldRelease)
 	}
 	return features
 }

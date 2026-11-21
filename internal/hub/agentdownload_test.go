@@ -16,6 +16,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -751,7 +752,8 @@ func TestAgentDownloadOverTheHAProtocol(t *testing.T) {
 		}
 		var st wire.Status
 		if err := ws.ReadJSON(&st); err != nil || st.State != wire.StateApproved ||
-			len(st.Features) != 1 || st.Features[0] != wire.FeatureAgentDownload {
+			len(st.Features) == 0 || st.Features[0] != wire.FeatureAgentDownload ||
+			slices.Contains(st.Features, wire.FeatureApproveHost) {
 			t.Fatalf("status: %+v %v", st, err)
 		}
 		return ws

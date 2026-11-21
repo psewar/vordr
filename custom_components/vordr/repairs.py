@@ -1,5 +1,6 @@
 """Repairs with a fix: the reboot a host needs (ADR-0132), installing again after a kept failed install (ADR-0148),
-installing updates pending too long that a button takes (ADR-0203), installing one of Home Assistant's own updates
+installing updates pending too long that a button takes (ADR-0203), holding a release a host offers only in another
+branch (ADR-0208), installing one of Home Assistant's own updates
 again, at once, after its install failed (ADR-0165, ADR-0182), and approving a waiting host where the hub allows it
 (ADR-0192)."""
 
@@ -11,11 +12,12 @@ from homeassistant.components.repairs import RepairsFlow
 from homeassistant.config_entries import ConfigEntryState
 import voluptuous as vol
 
-from .client import CODE_HUB_NOT_CONNECTED, CODE_HUB_WITHOUT_APPROVAL
+from .client import CODE_HUB_NOT_CONNECTED, CODE_HUB_WITHOUT_APPROVAL, CODE_HUB_WITHOUT_HOLD
 from .coordinator import (
     APPROVE_HOST_KIND,
     BACKUP_REFUSALS,
     FINGERPRINT_PATTERN,
+    HOLD_RELEASE_KIND,
     STALE_INSTALL_KIND,
     VordrCoordinator,
     failed_install,
@@ -25,6 +27,7 @@ from .coordinator import (
     reboot_held,
     reboot_required,
     refusal,
+    stale_hold_release,
     stale_install_command,
     stale_install_names,
     waiting_hosts,
@@ -184,6 +187,52 @@ class StaleInstallFlow(_HostFlow):
         return stale_install_command(host.get("problem"), host)
 
 
+# ADR-0208: the hub's codes of hold_release besides ok, and the client's, that have their own text in the fix dialog
+# (hold_<code>). Any other shows with its code (hold_refused).
+HOLD_REFUSALS: Final = frozenset(
+    {"not_offered", "role_forbids", "client_not_approved", "already_in_state", "no_answer", CODE_HUB_WITHOUT_HOLD}
+)
+
+
+class HoldReleaseFlow(RepairsFlow):
+    """Hold the release a host offers only in another branch (ADR-0208): the device stays on its branch, the release no
+    longer counts as pending too long, and with that the problem and this repair end. The hub holds exactly the release
+    the dialog names, while the host offers it; a newer release in the other branch brings the repair back. Checked
+    again at confirmation, since the repair may be older than the host's state."""
+
+    def __init__(self, entry_id: str, node: str, release: str) -> None:
+        self._entry_id = entry_id
+        self._node = node
+        self._release = release
+
+    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        return await self.async_step_confirm()
+
+    async def async_step_confirm(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        names = {"node": self._node, "release": self._release}
+        if user_input is None:
+            return self.async_show_form(step_id="confirm", data_schema=vol.Schema({}), description_placeholders=names)
+        entry = self.hass.config_entries.async_get_entry(self._entry_id)
+        if entry is None or entry.state is not ConfigEntryState.LOADED:
+            return self.async_abort(reason="hub_not_connected", description_placeholders=names)
+        coordinator: VordrCoordinator = entry.runtime_data
+        if not coordinator.connected:
+            return self.async_abort(reason="hub_not_connected", description_placeholders=names)
+        host = coordinator.data.hosts.get(self._node)
+        if host is None:
+            return self.async_abort(reason="host_gone", description_placeholders=names)
+        if not self._release or stale_hold_release(host.get("problem"), host) != self._release:
+            return self.async_abort(reason="no_longer_needed", description_placeholders=names)
+        code = await coordinator.hold_release(self._node, self._release)
+        if code == "ok":
+            return self.async_create_entry(data={})
+        if code == CODE_HUB_NOT_CONNECTED:
+            return self.async_abort(reason="hub_not_connected", description_placeholders=names)
+        if code in HOLD_REFUSALS:
+            return self.async_abort(reason=f"hold_{code}", description_placeholders=names)
+        return self.async_abort(reason="hold_refused", description_placeholders={**names, "code": code})
+
+
 # ADR-0192: the field of the fix, and its two refusals in the form, where nothing is sent.
 CONF_FINGERPRINT: Final = "fingerprint"
 FORM_INVALID: Final = "invalid_fingerprint"
@@ -325,5 +374,9 @@ async def async_create_fix_flow(
         return ApproveHostFlow(str(data.get("entry_id") or ""), str(data.get("node") or ""))
     if data.get("kind") == STALE_INSTALL_KIND:
         return StaleInstallFlow(str(data.get("entry_id") or ""), str(data.get("node") or ""))
+    if data.get("kind") == HOLD_RELEASE_KIND:
+        return HoldReleaseFlow(
+            str(data.get("entry_id") or ""), str(data.get("node") or ""), str(data.get("release") or "")
+        )
     flow = InstallAgainFlow if data.get("kind") == "install_again" else RebootFlow
     return flow(str(data.get("entry_id") or ""), str(data.get("node") or ""))

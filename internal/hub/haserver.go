@@ -216,6 +216,16 @@ func (s *Server) loopHA(sess *haSession) {
 			if sess.conn.Send(res) != nil || res.Code == string(AdminClientNotApproved) {
 				return // as with agent_download: a client that is not approved gets one answer (ADR-0192)
 			}
+		case wire.THoldRelease:
+			var h wire.HoldRelease
+			if json.Unmarshal(raw, &h) != nil || !requestIDPattern.MatchString(h.RequestID) || !nodePattern.MatchString(h.Node) {
+				s.Events.Log("", "ha_protocol_violation", map[string]any{"client": sess.name, "type": t})
+				return
+			}
+			res := s.haHoldRelease(sess, h)
+			if sess.conn.Send(res) != nil || res.Code == string(AdminClientNotApproved) {
+				return // as with approve_host: a client that is not approved gets one answer (ADR-0208)
+			}
 		default:
 			s.Events.Log("", "ha_protocol_violation", map[string]any{"client": sess.name, "type": t})
 			return

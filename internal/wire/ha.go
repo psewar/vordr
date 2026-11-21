@@ -22,6 +22,8 @@ import (
 //	                                  downloads}
 //	ha  -> hub approve_host    {request_id, node, fingerprint}  only to a hub whose status named FeatureApproveHost
 //	hub -> ha  approve_host_result {request_id, code}      ok = the waiting host is approved
+//	ha  -> hub hold_release    {request_id, node, to}      only to a hub whose status named FeatureHoldRelease
+//	hub -> ha  hold_release_result {request_id, code}      ok = the release in another branch is held
 //	both       heartbeat       every HeartbeatInterval; the hub answers the client's
 const (
 	HAPath     = "/v1/ha"
@@ -38,6 +40,8 @@ const (
 	TAgentDownloadResult = "agent_download_result"
 	TApproveHost         = "approve_host"
 	TApproveHostResult   = "approve_host_result"
+	THoldRelease         = "hold_release"
+	THoldReleaseResult   = "hold_release_result"
 )
 
 // FeatureAgentDownload, in the status the hub sends a Home Assistant client: the hub answers agent_download
@@ -49,6 +53,11 @@ const FeatureAgentDownload = "agent_download"
 // (ADR-0192). Named only while hub.yaml sets ha_approves_hosts and the client is approved with role admin; a role
 // change sends the status again. A client sends approve_host only while its last status named it.
 const FeatureApproveHost = "approve_host"
+
+// FeatureHoldRelease, in the status the hub sends a Home Assistant client: this client may hold a release a host offers
+// only in another branch (ADR-0208). Named while the client is approved with role operate or admin; a client sends
+// hold_release only while its last status named it.
+const FeatureHoldRelease = "hold_release"
 
 // ReasonProtocolMismatch: the client speaks another protocol version than the hub.
 const ReasonProtocolMismatch StatusReason = "protocol_mismatch"
@@ -168,6 +177,23 @@ type ApproveHost struct {
 
 // ApproveHostResult answers ApproveHost with a code: ok, or why the hub did not approve.
 type ApproveHostResult struct {
+	T         string `json:"t"`
+	RequestID string `json:"request_id"`
+	Code      string `json:"code"`
+}
+
+// HoldRelease asks the hub to hold the release a host offers only in another branch of its updates (ADR-0208): the
+// operator stays on the device's branch, and the release no longer counts as pending too long. To is the release as
+// the host's view names it (HostView.OtherBranch); the hub holds it only while the host offers exactly that one.
+type HoldRelease struct {
+	T         string `json:"t"`
+	RequestID string `json:"request_id"`
+	Node      string `json:"node"`
+	To        string `json:"to"`
+}
+
+// HoldReleaseResult answers HoldRelease with a code: ok, or why the hub did not hold the release.
+type HoldReleaseResult struct {
 	T         string `json:"t"`
 	RequestID string `json:"request_id"`
 	Code      string `json:"code"`

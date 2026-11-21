@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/psewar/vordr/internal/protocol"
+	"github.com/psewar/vordr/internal/source"
 	"github.com/psewar/vordr/internal/wire"
 )
 
@@ -13,6 +14,22 @@ import (
 // /v1/ha sends as they are. They hold codes and numbers, never display text: the integration translates. The same
 // goes for commands: Resolve is the one place that turns a command into a job, and Capabilities offers exactly what
 // Resolve allows.
+
+// keptBackWhy: the reason every source that holds back updates names (ADR-0207); none when one of them names none (an
+// agent before ADR-0207) or two name different ones - Home Assistant then names every way to bring them.
+func keptBackWhy(sources []source.Report) protocol.KeptBackReason {
+	why := protocol.KeptBackNone
+	for _, s := range sources {
+		if s.KeptBack == 0 {
+			continue
+		}
+		if s.KeptBackWhy == protocol.KeptBackNone || (why != protocol.KeptBackNone && s.KeptBackWhy != why) {
+			return protocol.KeptBackNone
+		}
+		why = s.KeptBackWhy
+	}
+	return why
+}
 
 // waitingOf: the vulnerable packages whose fix waits for someone else (ADR-0129); 0 when the view has no count.
 func waitingOf(pv *wire.PackagesView) int {
@@ -66,8 +83,14 @@ func (s *Server) HostView(e Entry, now time.Time) wire.HostView {
 			installable := installableCount(v.Capabilities, pending-keptBack, security)
 			v.Pending, v.Security, v.Installable = &pending, &security, &installable
 			if keptBack > 0 {
-				v.KeptBack = &keptBack
+				v.KeptBack, v.KeptBackWhy = &keptBack, keptBackWhy(rep.Sources)
 			}
+			if offers := otherBranchOffers(*rep); len(offers) == 1 {
+				v.OtherBranch = offers[0].To // what a hold names (ADR-0208)
+			}
+		}
+		if h := e.HeldRelease; h != nil {
+			v.HeldRelease = h.To
 		}
 		for _, src := range rep.Sources {
 			if src.State == protocol.SourceCheckFailed && failedCode == "" {

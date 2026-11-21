@@ -47,6 +47,14 @@ func RoleAllowsAgentDownload(role string) bool { return EffectiveRole(role) == R
 // (ADR-0192): admin only, as for the agent release that sets the host up.
 func RoleAllowsHostApproval(role string) bool { return EffectiveRole(role) == RoleAdmin }
 
+// RoleAllowsReleaseHold reports whether a client with role may hold a release a host offers only in another branch
+// (ADR-0208): operate and admin, as for the install button. It decides about the host's updates and changes nothing on
+// the host.
+func RoleAllowsReleaseHold(role string) bool {
+	r := EffectiveRole(role)
+	return r == RoleOperate || r == RoleAdmin
+}
+
 // SetRole gives a client a role.
 func (r *ClientRegistry) SetRole(name, role string) AdminCode {
 	if !ValidRole(role) {

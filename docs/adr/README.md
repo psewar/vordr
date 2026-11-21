@@ -240,4 +240,6 @@ Generated from the files by `python3 docs/adr/check_index.py --write`. `build.sh
 | [0204](0204-the-firewall-reports-what-its-own-updater-offers.md) | The firewall reports what its own updater offers | accepted | 2026-11-20 |
 | [0205](0205-the-firewall-installs-through-its-own-updater-by-button.md) | The firewall installs through its own updater, by button | accepted | 2026-11-20 |
 | [0206](0206-the-ssh-driver-probes-the-device-only-after-ssh-fails.md) | The SSH driver probes the device only after ssh fails | accepted | 2026-11-20 |
+| [0207](0207-the-hub-says-why-updates-are-held-back.md) | The hub says why updates are held back | accepted | 2026-11-21 |
+| [0208](0208-a-release-in-another-branch-can-be-held-from-home-assistant.md) | A release in another branch can be held from Home Assistant | accepted | 2026-11-21 |
 <!-- adr-index:end -->

@@ -75,6 +75,11 @@ was checked and has nothing to update, e.g. as a template condition
   button would, and the hint goes once they are installed. Where the host's policy lets no button take them, the hint
   says how to install them instead
   ([ADR-0203](../docs/adr/0203-the-stale-repair-installs-what-a-button-takes.md)).
+- A release a device offers only in another branch of its updates (a firewall's next release line) makes its repair
+  hint fixable once it has been pending too long: "Fix" keeps the device on its branch and holds that release, so the
+  problem ends while it stays visible as pending. A newer release brings the hint back; `vordr-hub unhold <node>` on
+  the hub ends the hold
+  ([ADR-0208](../docs/adr/0208-a-release-in-another-branch-can-be-held-from-home-assistant.md)).
 - A host waiting for approval at the hub shows up as a repair hint (a warning) with the fingerprint the hub saw and the
   command for the hub, `vordr-hub approve <node> --fingerprint <fp>`. Compare the fingerprint with
   `vordr-agent identity` on the host first. The hint goes once the host is approved, rejected or forgotten

@@ -77,6 +77,10 @@ WAITING_OS_MAX = 64
 APPROVE_HOST_KIND = "approve_host"
 # ADR-0203: the kind and the text key of the problem repair while its fix installs what a button takes.
 STALE_INSTALL_KIND = "stale_install"
+# ADR-0208: the kind and the text key of the problem repair while its fix holds a release in another branch.
+HOLD_RELEASE_KIND = "hold_release"
+# How much of the release's name the repair shows; the hub bounds it, this keeps the dialog readable.
+RELEASE_MAX = 64
 
 
 def valid_reason(value: Any) -> str:
@@ -203,6 +207,21 @@ def stale_install_names(host: dict[str, Any] | None) -> dict[str, str]:
     return {"installable": str(host.get("installable", "?")), "pending": str(host.get("pending", "?"))}
 
 
+def stale_hold_release(problem: dict[str, Any] | None, host: dict[str, Any] | None) -> str:
+    """ADR-0208: the release the fix of a stale problem holds - the one the host offers only in another branch, as the
+    hub names it (other_branch). Empty where the fix does not apply: the problem is not stale alone, not every pending
+    update is that release (problem_key is not stale_other_branch), or the hub names none (an older hub, more than one
+    such release) or one too long to show."""
+    if not problem or problem_reasons(problem) != {"stale"} or host is None:
+        return ""
+    if problem_key(problem, True, host) != "stale_other_branch":
+        return ""
+    release = host.get("other_branch")
+    if not isinstance(release, str) or not release or len(release) > RELEASE_MAX or not release.isprintable():
+        return ""
+    return release
+
+
 def failed_install_names(host: dict[str, Any] | None) -> dict[str, str]:
     """How the install-again repair names the failed install: its code and the run's log excerpt on one line, at most
     DETAIL_MAX characters; "-" for what is missing."""
@@ -274,6 +293,7 @@ class VordrCoordinator(DataUpdateCoordinator[VordrData]):
         self._text_keys: dict[str, str | None] = {}
         self._waiting: set[str] = set()  # nodes with a repair "waits for approval" (ADR-0157)
         self._waiting_fixable = False  # whether those repairs were made fixable (ADR-0192)
+        self._hold_fixable = False  # whether the hub's status named hold_release when the repairs were made (ADR-0208)
         self.hub_device_id = ""  # set at setup; host devices hang below it
         self.texts = Texts(hass)  # loaded at setup, before the first message
         # Home Assistant's own updates under Vördr's rules (ADR-0158): held here, but independent of the hub.
@@ -306,6 +326,11 @@ class VordrCoordinator(DataUpdateCoordinator[VordrData]):
         result = await self.client.command(node, command)
         return str(result.get("code", ""))
 
+    async def hold_release(self, node: str, release: str) -> str:
+        """Hold the release node offers only in another branch (ADR-0208); returns the hub's code (ok or the reason for
+        refusing) or one of the client's."""
+        return await self.client.hold_release(node, release)
+
     async def command_outside_window(self, node: str, command: str, reason: str) -> None:
         """Send an install or reboot command that may run outside the host's window, with the person's reason
         (ADR-0087). Only where the hub offers it: an older hub would drop the reason, an older agent refuse the job."""
@@ -335,6 +360,13 @@ class VordrCoordinator(DataUpdateCoordinator[VordrData]):
             # The hub's status named approve_host or no longer does (a role change, a connection that ended or came):
             # the waiting hosts' repairs follow now, not with the next change of the hub's view (ADR-0192).
             self._waiting_issues(self.data.hub)
+        if self.client.offers_release_hold != self._hold_fixable:
+            # The hub's status named hold_release or no longer does (a role change, a connection that ended or came):
+            # a repair whose fix holds a release follows now (ADR-0208).
+            self._hold_fixable = self.client.offers_release_hold
+            limits = (self.data.hub or {}).get("limits")
+            for node, host in self.data.hosts.items():
+                self._track(node, host, limits, False)
         if state == self.data.connection and reason == self.data.reason and synced == self.data.synced:
             return
         self.async_set_updated_data(replace(self.data, connection=state, reason=reason, synced=synced))
@@ -399,6 +431,10 @@ class VordrCoordinator(DataUpdateCoordinator[VordrData]):
         text_key = problem_key(problem, reboot, host) if problem else None
         if text_key is not None and stale_install_command(problem, host):
             text_key = STALE_INSTALL_KIND  # the repair has a fix now, and with it another text (ADR-0203)
+        elif text_key is not None and self._hold_offered(problem, host):
+            text_key = (
+                f"{HOLD_RELEASE_KIND}:{stale_hold_release(problem, host)}"  # its fix holds this release (ADR-0208)
+            )
         if changed or snapshot or carried != self._carried.get(node, False) or text_key != self._text_keys.get(node):
             # After a reconnect too: the hub's limits, which the repair names, may have changed. And when the
             # install-again repair starts or stops carrying the problem (capability or failed install changed), or the
@@ -499,6 +535,11 @@ class VordrCoordinator(DataUpdateCoordinator[VordrData]):
                 if domain == DOMAIN and ident.startswith("host:") and ident[5:] not in nodes:
                     reg.async_remove_device(entry.id)
 
+    def _hold_offered(self, problem: dict[str, Any] | None, host: dict[str, Any] | None) -> bool:
+        """ADR-0208: the problem repair's fix holds a release in another branch - the fix applies and the hub's status
+        names hold_release."""
+        return self.client.offers_release_hold and bool(stale_hold_release(problem, host))
+
     def _problem_issue(
         self,
         node: str,
@@ -532,6 +573,27 @@ class VordrCoordinator(DataUpdateCoordinator[VordrData]):
                 translation_key=STALE_INSTALL_KIND,
                 translation_placeholders={"node": node, **stale_install_names(host)},
                 data={"entry_id": self.config_entry.entry_id, "node": node, "kind": STALE_INSTALL_KIND},
+            )
+            return
+        if self._hold_offered(problem, host):
+            # ADR-0208: every pending update is a release the host offers only in another branch - the fix holds it,
+            # so that it no longer counts as pending too long while the device stays on its branch. Its text is in the
+            # fix dialog, as for stale_install.
+            release = stale_hold_release(problem, host)
+            ir.async_create_issue(
+                self.hass,
+                DOMAIN,
+                issue_id,
+                is_fixable=True,
+                severity=ir.IssueSeverity.WARNING,
+                translation_key=HOLD_RELEASE_KIND,
+                translation_placeholders={"node": node, "release": release},
+                data={
+                    "entry_id": self.config_entry.entry_id,
+                    "node": node,
+                    "kind": HOLD_RELEASE_KIND,
+                    "release": release,
+                },
             )
             return
         ir.async_create_issue(

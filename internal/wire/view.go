@@ -19,9 +19,19 @@ type HostView struct {
 	Pending *int         `json:"pending"` // nil: unknown (no report, or the check failed)
 	// Security is nil exactly when Pending is.
 	Security *int `json:"security"`
-	// KeptBack: of Pending, the updates the host's install.mode upgrade leaves for an install of scope all (ADR-0127);
-	// nil when there are none.
+	// KeptBack: of Pending, the updates no install of scope all brings: those the host's install.mode upgrade leaves
+	// (ADR-0127), or a release the device offers only in another branch (ADR-0204); nil when there are none.
 	KeptBack *int `json:"kept_back,omitempty"`
+	// KeptBackWhy: why the host holds them back (ADR-0207), so that Home Assistant names the one step that brings
+	// them; empty when KeptBack is nil, when a source names no reason (an agent before ADR-0207) and when two sources
+	// name different ones.
+	KeptBackWhy protocol.KeptBackReason `json:"kept_back_why,omitempty"`
+	// OtherBranch: the release the host offers only in another branch of its updates (ADR-0204), as a hold names it
+	// (ADR-0208); empty without one, and where the host offers more than one.
+	OtherBranch string `json:"other_branch,omitempty"`
+	// HeldRelease: the release in another branch the operator holds (ADR-0208); it stays pending and kept back, but no
+	// longer counts as pending too long. Empty without a hold.
+	HeldRelease string `json:"held_release,omitempty"`
 	// Installable: the pending updates the install button would take under the host's policy (ADR-0106); nil exactly
 	// when Pending is. Home Assistant shows the system entity as an update only when it is above zero.
 	Installable *int `json:"installable"`

@@ -192,3 +192,17 @@ const (
 	RebootWindowsUpdate RebootReason = "windows_update"
 	RebootOther         RebootReason = "other"
 )
+
+// KeptBackReason says why a source holds back the updates it counts as kept back (ADR-0207), so that Home Assistant
+// names the one step that brings them. A source holds them back for one reason.
+type KeptBackReason string
+
+const (
+	KeptBackNone KeptBackReason = ""
+	// KeptBackInstallMode: the host's install.mode upgrade leaves them, since they need packages added or removed
+	// (ADR-0127); full-upgrade takes them.
+	KeptBackInstallMode KeptBackReason = "install_mode"
+	// KeptBackOtherBranch: the device offers them only in another branch of its updates, which the operator switches
+	// in the device's own settings (ADR-0204).
+	KeptBackOtherBranch KeptBackReason = "other_branch"
+)

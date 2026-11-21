@@ -472,7 +472,11 @@ Der Grund ist der gewichtigste, der zutrifft: `kernel` vor `libraries` vor `othe
 
 Der Hub setzt `stale` (mit `problem`), wenn Updates länger als `stale_after_days` (Standard 7) ausstehen, ohne dass ein
 Lauf sie einspielt, gleich aus welchem Grund. Das fängt auch Fälle, für die es keinen eigenen Code gibt
-([ADR-0014](../docs/adr/0014-stale-after-seven-days.md)).
+([ADR-0014](../docs/adr/0014-stale-after-seven-days.md)). Ein Release, das das Gerät nur in einem anderen Zweig
+anbietet und das der Betreiber aus Home Assistant zurückstellt, zählt nicht, solange es das Einzige ist, was aussteht;
+die Leitstelle beendet die Zurückstellung, sobald der Host nicht mehr genau dieses Release anbietet, und
+`vordr-hub unhold <node>` beendet sie von Hand
+([ADR-0208](../docs/adr/0208-a-release-in-another-branch-can-be-held-from-home-assistant.md)).
 
 ### 7.6 Selbst-Update des Agenten
 
@@ -877,7 +881,9 @@ Active Backup for Business wurde dafür geprüft und verworfen
     Umfang `all`: Die Leitstelle zieht es von `installable` ab und meldet `kept_back`, und die Automatik mit
     `auto_scope: all` startet dafür keinen Lauf. Der Umfang `security` installiert nach Namen und ist nicht betroffen.
     Schlägt die zweite Simulation fehl, wird nichts markiert
-    ([ADR-0127](../docs/adr/0127-count-only-what-the-upgrade-mode-installs.md)).
+    ([ADR-0127](../docs/adr/0127-count-only-what-the-upgrade-mode-installs.md)). Die Quelle nennt den Grund
+    `kept_back_why: install_mode`, den die Leitstelle mit `kept_back` weitergibt
+    ([ADR-0207](../docs/adr/0207-the-hub-says-why-updates-are-held-back.md)).
 - Nach einem gelungenen Lauf leert der Agent den Paket-Cache (`apt-get clean`).
 - **Prüfung nach dem Update** (`health:` in `agent.yaml`;
   [ADR-0038](../docs/adr/0038-health-checks-after-install.md),
@@ -1954,8 +1960,8 @@ Aktualisieren von Compose-Diensten auf den Neubau ihres Tags per Knopf
   Agent-Binaries (HTTPS: mit dem Token eines `agent_update`-Auftrags unter `/v1/agent/`, für einen neuen Host mit einem
   Einmal-Token aus Home Assistant unter `/v1/agent-download/`, 10.4). Keine Weboberfläche.
 - Verwaltung nur lokal über einen Unix-Socket (`admin_socket`, Modus 0600 in einem 0700-Ordner): `vordr-hub list |
-  show <node> | approve <node> --fingerprint <fp> | reject <node> | forget <node> | check <node> | backup <node> |
-  events`, für Home-Assistant-Clients (eigenes Register `clients.json`) `clients | approve-client <name> --fingerprint
+  show <node> | approve <node> --fingerprint <fp> | reject <node> | forget <node> | unhold <node> | check <node> |
+  backup <node> | events`, für Home-Assistant-Clients (eigenes Register `clients.json`) `clients | approve-client <name> --fingerprint
   <fp> | reject-client <name> | forget-client <name> | client-role <name> --role <rolle>`. Ohne Socket: `key`,
   `check-config`, `version`. Noch nicht gebaut: ein Befehl für die Ringe (`rings`)
   ([ADR-0010](../docs/adr/0010-administration-only-local.md)). Die eine Ausnahme: Wo `hub.yaml` `ha_approves_hosts`
@@ -2016,7 +2022,8 @@ Aktualisieren von Compose-Diensten auf den Neubau ihres Tags per Knopf
     nummerierten Dateien mit.
 - **Rollen der HA-Clients** ([ADR-0039](../docs/adr/0039-ha-client-roles.md)):
   - `observe`: nur Sichten.
-  - `operate`: Prüfen, Installieren, Agent-Update. Das ist der Standard.
+  - `operate`: Prüfen, Installieren, Agent-Update und ein Release in einem anderen Zweig zurückstellen (ADR-0208). Das
+    ist der Standard.
   - `admin`: zusätzlich Neustart, und die Agent-Release für einen neuen Host (`agent_download`, 10.4,
     [ADR-0167](../docs/adr/0167-home-assistant-gets-one-time-downloads-of-the-signed-agent-release.md)); wo `hub.yaml`
     `ha_approves_hosts` setzt, auch das Freigeben eines wartenden Hosts (`approve_host`, 10.1,

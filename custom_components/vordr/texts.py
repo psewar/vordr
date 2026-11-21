@@ -25,8 +25,10 @@ MANUAL_REBOOT = {"reboot_pending": "reboot_pending_manual", "ok_reboot_required"
 # Updates pending too long that the install button would not take get "install by hand" instead of "by hand or with
 # the button" (ADR-0197): "stale_manual" where the host allows no install through Vördr, "stale_policy" where it does
 # but its policy takes none of the pending updates, "stale_kept_back" where the host holds back every one of them - a
-# release an appliance offers only in another branch (ADR-0204), or apt's install.mode upgrade.
-STALE_WAYS = ("stale_manual", "stale_policy", "stale_kept_back")
+# release an appliance offers only in another branch (ADR-0204), or apt's install.mode upgrade. Where the hub says
+# why (kept_back_why, ADR-0207), the text names only that one step.
+KEPT_BACK_WAYS = {"other_branch": "stale_other_branch", "install_mode": "stale_install_mode"}
+STALE_WAYS = ("stale_manual", "stale_policy", "stale_kept_back", *KEPT_BACK_WAYS.values())
 TEXT_KEYS: tuple[str, ...] = (
     *(r for r in REASONS if r != "check_failed"),
     *(c for c in CODES if c != "ok"),
@@ -82,16 +84,19 @@ def reboot_key(host: dict[str, Any] | None) -> str:
 def stale_key(host: dict[str, Any]) -> str:
     """The text key of updates pending too long on this host (ADR-0197). "stale" while the install button takes some of
     them (the hub's installable above zero), and when the hub does not say (an older hub, no count); otherwise how they
-    can be installed: "stale_kept_back" where the host holds back every pending update (the hub's kept_back equals
-    pending: a release an appliance offers only in another branch, ADR-0204, or apt's install.mode upgrade),
-    "stale_policy" where the host takes installs through Vördr but its policy none of these (only security updates and
-    none is one), "stale_manual" where it takes none."""
+    can be installed: where the host holds back every pending update (the hub's kept_back equals pending), the one
+    step the hub's kept_back_why names (ADR-0207) - "stale_other_branch" for a release an appliance offers only in
+    another branch (ADR-0204), "stale_install_mode" for apt's install.mode upgrade - and "stale_kept_back", which names
+    both, where it names none (an older hub or agent) or one this integration does not know; "stale_policy" where the
+    host takes installs through Vördr but its policy none of these (only security updates and none is one),
+    "stale_manual" where it takes none."""
     installable = host.get("installable")
     if type(installable) is not int or installable > 0:
         return "stale"
     kept_back = host.get("kept_back")
     if type(kept_back) is int and kept_back > 0 and kept_back == host.get("pending"):
-        return "stale_kept_back"
+        why = host.get("kept_back_why")
+        return KEPT_BACK_WAYS.get(why, "stale_kept_back") if type(why) is str else "stale_kept_back"
     return "stale_policy" if can_install(host) else "stale_manual"
 
 

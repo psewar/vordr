@@ -349,7 +349,9 @@
               "ok_reboot_required_manual": "Von Hand neu starten – dieser Host erlaubt keinen Neustart über Vördr",
               "stale_manual": "Updates von Hand installieren – dieser Host erlaubt keine Installation über Vördr",
               "stale_policy": "Von Hand installieren oder den Abschnitt install in der agent.yaml des Hosts erweitern",
-              "stale_kept_back": "Den Update-Zweig in den Einstellungen des Geräts wechseln oder install.mode full-upgrade setzen – oder von Hand installieren"
+              "stale_kept_back": "Den Update-Zweig in den Einstellungen des Geräts wechseln oder install.mode full-upgrade setzen – oder von Hand installieren",
+              "stale_other_branch": "Den Update-Zweig in den Einstellungen des Geräts wechseln – oder diese Reparatur ignorieren, solange das Gerät auf seinem Zweig bleibt",
+              "stale_install_mode": "install.mode full-upgrade in der agent.yaml des Hosts setzen oder sie von Hand installieren"
             }
           },
           "check_failed_code": {
@@ -813,6 +815,29 @@
         }
       }
     },
+    "hold_release": {
+      "title": "Vördr: {node} bietet {release} nur in einem anderen Zweig an",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Auf dem aktuellen Update-Zweig von {node} bleiben?",
+            "description": "Auf {node} liegen Updates länger, als die Leitstelle erlaubt, und ein Install über Vördr nimmt keines davon: Das Gerät bietet {release} nur in einem anderen Zweig seiner Updates an, und Vördr installiert nur innerhalb des Zweigs, auf den das Gerät eingestellt ist.\n\nZum Aktualisieren den Update-Zweig in den Einstellungen des Geräts wechseln.\n\nUm vorerst auf dem aktuellen Zweig zu bleiben, bestätigen: Die Leitstelle stellt {release} zurück. Es bleibt ausstehend, zählt aber nicht mehr als zu lange liegend, damit enden das Problem und diese Reparatur. Bietet das Gerät ein neueres Release im anderen Zweig an, kommt die Reparatur wieder; auf der Leitstelle beendet `vordr-hub unhold {node}` die Zurückstellung."
+          }
+        },
+        "abort": {
+          "hub_not_connected": "Home Assistant ist gerade nicht mit der Vördr-Leitstelle verbunden. Bitte später noch einmal versuchen.",
+          "host_gone": "Die Leitstelle kennt {node} nicht mehr.",
+          "no_longer_needed": "{release} ist auf {node} nicht mehr das Einzige, was zu lange liegt, oder das Problem hat sich geändert. Die Reparatur nennt den nächsten Schritt.",
+          "hold_not_offered": "Die Leitstelle hat {release} nicht zurückgestellt: {node} bietet es nicht mehr in einem anderen Zweig an.",
+          "hold_role_forbids": "Die Leitstelle hat {release} nicht zurückgestellt: Dieses Home Assistant darf das nicht – seine Rolle bei der Leitstelle erlaubt es nicht (vordr-hub client-role).",
+          "hold_client_not_approved": "Die Leitstelle hat {release} nicht zurückgestellt: Sie kennt dieses Home Assistant nicht mehr als freigegeben.",
+          "hold_already_in_state": "Die Leitstelle stellt {release} auf {node} schon zurück.",
+          "hold_no_answer": "Die Leitstelle hat nicht rechtzeitig geantwortet. Bitte noch einmal versuchen.",
+          "hold_hub_without_hold": "Die Leitstelle bietet diesem Home Assistant das Zurückstellen nicht an: Sie ist älter, oder die Rolle dieses Home Assistant erlaubt es nicht.",
+          "hold_refused": "Die Leitstelle hat {release} auf {node} nicht zurückgestellt (Code {code})."
+        }
+      }
+    },
     "problem_offline": {
       "title": "Vördr: Update-Problem auf {node}",
       "description": "Seit über {offline_minutes} Minuten nicht mit der Leitstelle verbunden.\n\nNächster Schritt: Host und Agent prüfen."
@@ -984,6 +1009,14 @@
     "problem_stale_kept_back": {
       "title": "Vördr: Update-Problem auf {node}",
       "description": "Updates liegen seit über {stale_days} Tagen, und ein Install über Vördr nimmt keines davon: Der Host hält sie zurück. Ein Gerät bietet sie nur in einem anderen Zweig seiner Updates an; der Installationsmodus upgrade von apt lässt jene liegen, die Pakete hinzufügen oder entfernen müssten.\n\nNächster Schritt: Den Update-Zweig in den Einstellungen des Geräts wechseln oder install.mode full-upgrade setzen – oder von Hand installieren."
+    },
+    "problem_stale_other_branch": {
+      "title": "Vördr: Update-Problem auf {node}",
+      "description": "Updates liegen seit über {stale_days} Tagen, und ein Install über Vördr nimmt keines davon: Das Gerät bietet sie nur in einem anderen Zweig seiner Updates an, und Vördr installiert nur innerhalb des Zweigs, auf den das Gerät eingestellt ist.\n\nNächster Schritt: Den Update-Zweig in den Einstellungen des Geräts wechseln – oder diese Reparatur ignorieren, solange das Gerät auf seinem Zweig bleibt."
+    },
+    "problem_stale_install_mode": {
+      "title": "Vördr: Update-Problem auf {node}",
+      "description": "Updates liegen seit über {stale_days} Tagen, und ein Install über Vördr nimmt keines davon: Der Installationsmodus upgrade des Hosts lässt jene liegen, die Pakete hinzufügen oder entfernen müssten.\n\nNächster Schritt: install.mode full-upgrade in der agent.yaml des Hosts setzen oder sie von Hand installieren."
     },
     "protocol_mismatch": {
       "title": "Vördr: Leitstelle zu alt oder zu neu",

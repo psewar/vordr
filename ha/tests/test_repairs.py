@@ -504,6 +504,90 @@ async def test_stale_install_refused_says_why(hass: HomeAssistant, fake_hub: Fak
     assert issue(hass, "problem_h").is_fixable
 
 
+# ADR-0208: every pending update is a release the firewall offers only in another branch.
+BRANCH = {
+    "capabilities": INSTALLS,
+    "problem": STALE,
+    "installable": 0,
+    "pending": 1,
+    "security": 0,
+    "kept_back": 1,
+    "kept_back_why": "other_branch",
+    "other_branch": "1.3.0",
+}
+
+
+async def test_hold_repair_holds_the_release(hass: HomeAssistant, fake_hub: FakeHub, entry: MockConfigEntry) -> None:
+    """ADR-0208: where the hub offers the hold, the repair of a release in another branch is fixable; its dialog names
+    the release, its fix asks the hub to hold exactly it, and the repair goes with the problem. The problem sensor keeps
+    the step of ADR-0207; the pending count names the held release."""
+    fake_hub.features = ["hold_release"]
+    fake_hub.hosts["fw"] = host_view("fw", **BRANCH)
+    await setup(hass, entry)
+    found = issue(hass, "problem_fw")
+    assert found is not None and found.is_fixable and found.translation_key == "hold_release"
+    assert found.translation_placeholders == {"node": "fw", "release": "1.3.0"}
+    assert hass.states.get("binary_sensor.vordr_fw_problem").attributes["next_step"] == "stale_other_branch"
+    flow = await start_fix(hass, "problem_fw")
+    assert flow["description_placeholders"] == {"node": "fw", "release": "1.3.0"}
+    result = await confirm(hass, flow)
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert [(r["node"], r["to"]) for r in fake_hub.hold_requests] == [("fw", "1.3.0")]
+    await wait_until(lambda: issue(hass, "problem_fw") is None)
+    pending = hass.states.get("sensor.vordr_fw_pending_updates")
+    assert pending.state == "1" and pending.attributes["held_release"] == "1.3.0"
+
+
+async def test_hold_repair_needs_the_feature_and_the_release(
+    hass: HomeAssistant, fake_hub: FakeHub, entry: MockConfigEntry
+) -> None:
+    """No fix while the hub's status does not name hold_release (an older hub, role observe) - it follows the status at
+    once - and none where the hub names no release (an older hub, more than one) or the problem is more than that."""
+    fake_hub.hosts["fw"] = host_view("fw", **BRANCH)
+    older = {k: v for k, v in BRANCH.items() if k != "other_branch"}
+    fake_hub.hosts["older"] = host_view("older", **older)
+    fake_hub.hosts["both"] = host_view(
+        "both", **{**BRANCH, "problem": {"reason": "stale", "reasons": ["stale", "offline"]}}
+    )
+    await setup(hass, entry)
+    found = issue(hass, "problem_fw")
+    assert found is not None and not found.is_fixable and found.translation_key == "problem_stale_other_branch"
+    await fake_hub.set_features(["hold_release"])
+    await wait_until(lambda: issue(hass, "problem_fw").is_fixable)
+    assert issue(hass, "problem_fw").translation_key == "hold_release"
+    for node in ("older", "both"):
+        assert not issue(hass, f"problem_{node}").is_fixable, node
+    await fake_hub.set_features([])
+    await wait_until(lambda: not issue(hass, "problem_fw").is_fixable)
+    assert issue(hass, "problem_fw").translation_key == "problem_stale_other_branch"
+    assert fake_hub.hold_requests == []
+
+
+async def test_hold_checks_again_and_says_why(hass: HomeAssistant, fake_hub: FakeHub, entry: MockConfigEntry) -> None:
+    """A newer release between opening and confirming: nothing is sent. A refusal by the hub says why; any other code
+    is named as it is. Every abort leaves the repair and its fix."""
+    fake_hub.features = ["hold_release"]
+    fake_hub.hosts["fw"] = host_view("fw", **BRANCH)
+    await setup(hass, entry)
+    flow = await start_fix(hass, "problem_fw")
+    await fake_hub.push_host(host_view("fw", **{**BRANCH, "other_branch": "1.3.1"}))
+    await wait_until(lambda: issue(hass, "problem_fw").translation_placeholders["release"] == "1.3.1")
+    result = await confirm(hass, flow)
+    assert result["type"] is FlowResultType.ABORT and result["reason"] == "no_longer_needed"
+    assert fake_hub.hold_requests == []
+
+    names = {"node": "fw", "release": "1.3.1"}
+    fake_hub.hold_code = "not_offered"
+    result = await confirm(hass, await start_fix(hass, "problem_fw"))
+    assert result["type"] is FlowResultType.ABORT and result["reason"] == "hold_not_offered"
+    assert result["description_placeholders"] == names
+    fake_hub.hold_code = "store_failed"
+    result = await confirm(hass, await start_fix(hass, "problem_fw"))
+    assert result["type"] is FlowResultType.ABORT and result["reason"] == "hold_refused"
+    assert result["description_placeholders"] == {**names, "code": "store_failed"}
+    assert len(fake_hub.hold_requests) == 2 and issue(hass, "problem_fw").is_fixable
+
+
 FP_NEW = "ab" * 32
 FP_OTHER = "cd" * 32
 
