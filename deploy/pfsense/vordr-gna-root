@@ -112,6 +112,21 @@ boot_time() {
 	sysctl -n kern.boottime 2>/dev/null | sed -n 's/^{ sec = \([0-9][0-9]*\),.*/\1/p'
 }
 
+# upgrade_continues: pfSense-upgrade takes a release in stages across reboots. After a stage it notes the next one as
+# the annotation next_stage of the kernel package, starts the reboot in the background and ends 0; the last stage
+# deletes the note. While a kernel package carries it, a release upgrade is not over (ADR-0209).
+upgrade_continues() {
+	set -f
+	for k in $(pkg query -e '%n ~ pfSense-kernel-*' %n 2>/dev/null); do
+		if [ -n "$(pkg annotate -q -S "$k" next_stage 2>/dev/null)" ]; then
+			set +f
+			return 0
+		fi
+	done
+	set +f
+	return 1
+}
+
 # write_install <state> <code> <exit code> <finished>: the state of the install inst_* names, for install status.
 write_install() {
 	tmp=$(mktemp "$STATE/.install.XXXXXX")
@@ -178,10 +193,11 @@ chown "$OWNER":wheel "$QUEUE"
 chmod 0700 "$QUEUE"
 
 # An install that a run before left running (ADR-0205) ended with that run: by the reboot the updater starts, or cut
-# short. While pfSense-upgrade still holds its lock (a later boot stage of a release upgrade) it stays running. After a
-# reboot it is rebooted, for the agent to verify; in the same boot, failed as interrupted. The update facts are read
-# again in this run either way.
-if [ "$(install_field install_state)" = running ] && [ ! -e "$UPGRADE_LOCK" ]; then
+# short. While pfSense-upgrade still holds its lock (a later boot stage of a release upgrade), or a release install
+# still has a stage to come (ADR-0209), it stays running. After a reboot it is rebooted, for the agent to verify; in
+# the same boot, failed as interrupted. The update facts are read again in this run either way.
+if [ "$(install_field install_state)" = running ] && [ ! -e "$UPGRADE_LOCK" ] &&
+	{ [ "$(install_field install_kind)" != release ] || ! upgrade_continues; }; then
 	inst_job=$(install_field install_job)
 	inst_kind=$(install_field install_kind)
 	inst_name=$(install_field install_name)
@@ -298,8 +314,9 @@ mv "$tmp" "$STATE/window"
 # The install (ADR-0205), at most one per run, through pfSense's own updater. Checked again first: no other run of the
 # updater holds its lock, and the offer is still there - the configured branch's release, or a newer version of the
 # installed add-on. Then pfSense-upgrade -y installs it, with its log in the state directory. A release may end in the
-# reboot the updater starts; the first run after it notes that. pfSense-upgrade ends 75 when another instance runs.
-# The update facts are read again in this run.
+# reboot the updater starts; the first run after it notes that. The updater ends 0 after a stage of a release that
+# has another one to come, with the reboot started in the background: the install stays running then (ADR-0209).
+# pfSense-upgrade ends 75 when another instance runs. The update facts are read again in this run.
 if [ -n "$inst_job" ]; then
 	inst_started=$now
 	inst_boot=$(boot_time)
@@ -319,7 +336,13 @@ if [ -n "$inst_job" ]; then
 		fi
 		rc=$?
 		case $rc in
-		0) write_install ok "" "$rc" "$(date +%s)" ;;
+		0)
+			if [ "$inst_kind" = release ] && upgrade_continues; then
+				log "install release for job $inst_job continues in the updater's next stage, after its reboot"
+			else
+				write_install ok "" "$rc" "$(date +%s)"
+			fi
+			;;
 		75) write_install refused busy "$rc" "$(date +%s)" ;;
 		*) write_install failed failed "$rc" "$(date +%s)" ;;
 		esac

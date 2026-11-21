@@ -148,7 +148,10 @@ health:
   of an earlier root job without `updates_format` give the packages without a version. `self_update: off`. Backup:
   `config.xml` (XML header, root `<pfsense>`, at least 1 KB).
 - **Facts** come from the driver: product and firmware as `os`, the driver as `os_id`, model, update channel, whether
-  the device updates itself, time and checksum of the last configuration backup.
+  the device updates itself, time and checksum of the last configuration backup. The hello names `os` and
+  `os_version` as the device answered at the instance's start; each check the device answers names them again among
+  its report's facts, and the hub takes them for the host, so that a release installed since shows without a restart
+  ([ADR-0210](../docs/adr/0210-the-hub-takes-the-system-from-each-check.md)).
 
 ### 4.2 Driver interface (agent, Go)
 
@@ -171,7 +174,8 @@ offer under a request id, `InstallStatus` of that id). An install of scope `all`
    `timeout`;
 4. verifies: waits for update facts read after the install's end, and the offer must be gone; after an ok the first
    such facts decide, after a reboot it asks until `timeout_min` (a release upgrade may go on in later boot stages),
-   else `failed_verification`.
+   else `failed_verification`. A release reaches the verify only after the updater's last stage and its reboot
+   ([ADR-0209](../docs/adr/0209-a-release-install-stays-running-until-the-updaters-last-stage.md)).
 
 Fixed codes as everywhere ([ADR-0007](../docs/adr/0007-fixed-codes-instead-of-error-texts.md)), decided by the type of
 the error, never by its text: device not reachable → `precheck_repo_unreachable`; new: device rejects the service
@@ -262,6 +266,11 @@ devices). For their update there are two ways, in this order of preference:
 - An install that a run left running ended with that run: after a reboot it is `rebooted` (the agent verifies), in the
   same boot `failed` with `interrupted`; while `pfSense-upgrade` holds its lock (a later boot stage of a release
   upgrade) it stays `running`.
+- The updater takes a release in stages across reboots: after a stage it notes the next one as the annotation
+  `next_stage` of the kernel package, starts the reboot in the background and ends 0; the last stage deletes the note.
+  While a kernel package carries it, a release install stays `running`, also after the updater ended 0 and between
+  two stages; an add-on install ends `ok` regardless
+  ([ADR-0209](../docs/adr/0209-a-release-install-stays-running-until-the-updaters-last-stage.md)).
 - A window opens or closes up to a minute after the job; the driver waits for `window status`.
 - The rule "table → vendor's update servers" is not part of `deploy/pfsense/`: It comes with the first driver that needs
   a window and names the update servers of its vendor. Without it an entry in the table has no effect.

@@ -152,7 +152,11 @@ health:
   früheren Wurzel-Jobs ohne `updates_format` ergeben die Pakete ohne Version. `self_update: off`. Sicherung:
   `config.xml` (XML-Kopf, Wurzel `<pfsense>`, mindestens 1 KB).
 - **Fakten** kommen vom Treiber: Produkt und Firmware als `os`, der Treiber als `os_id`, Modell, Update-Kanal, ob das
-  Gerät sich selbst aktualisiert, Zeit und Prüfsumme der letzten Konfigurationssicherung.
+  Gerät sich selbst aktualisiert, Zeit und Prüfsumme der letzten Konfigurationssicherung. Das Hello nennt `os` und
+  `os_version` so, wie das Gerät beim Start der Instanz antwortete; jede Prüfung, auf die das Gerät antwortet, nennt sie
+  erneut unter den Fakten ihres Berichts, und der Hub übernimmt sie für den Host, damit ein seither installiertes
+  Release ohne Neustart erscheint
+  ([ADR-0210](../docs/adr/0210-the-hub-takes-the-system-from-each-check.md)).
 
 ### 4.2 Treiber-Schnittstelle (Agent, Go)
 
@@ -176,7 +180,9 @@ Kennung). Ein Install mit Umfang `all`:
    übernommen hat, kein Ende innerhalb von `timeout_min` `timeout`;
 4. weist nach: wartet auf Update-Fakten, die nach dem Ende des Installs gelesen sind, und das Angebot muss weg sein;
    nach einem ok entscheiden die ersten solchen Fakten, nach einem Neustart fragt er bis `timeout_min` (ein
-   Release-Upgrade kann in späteren Boot-Stufen weiterlaufen), sonst `failed_verification`.
+   Release-Upgrade kann in späteren Boot-Stufen weiterlaufen), sonst `failed_verification`. Ein Release kommt erst nach
+   der letzten Stufe des Updaters und deren Neustart zum Nachweis
+   ([ADR-0209](../docs/adr/0209-a-release-install-stays-running-until-the-updaters-last-stage.md)).
 
 Feste Codes wie überall ([ADR-0007](../docs/adr/0007-fixed-codes-instead-of-error-texts.md)), entschieden am Typ des
 Fehlers, nie an seinem Text: Gerät nicht erreichbar → `precheck_repo_unreachable`; neu: Gerät lehnt das Dienstkonto ab
@@ -270,6 +276,11 @@ ihr Update gibt es zwei Wege, in dieser Rangfolge:
 - Ein Install, den ein Lauf laufend zurückliess, endete mit diesem Lauf: nach einem Neustart ist er `rebooted` (der Agent
   weist nach), im selben Boot `failed` mit `interrupted`; solange `pfSense-upgrade` seine Sperre hält (eine spätere
   Boot-Stufe eines Release-Upgrades), bleibt er `running`.
+- Der Updater nimmt ein Release in Stufen über Neustarts: Nach einer Stufe vermerkt er die nächste als Annotation
+  `next_stage` des Kernel-Pakets, stösst den Neustart im Hintergrund an und endet mit 0; die letzte Stufe löscht den
+  Vermerk. Solange ein Kernel-Paket ihn trägt, bleibt ein Release-Install `running`, auch nachdem der Updater mit 0
+  endete und zwischen zwei Stufen; ein Install eines Zusatzpakets endet trotzdem `ok`
+  ([ADR-0209](../docs/adr/0209-a-release-install-stays-running-until-the-updaters-last-stage.md)).
 - Ein Fenster geht bis zu einer Minute nach dem Auftrag auf bzw. zu; der Treiber wartet auf `window status`.
 - Die Regel „Tabelle → Update-Server des Herstellers“ gehört nicht zu `deploy/pfsense/`: Sie kommt mit dem ersten
   Treiber, der ein Fenster braucht, und nennt die Update-Server seines Herstellers. Ohne sie bewirkt ein Eintrag in

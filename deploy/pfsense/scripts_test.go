@@ -53,11 +53,15 @@ esac
 	// pkg itself lists only "<" for -l'<'; the stand-in answers every status, so the tests show that the root job keeps
 	// only "<" by itself.
 	// The installed and offered versions of the release packages come from the files installed/<name> and
-	// offered/<name>; core lists the installed core packages; version -t compares as sort -V does.
+	// offered/<name>; core lists the installed core packages; version -t compares as sort -V does. The annotation
+	// next_stage of a package, which the updater sets between the stages of a release (ADR-0209), is the file
+	// stage/<name>.
 	write(t, filepath.Join(stubs, "pkg"), `#!/bin/sh
 case "$*" in
 "version -U -vRl<") cat "`+d+`/outdated" ;;
 "query -e %n ~ pfSense-kernel-* || %n ~ pfSense-base* %n") cat "`+d+`/core" ;;
+"query -e %n ~ pfSense-kernel-* %n") grep '^pfSense-kernel-' "`+d+`/core" ;;
+"annotate -q -S "*" next_stage") [ ! -f "`+d+`/stage/$4" ] || cat "`+d+`/stage/$4" ;;
 "query %v "*) [ ! -f "`+d+`/installed/$3" ] || cat "`+d+`/installed/$3" ;;
 "rquery -U %v "*) [ ! -f "`+d+`/offered/$4" ] || cat "`+d+`/offered/$4" ;;
 "version -t "*)
@@ -69,6 +73,7 @@ esac
 `, 0o755)
 	// pfSense-upgrade -C -U answers what the file upgrade-answer holds and ends with the code in upgrade-rc. An install
 	// (-y -l <log>, with -i <add-on>) ends with the code in install-rc; with 0 the offered versions become installed.
+	// Where the file install-stage exists, a release ends after a stage: the kernel package notes the next one.
 	write(t, filepath.Join(stubs, "pfSense-upgrade"), `#!/bin/sh
 echo "$*" >> "`+d+`/upgrade.log"
 case "$*" in
@@ -82,6 +87,7 @@ case "$*" in
 		cp "`+d+`/offered/$5" "`+d+`/installed/$5"
 	elif [ "$rc" = 0 ]; then
 		for p in pfSense pfSense-base pfSense-kernel-pfSense; do cp "`+d+`/offered/$p" "`+d+`/installed/$p"; done
+		[ ! -f "`+d+`/install-stage" ] || cp "`+d+`/install-stage" "`+d+`/stage/pfSense-kernel-pfSense"
 	fi
 	exit "$rc" ;;
 *) echo "unexpected pfSense-upgrade $*" >&2; exit 1 ;;
@@ -95,6 +101,7 @@ echo "{ sec = $(cat "`+d+`/boot"), usec = 1 } Thu Jan  1 00:16:40 1970"
 	write(t, filepath.Join(d, "install-rc"), "0\n", 0o644)
 	must(t, os.Mkdir(filepath.Join(d, "installed"), 0o755))
 	must(t, os.Mkdir(filepath.Join(d, "offered"), 0o755))
+	must(t, os.Mkdir(filepath.Join(d, "stage"), 0o755))
 	write(t, filepath.Join(d, "core"), "pfSense-base\npfSense-kernel-pfSense\n", 0o644)
 	for _, p := range []string{"pfSense", "pfSense-base", "pfSense-kernel-pfSense"} {
 		write(t, filepath.Join(d, "installed", p), "1.2.3\n", 0o644)
@@ -793,6 +800,58 @@ func TestRootJobNotesTheEndOfAnInterruptedInstall(t *testing.T) {
 	b.runRoot()
 	if st := b.installStatus(installID); st["install_state"] != "failed" || st["install_code"] != "interrupted" {
 		t.Errorf("same boot: %v", st)
+	}
+}
+
+// ADR-0209: pfSense-upgrade ends 0 after a stage of a release that has another one to come, with the reboot started in
+// the background and the next stage noted on the kernel package. The install stays running - after the updater's end,
+// at the next run in the same boot without its lock, and in a boot between two stages - and is rebooted once the
+// firewall booted again and the last stage deleted the note; the facts are read again then. An add-on install does not
+// wait on a note that a broken release upgrade left.
+func TestRootJobWaitsForTheUpdatersLastStage(t *testing.T) {
+	b := newBox(t)
+	b.runRoot()
+	write(t, filepath.Join(b.dir, "offered", "pfSense"), "1.2.4\n", 0o644)
+	write(t, filepath.Join(b.dir, "offered", "pfSense-base"), "1.2.4\n", 0o644)
+	write(t, filepath.Join(b.dir, "install-stage"), "2\n", 0o644)
+	if out, code := b.call("install release " + installID); code != 0 || !strings.Contains(out, "state=requested\n") {
+		t.Fatalf("install release: exit %d %q", code, out)
+	}
+	b.runRoot()
+	if st := b.installStatus(installID); st["install_state"] != "running" || st["install_finished"] != "" {
+		t.Errorf("after the updater's first stage: %v", st)
+	}
+	b.runRoot() // the same boot: the updater's lock is gone, its reboot still to come
+	if st := b.installStatus(installID); st["install_state"] != "running" {
+		t.Errorf("next run in the same boot: %v", st)
+	}
+	write(t, filepath.Join(b.dir, "stage", "pfSense-kernel-pfSense"), "3\n", 0o644)
+	write(t, filepath.Join(b.dir, "boot"), "2000\n", 0o644)
+	b.runRoot()
+	if st := b.installStatus(installID); st["install_state"] != "running" {
+		t.Errorf("in a boot between two stages: %v", st)
+	}
+	must(t, os.Remove(filepath.Join(b.dir, "stage", "pfSense-kernel-pfSense")))
+	write(t, filepath.Join(b.dir, "boot"), "3000\n", 0o644)
+	before := keyMap(b.callOut("version"))["updates_checked_at"]
+	time.Sleep(1100 * time.Millisecond)
+	b.runRoot()
+	if st := b.installStatus(installID); st["install_state"] != "rebooted" || st["install_finished"] == "" {
+		t.Errorf("after the last stage: %v", st)
+	}
+	facts := keyMap(b.callOut("version"))
+	if facts["updates_checked_at"] == before || facts["release_installed"] != "1.2.4" {
+		t.Errorf("facts after the last stage: %v (before %s)", facts, before)
+	}
+
+	write(t, filepath.Join(b.dir, "stage", "pfSense-kernel-pfSense"), "2\n", 0o644)
+	write(t, filepath.Join(b.dir, "installed", "pfSense-pkg-acme"), "1.2\n", 0o644)
+	write(t, filepath.Join(b.dir, "offered", "pfSense-pkg-acme"), "1.3.2\n", 0o644)
+	const addonID = "fedcba9876543210fedcba98"
+	b.call("install addon pfSense-pkg-acme " + addonID)
+	b.runRoot()
+	if st := b.installStatus(addonID); st["install_state"] != "ok" || st["install_name"] != "pfSense-pkg-acme" {
+		t.Errorf("add-on with a note left: %v", st)
 	}
 }
 

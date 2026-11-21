@@ -561,7 +561,9 @@ Paket-Entitäten weder angelegt noch gelöscht (unentschieden); erst ein Bericht
 
 Eine `update`-Entität erwartet zwei Versionen; für eine Paketmenge gibt es keine einzelne. Darum:
 
-- `installed_version`: das Betriebssystem, z. B. `Debian GNU/Linux 13 (trixie)`.
+- `installed_version`: das Betriebssystem, z. B. `Debian GNU/Linux 13 (trixie)`: so, wie das Hello es nennt, oder wie
+  die letzte Prüfung es nennt, wo eine Quelle das tut, etwa eine Proxy-Instanz für ihr Gerät
+  ([ADR-0210](../docs/adr/0210-the-hub-takes-the-system-from-each-check.md)).
 - `latest_version`: gleich `installed_version`, wenn nichts aussteht oder der Install-Knopf nichts davon nähme, sonst
   z. B. `12 ausstehend (3 Sicherheit)`; `null` (unbekannt), wenn die Prüfung scheiterte. „Überspringen“ in HA gilt nur,
   bis sich die Menge ändert. Geprüft: HA vergleicht zuerst auf Gleichheit; zwei verschiedene Freitexte kann

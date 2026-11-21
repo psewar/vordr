@@ -537,7 +537,9 @@ created nor deleted (undecided); only a report decides.
 
 An `update` entity expects two versions; for a set of packages there is no single one. Therefore:
 
-- `installed_version`: the operating system, e.g. `Debian GNU/Linux 13 (trixie)`.
+- `installed_version`: the operating system, e.g. `Debian GNU/Linux 13 (trixie)`: as the hello names it, or as the
+  last check names it where a source does so, such as a proxy instance for its device
+  ([ADR-0210](../docs/adr/0210-the-hub-takes-the-system-from-each-check.md)).
 - `latest_version`: equal to `installed_version` if nothing is pending or the Install button would take none of it,
   otherwise e.g. `12 pending (3 security)`; `null` (unknown) if the check failed. "Skip" in HA applies only until the
   set changes. Verified: HA compares for equality first; AwesomeVersion cannot compare two different free texts, and

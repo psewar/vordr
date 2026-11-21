@@ -48,6 +48,11 @@ func (c targetChecker) Check(ctx context.Context) wire.Report {
 	if st.Model != "" {
 		fw.Facts["model"] = st.Model
 	}
+	if res.OK() && st.Installed != "" {
+		// The hello names the system as the device answered at the instance's start; a release installed since
+		// changes it without a new hello. The hub takes these for the host (ADR-0210).
+		fw.Facts[source.FactOS], fw.Facts[source.FactOSVersion] = deviceSystem(st)
+	}
 	switch {
 	case !res.OK():
 		fw.State, fw.Code, fw.Detail = protocol.SourceCheckFailed, res.Code, res.Detail
@@ -341,10 +346,15 @@ func TargetFacts(ctx context.Context, node string, d target.Driver) facts.Host {
 	h := facts.Host{Hostname: node, OS: d.Name(), OSID: d.Name(), OSVersion: facts.Unknown, GOOS: facts.Unknown,
 		Arch: facts.Unknown, Virtualization: "none", Container: "none"}
 	if st, res := d.Check(ctx); res.OK() {
-		h.OS, h.OSVersion = st.Product+" "+st.Installed, st.Installed
+		h.OS, h.OSVersion = deviceSystem(st)
 		if st.Model != "" {
 			h.Arch = st.Model
 		}
 	}
 	return h
+}
+
+// deviceSystem: the system as the device names it, for the hello (os, os_version) and for each check's report.
+func deviceSystem(st target.Status) (system, version string) {
+	return st.Product + " " + st.Installed, st.Installed
 }

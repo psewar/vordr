@@ -242,4 +242,6 @@ Generated from the files by `python3 docs/adr/check_index.py --write`. `build.sh
 | [0206](0206-the-ssh-driver-probes-the-device-only-after-ssh-fails.md) | The SSH driver probes the device only after ssh fails | accepted | 2026-11-20 |
 | [0207](0207-the-hub-says-why-updates-are-held-back.md) | The hub says why updates are held back | accepted | 2026-11-21 |
 | [0208](0208-a-release-in-another-branch-can-be-held-from-home-assistant.md) | A release in another branch can be held from Home Assistant | accepted | 2026-11-21 |
+| [0209](0209-a-release-install-stays-running-until-the-updaters-last-stage.md) | A release install stays running until the updater's last stage | proposed | 2026-11-21 |
+| [0210](0210-the-hub-takes-the-system-from-each-check.md) | The hub takes the system from each check | proposed | 2026-11-21 |
 <!-- adr-index:end -->

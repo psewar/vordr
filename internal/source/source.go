@@ -26,6 +26,13 @@ const (
 	FactConfigBackupSH = "config_backup_sha256"
 )
 
+// The system as a source found it at this check, in the form of the hello's facts: a proxy instance names the device's
+// product and firmware at every check the device answered, and the hub takes them for the host (ADR-0210).
+const (
+	FactOS        = "os"
+	FactOSVersion = "os_version"
+)
+
 // Package is one pending update.
 type Package struct {
 	Name     string   `json:"name"`

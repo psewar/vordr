@@ -172,3 +172,28 @@ func TestTargetFacts(t *testing.T) {
 		t.Fatalf("facts without an answer: %+v", h)
 	}
 }
+
+// ADR-0210: each check names the system as the device answered, as the hello does, so that a release installed since
+// the instance's start reaches the hub; a check the device did not answer names none.
+func TestTargetCheckNamesTheSystem(t *testing.T) {
+	d := &stubDriver{exportLen: 2048, status: target.Status{Product: "Synology DSM", Installed: "7.9.9-99999 Update 1"}}
+	now := time.Unix(1700000000, 0).UTC()
+	c := TargetChecker(d, target.Store{Dir: filepath.Join(t.TempDir(), "config-backups"), Keep: 5}, 26*time.Hour,
+		func() time.Time { return now })
+	fw, _ := reportOf(t, c.Check(context.Background()))
+	h := TargetFacts(context.Background(), "delta", d)
+	if fw.Facts[source.FactOS] != h.OS || fw.Facts[source.FactOSVersion] != h.OSVersion ||
+		h.OSVersion != "7.9.9-99999 Update 1" {
+		t.Fatalf("system: %v, hello %+v", fw.Facts, h)
+	}
+	d.status.Installed = "8.0.0-10000"
+	if fw, _ = reportOf(t, c.Check(context.Background())); fw.Facts[source.FactOS] != "Synology DSM 8.0.0-10000" ||
+		fw.Facts[source.FactOSVersion] != "8.0.0-10000" {
+		t.Fatalf("after a release: %v", fw.Facts)
+	}
+	d.check = target.Result{Code: protocol.CodeFailedTargetAuth}
+	if fw, _ = reportOf(t, c.Check(context.Background())); fw.Facts[source.FactOS] != "" ||
+		fw.Facts[source.FactOSVersion] != "" {
+		t.Fatalf("a check without an answer names a system: %v", fw.Facts)
+	}
+}

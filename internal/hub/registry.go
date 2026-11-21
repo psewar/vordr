@@ -8,6 +8,7 @@ import (
 
 	"github.com/psewar/vordr/internal/facts"
 	"github.com/psewar/vordr/internal/protocol"
+	"github.com/psewar/vordr/internal/source"
 	"github.com/psewar/vordr/internal/wire"
 )
 
@@ -314,6 +315,9 @@ func (r *Registry) SetReportAt(node string, rep wire.Report, received time.Time)
 		return nil
 	}
 	e.LastReport = &rep
+	if system, version, ok := reportedSystem(rep); ok {
+		e.Facts.OS, e.Facts.OSVersion = system, version // the system as this check found it (ADR-0210)
+	}
 	seen := rep.CheckedAt
 	if received.After(seen) {
 		seen = received
@@ -362,6 +366,23 @@ func pendingCount(rep wire.Report) (int, bool) {
 		n += s.Pending
 	}
 	return n, len(rep.Sources) > 0
+}
+
+// reportedSystem: the system as the first checked source of rep that names it gives it - facts os and os_version, each
+// within the bound of the hello's facts (ADR-0210). ok is false where no checked source names both, or the one that
+// does names a value beyond the bound.
+func reportedSystem(rep wire.Report) (system, version string, ok bool) {
+	for _, s := range rep.Sources {
+		if s.State == protocol.SourceCheckFailed || s.State == protocol.SourceUnknown {
+			continue
+		}
+		system, version = s.Facts[source.FactOS], s.Facts[source.FactOSVersion]
+		if system == "" || version == "" {
+			continue
+		}
+		return system, version, textBound(system, maxFactLen) == "" && textBound(version, maxFactLen) == ""
+	}
+	return "", "", false
 }
 
 // pendingUpdates lists the pending updates of a complete report; an update the register knew keeps its time, a new one
