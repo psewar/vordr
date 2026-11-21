@@ -234,6 +234,11 @@ func (s *Server) login(conn *wire.Conn, remote string, agentNonce []byte) (*sess
 	}
 	s.sessions[h.Node] = sess
 	s.mu.Unlock()
+	// A decision between Admit and here (approved, rejected, forgotten) found no session to tell, and the status above may
+	// be stale. From here on Notify finds this session; what changed before is told now.
+	if e, ok := s.Reg.Get(h.Node); !ok || e.State != state {
+		s.Notify(h.Node)
+	}
 	s.changed(h.Node)
 	return sess, true
 }
