@@ -533,9 +533,16 @@ async def test_hold_repair_holds_the_release(hass: HomeAssistant, fake_hub: Fake
     result = await confirm(hass, flow)
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert [(r["node"], r["to"]) for r in fake_hub.hold_requests] == [("fw", "1.3.0")]
-    await wait_until(lambda: issue(hass, "problem_fw") is None)
-    pending = hass.states.get("sensor.vordr_fw_pending_updates")
-    assert pending.state == "1" and pending.attributes["held_release"] == "1.3.0"
+    # Home Assistant deletes the repair as soon as its fix flow creates an entry, before the hub's view with the hold
+    # arrives: wait for the hold itself, then the repair stays gone with the problem.
+    pending = "sensor.vordr_fw_pending_updates"
+    await wait_until(
+        lambda: hass.states.get(pending).attributes.get("held_release") == "1.3.0",
+        describe=lambda: hass.states.get(pending).attributes,
+    )
+    assert hass.states.get(pending).state == "1"
+    assert hass.states.get("binary_sensor.vordr_fw_problem").state == "off"
+    assert issue(hass, "problem_fw") is None
 
 
 async def test_hold_repair_needs_the_feature_and_the_release(
